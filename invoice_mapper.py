@@ -1,0 +1,2172 @@
+"""Two-pass mapper from a client's invoice spreadsheet to model.xlsx columns."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+import unicodedata
+from dataclasses import asdict, dataclass
+from difflib import SequenceMatcher
+from pathlib import Path
+from typing import Protocol, Sequence
+
+import numpy as np
+import pandas as pd
+from openai import OpenAI
+from pydantic import BaseModel, Field
+
+from reference_catalog import ReferenceCatalogs, best_catalog_evidence, expected_catalogs
+
+
+DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large"
+DEFAULT_LLM_MODEL = "gpt-4o-mini"
+SEMANTIC_EQUIVALENCE_SCORE = 0.98
+REVIEWER_COLUMNS = ["reviewer_status", "correct_client_column", "reviewer_note"]
+
+_HEADER_STOPWORDS = {
+    "44",
+    "a",
+    "as",
+    "da",
+    "das",
+    "de",
+    "do",
+    "dos",
+    "digit",
+    "for",
+    "of",
+    "o",
+    "os",
+    "para",
+    "the",
+}
+
+_HEADER_TOKEN_ALIASES = {
+    "access": "acesso",
+    "aliq": "aliquota",
+    "aliquota": "aliquota",
+    "alq": "aliquota",
+    "basis": "base",
+    "business": "negocio",
+    "cof": "cofins",
+    "cofi": "cofins",
+    "ctg": "categoria",
+    "date": "data",
+    "desc": "descricao",
+    "description": "descricao",
+    "doc": "documento",
+    "document": "documento",
+    "electronic": "eletronico",
+    "eletronica": "eletronico",
+    "empresa": "empresa",
+    "invoice": "nota",
+    "ibss": "ibs",
+    "key": "chave",
+    "lanc": "lancamento",
+    "liq": "liquido",
+    "liquido": "liquido",
+    "measure": "medida",
+    "name": "nome",
+    "negocios": "negocio",
+    "net": "liquido",
+    "no": "numero",
+    "nr": "numero",
+    "num": "numero",
+    "number": "numero",
+    "partner": "parceiro",
+    "place": "local",
+    "posting": "lancamento",
+    "price": "preco",
+    "product": "produto",
+    "qtd": "quantidade",
+    "quantity": "quantidade",
+    "rate": "aliquota",
+    "region": "regiao",
+    "series": "serie",
+    "supplier": "fornecedor",
+    "taxa": "aliquota",
+    "type": "categoria",
+    "unit": "unidade",
+    "val": "valor",
+    "value": "valor",
+    "vendor": "fornecedor",
+    "vlr": "valor",
+}
+
+
+def normalize_header(value: object) -> str:
+    text = "" if value is None else str(value).strip()
+    text = unicodedata.normalize("NFKD", text)
+    text = text.encode("ascii", "ignore").decode("ascii").lower()
+    return re.sub(r"[^a-z0-9]+", " ", text).strip()
+
+
+def semantic_header_signature(value: object) -> frozenset[str]:
+    """Normalize reusable Portuguese/English terms without client-layout rules."""
+    normalized = normalize_header(value)
+    # CST is the standard Brazilian abbreviation for tax-situation code. This
+    # replacement is domain vocabulary, not a mapping learned from a client file.
+    normalized = re.sub(r"\btax\s+situation\b", "cst", normalized)
+    normalized = re.sub(r"\bsituacao\s+tributaria\b", "cst", normalized)
+    tokens = []
+    for token in normalized.split():
+        if token in _HEADER_STOPWORDS:
+            continue
+        tokens.append(_HEADER_TOKEN_ALIASES.get(token, token))
+    # Some ERP headers truncate PIS to PI. Only expand it when CST/tax-situation
+    # context makes the meaning unambiguous.
+    if "cst" in tokens:
+        tokens = ["pis" if token == "pi" else token for token in tokens]
+    return frozenset(tokens)
+
+
+def semantically_equivalent_headers(left: object, right: object) -> bool:
+    left_signature = semantic_header_signature(left)
+    return bool(left_signature) and left_signature == semantic_header_signature(right)
+
+
+_TAX_FAMILY_ALIASES = {
+    "fcp": "fecp",
+    "ibss": "ibs",
+}
+
+_TAX_FAMILIES = {
+    "cbs",
+    "cofins",
+    "csll",
+    "fecp",
+    "icap",
+    "icep",
+    "icms",
+    "icsp",
+    "ibs",
+    "ibsm",
+    "inss",
+    "ipi",
+    "irpj",
+    "iss",
+    "iva",
+    "pis",
+}
+
+
+def header_tax_families(value: object) -> frozenset[str]:
+    """Return explicit tax families found in a header using domain vocabulary."""
+    families = {
+        _TAX_FAMILY_ALIASES.get(token, token)
+        for token in normalize_header(value).split()
+    }
+    return frozenset(families & _TAX_FAMILIES)
+
+
+def header_semantic_role(value: object) -> str | None:
+    """Return an explicit tax-value role without guessing from row values."""
+    normalized = normalize_header(value)
+    padded = f" {normalized} "
+    tokens = set(normalized.split())
+
+    if (
+        {"classification", "classificacao"} & tokens
+        or ({"class", "classif"} & tokens and {"tax", "tributaria"} & tokens)
+    ):
+        return "tax_classification"
+    if (
+        " tax situation " in padded
+        or "taxsituation" in tokens
+        or " situacao " in padded
+        or " sit tributaria " in padded
+        or "cst" in tokens
+        or " item estat imposto " in padded
+        or re.search(r"\btipo\s+(?:de\s+|do\s+)?imposto\b", normalized)
+    ):
+        return "tax_status"
+    if (
+        {"aliquota", "rate", "taxa", "tximp"} & tokens
+        or " tx imposto " in padded
+    ):
+        return "rate"
+    if {"outra", "outras", "outro", "other"} & tokens:
+        return "other"
+    if (
+        {"isenta", "isentas", "isento", "exempt"} & tokens
+        or ({"exc", "excl", "excluded"} & tokens and {"base", "basis"} & tokens)
+    ):
+        return "exempt"
+    if {"reduzida", "reduzido", "reduced"} & tokens and {"base", "basis"} & tokens:
+        return "reduced_base"
+    if (
+        {"valor", "value", "amount"} & tokens
+    ):
+        return "value"
+    # SAP commonly abbreviates the taxable amount/base as ``Mont.`` or
+    # ``Monta`` in a tax-family column (for example, PIS Mont. beside PIS
+    # Taxa and Valor do PIS). Outside tax-family context, ``mont.`` retains
+    # its ordinary amount/value meaning.
+    if header_tax_families(value) and {"mont", "monta", "montante"} & tokens:
+        return "base"
+    if {"base", "basis"} & tokens:
+        return "base"
+    if {"mont", "monta", "montante"} & tokens:
+        return "value"
+    if {"grupo", "group"} & tokens and {"imposto", "tax"} & tokens:
+        return "tax_group"
+    if {"cnpj", "cpf"} & tokens or (
+        {"fiscal", "tax"} & tokens
+        and {"id", "identificador"} & tokens
+        and not {"regional", "state", "estadual", "municipal"} & tokens
+    ):
+        return "party_tax_id"
+    if (
+        {"regional", "state", "estadual", "municipal"} & tokens
+        and {"fiscal", "tax", "id", "inscricao", "registration"} & tokens
+    ):
+        return "regional_tax_id"
+    if "item" in tokens and not {"imposto", "tax"} & tokens:
+        return "item_id"
+    if (
+        {"numero", "number", "documento", "document", "nf", "nfe", "invoice"}
+        & tokens
+        and not {"fiscal", "tax"} & tokens
+    ):
+        return "document_id"
+    return None
+
+
+def semantic_header_conflict(left: object, right: object) -> str | None:
+    """Describe an explicit tax-family or semantic-role conflict between headers.
+
+    This is deliberately conservative: an absent or bogus header has no explicit
+    signature and therefore is not rejected. Explicit conflicts remain viable for
+    human review because distinctive row content can show that a header is wrong.
+    """
+    left_families = header_tax_families(left)
+    right_families = header_tax_families(right)
+    if left_families and right_families and left_families.isdisjoint(right_families):
+        return (
+            "tax-family conflict "
+            f"({', '.join(sorted(left_families))} vs {', '.join(sorted(right_families))})"
+        )
+
+    left_qualifiers = set(normalize_header(left).split()) & {"st"}
+    right_qualifiers = set(normalize_header(right).split()) & {"st"}
+    if (
+        left_families
+        and right_families
+        and not left_families.isdisjoint(right_families)
+        and left_qualifiers != right_qualifiers
+    ):
+        return (
+            "tax-qualifier conflict "
+            f"({', '.join(sorted(left_qualifiers)) or 'regular'} vs "
+            f"{', '.join(sorted(right_qualifiers)) or 'regular'})"
+        )
+
+    left_role = header_semantic_role(left)
+    right_role = header_semantic_role(right)
+    if left_role is not None and right_role is not None and left_role != right_role:
+        return f"semantic-role conflict ({left_role} vs {right_role})"
+    return None
+
+
+def _header_text(value: object, index: int) -> str:
+    if pd.isna(value) or not str(value).strip():
+        return f"Unnamed column {index + 1}"
+    return str(value).strip()
+
+
+@dataclass(frozen=True)
+class ColumnRef:
+    id: str
+    index: int
+    name: str
+    occurrence: int
+
+    @property
+    def display_name(self) -> str:
+        suffix = f" (occurrence {self.occurrence})" if self.occurrence > 1 else ""
+        return f"{self.name}{suffix}"
+
+
+@dataclass
+class SheetTable:
+    columns: list[ColumnRef]
+    data: pd.DataFrame
+
+    @classmethod
+    def from_excel(cls, path: str | Path, sheet_name: str | int = 0) -> "SheetTable":
+        raw = pd.read_excel(path, sheet_name=sheet_name, header=None, dtype=object)
+        if raw.empty:
+            raise ValueError(f"Spreadsheet has no rows: {path}")
+
+        headers = [_header_text(value, i) for i, value in enumerate(raw.iloc[0])]
+        occurrences: dict[str, int] = {}
+        columns: list[ColumnRef] = []
+        for index, name in enumerate(headers):
+            normalized = normalize_header(name)
+            occurrences[normalized] = occurrences.get(normalized, 0) + 1
+            columns.append(
+                ColumnRef(
+                    id=f"column_{index + 1:03d}",
+                    index=index,
+                    name=name,
+                    occurrence=occurrences[normalized],
+                )
+            )
+
+        data = raw.iloc[1:].reset_index(drop=True)
+        data.columns = range(data.shape[1])
+        return cls(columns=columns, data=data)
+
+    def series(self, column: ColumnRef) -> pd.Series:
+        return self.data.iloc[:, column.index]
+
+
+def _json_value(value: object, max_length: int = 100) -> str:
+    if isinstance(value, pd.Timestamp):
+        text = value.isoformat()
+    else:
+        text = str(value).strip()
+    return text if len(text) <= max_length else f"{text[: max_length - 1]}…"
+
+
+def sample_values(series: pd.Series, limit: int = 8) -> list[str]:
+    samples: list[str] = []
+    seen: set[str] = set()
+    for value in series:
+        if pd.isna(value) or not str(value).strip():
+            continue
+        text = _json_value(value)
+        if text in seen:
+            continue
+        seen.add(text)
+        samples.append(text)
+        if len(samples) >= limit:
+            break
+    return samples
+
+
+def summarize_values(series: pd.Series, limit: int = 8) -> dict[str, object]:
+    nonempty = series[series.notna()]
+    if not nonempty.empty:
+        nonempty = nonempty[nonempty.astype(str).str.strip() != ""]
+
+    numeric = pd.to_numeric(nonempty, errors="coerce")
+    numeric_fraction = float(numeric.notna().mean()) if len(nonempty) else 0.0
+    numeric_values = numeric[numeric.notna()].astype(float)
+    zero_fraction = (
+        float(np.isclose(numeric_values, 0.0).mean()) if len(numeric_values) else 0.0
+    )
+    all_zero = bool(
+        len(nonempty)
+        and len(numeric_values) == len(nonempty)
+        and np.isclose(numeric_values, 0.0).all()
+    )
+    evidence_quality = "empty" if not len(nonempty) else "all_zero" if all_zero else "informative"
+    texts = nonempty.astype(str).str.strip()
+    lengths = texts.str.len().astype(float)
+    digit_counts = texts.str.count(r"\d").astype(float)
+
+    def character_fraction(text: str, predicate) -> float:
+        return sum(bool(predicate(character)) for character in text) / len(text) if text else 0.0
+
+    digit_fraction = (
+        float(texts.map(lambda text: character_fraction(text, str.isdigit)).mean())
+        if len(texts)
+        else 0.0
+    )
+    alpha_fraction = (
+        float(texts.map(lambda text: character_fraction(text, str.isalpha)).mean())
+        if len(texts)
+        else 0.0
+    )
+
+    return {
+        "non_empty_count": int(len(nonempty)),
+        "unique_count": int(nonempty.astype(str).nunique()) if len(nonempty) else 0,
+        "inferred_type": pd.api.types.infer_dtype(nonempty, skipna=True)
+        if len(nonempty)
+        else "empty",
+        "numeric_fraction": round(numeric_fraction, 3),
+        "zero_fraction": round(zero_fraction, 3),
+        "median_length": round(float(lengths.median()), 3) if len(lengths) else 0.0,
+        "median_digit_count": round(float(digit_counts.median()), 3)
+        if len(digit_counts)
+        else 0.0,
+        "digit_count_values": sorted(
+            {int(value) for value in digit_counts if value > 0}
+        ),
+        "digit_fraction": round(digit_fraction, 3),
+        "alpha_fraction": round(alpha_fraction, 3),
+        "evidence_quality": evidence_quality,
+        "samples": sample_values(series, limit),
+    }
+
+
+def profile_similarity(
+    left: dict[str, object], right: dict[str, object]
+) -> float:
+    """Compare generic value shape without encoding any invoice-field mapping."""
+    if (
+        left["evidence_quality"] != "informative"
+        or right["evidence_quality"] != "informative"
+    ):
+        return 0.0
+
+    def closeness(key: str) -> float:
+        return 1.0 - abs(float(left[key]) - float(right[key]))
+
+    left_length = float(left["median_length"])
+    right_length = float(right["median_length"])
+    length_scale = max(left_length, right_length, 1.0)
+    length_score = 1.0 - min(abs(left_length - right_length) / length_scale, 1.0)
+    left_digits = float(left["median_digit_count"])
+    right_digits = float(right["median_digit_count"])
+    digit_scale = max(left_digits, right_digits, 1.0)
+    digit_count_score = 1.0 - min(abs(left_digits - right_digits) / digit_scale, 1.0)
+    left_digit_counts = set(left["digit_count_values"])
+    right_digit_counts = set(right["digit_count_values"])
+    digit_count_overlap = (
+        len(left_digit_counts & right_digit_counts)
+        / min(len(left_digit_counts), len(right_digit_counts))
+        if left_digit_counts and right_digit_counts
+        else 0.0
+    )
+    type_score = float(left["inferred_type"] == right["inferred_type"])
+    score = (
+        0.05 * closeness("numeric_fraction")
+        + 0.05 * closeness("digit_fraction")
+        + 0.05 * closeness("alpha_fraction")
+        + 0.05 * length_score
+        + 0.10 * digit_count_score
+        + 0.55 * digit_count_overlap
+        + 0.15 * type_score
+    )
+    return round(max(0.0, min(score, 1.0)), 4)
+
+
+def _distinctive_samples(profile: dict[str, object]) -> set[str]:
+    """Return normalized sample values unlikely to match by accident."""
+    distinctive: set[str] = set()
+    for value in profile["samples"]:
+        normalized = normalize_header(value)
+        compact = normalized.replace(" ", "")
+        if not compact or compact in {"0", "00", "000", "0000"}:
+            continue
+        if compact.isdigit():
+            if len(compact) >= 6:
+                distinctive.add(compact)
+            continue
+        if len(compact) >= 4 or (
+            len(compact) >= 3
+            and any(character.isalpha() for character in compact)
+            and any(character.isdigit() for character in compact)
+        ):
+            distinctive.add(normalized)
+    return distinctive
+
+
+def distinctive_sample_overlap(
+    left: dict[str, object], right: dict[str, object]
+) -> float:
+    """Measure exact overlap of nontrivial samples, excluding zeros and short IDs."""
+    left_samples = _distinctive_samples(left)
+    right_samples = _distinctive_samples(right)
+    if not left_samples or not right_samples:
+        return 0.0
+    return round(
+        len(left_samples & right_samples) / min(len(left_samples), len(right_samples)),
+        4,
+    )
+
+
+def distinctive_profile_match(
+    left: dict[str, object], right: dict[str, object]
+) -> bool:
+    """Return whether rows carry evidence stronger than a generic type match."""
+    if (
+        left["evidence_quality"] != "informative"
+        or right["evidence_quality"] != "informative"
+    ):
+        return False
+    if distinctive_sample_overlap(left, right) > 0.0:
+        return True
+
+    left_digit_counts = set(left["digit_count_values"])
+    right_digit_counts = set(right["digit_count_values"])
+    shared_long_digit_count = any(
+        count >= 8 for count in left_digit_counts & right_digit_counts
+    )
+    return bool(
+        shared_long_digit_count
+        and float(left["digit_fraction"]) >= 0.8
+        and float(right["digit_fraction"]) >= 0.8
+    )
+
+
+def _numeric_value(value: object) -> float:
+    if pd.isna(value):
+        return float("nan")
+    if isinstance(value, (int, float, np.number)) and not isinstance(value, bool):
+        return float(value)
+    text = str(value).strip().replace(" ", "")
+    if not text:
+        return float("nan")
+    negative = text.endswith("-")
+    if negative:
+        text = text[:-1]
+    text = re.sub(r"[^0-9,.-]", "", text)
+    if not text or text in {"-", ".", ","}:
+        return float("nan")
+    if "," in text and "." in text:
+        if text.rfind(",") > text.rfind("."):
+            text = text.replace(".", "").replace(",", ".")
+        else:
+            text = text.replace(",", "")
+    elif "," in text:
+        text = text.replace(".", "").replace(",", ".")
+    try:
+        number = float(text)
+    except ValueError:
+        return float("nan")
+    return -number if negative else number
+
+
+def numeric_series(series: pd.Series) -> pd.Series:
+    """Parse ordinary and Brazilian-formatted numbers without changing row order."""
+    if pd.api.types.is_numeric_dtype(series):
+        return pd.to_numeric(series, errors="coerce").astype(float)
+    return series.map(_numeric_value).astype(float)
+
+
+def tax_calculation_evidence(
+    base: pd.Series,
+    rate: pd.Series,
+    value: pd.Series,
+    *,
+    minimum_rows: int = 5,
+) -> dict[str, object]:
+    """Score the row-wise relationship value ~= base * rate.
+
+    Both common rate representations are tested: percentage points (18) and a
+    decimal fraction (0.18). The score is the fraction of usable rows within a
+    2% relative or two-cent absolute tolerance.
+    """
+    frame = pd.concat(
+        [
+            numeric_series(base).rename("base"),
+            numeric_series(rate).rename("rate"),
+            numeric_series(value).rename("value"),
+        ],
+        axis=1,
+    ).replace([np.inf, -np.inf], np.nan)
+    frame = frame.dropna()
+    frame = frame[
+        (frame["base"].abs() > 1e-12)
+        & ((frame["rate"].abs() > 1e-12) | (frame["value"].abs() > 0.02))
+    ]
+    if len(frame) < minimum_rows:
+        return {
+            "available": False,
+            "rows_tested": int(len(frame)),
+            "score": 0.0,
+            "rate_representation": None,
+            "median_relative_error": None,
+        }
+
+    alternatives: list[tuple[float, float, int]] = []
+    for divisor in (100, 1):
+        predicted = frame["base"] * frame["rate"] / divisor
+        absolute_error = (predicted - frame["value"]).abs()
+        scale = pd.concat([predicted.abs(), frame["value"].abs()], axis=1).max(axis=1)
+        relative_error = absolute_error / scale.clip(lower=0.02)
+        within_tolerance = (absolute_error <= 0.02) | (relative_error <= 0.02)
+        alternatives.append(
+            (
+                float(within_tolerance.mean()),
+                float(relative_error.median()),
+                divisor,
+            )
+        )
+
+    score, median_error, divisor = max(
+        alternatives, key=lambda item: (item[0], -item[1])
+    )
+    return {
+        "available": True,
+        "rows_tested": int(len(frame)),
+        "score": round(score, 4),
+        "rate_representation": "percent" if divisor == 100 else "decimal",
+        "median_relative_error": round(median_error, 4),
+    }
+
+
+def tax_calculation_scope(value: object) -> tuple[str, tuple[str, ...]] | None:
+    """Return a tax family and reusable qualifiers for calculation fields."""
+    families = header_tax_families(value)
+    if len(families) != 1:
+        return None
+    tokens = set(normalize_header(value).split())
+    qualifiers = tuple(
+        qualifier
+        for qualifier in ("st", "icop", "dif", "diferencial")
+        if qualifier in tokens
+    )
+    return next(iter(families)), qualifiers
+
+
+def line_calculation_role(value: object) -> str | None:
+    """Identify the conservative quantity * unit-price = line-value trio."""
+    tokens = semantic_header_signature(value)
+    normalized = normalize_header(value)
+    if {"quantidade", "quantity", "qtd"} & set(normalized.split()):
+        return "quantity"
+    if "preco" in tokens:
+        return "unit_price"
+    if (
+        {"item", "linha"} & tokens
+        and "valor" in tokens
+        and "total" in tokens
+    ):
+        return "line_value"
+    return None
+
+
+def line_calculation_evidence(
+    quantity: pd.Series,
+    unit_price: pd.Series,
+    line_value: pd.Series,
+    *,
+    minimum_rows: int = 5,
+) -> dict[str, object]:
+    """Score quantity * unit price ~= line value with fiscal-report tolerance."""
+    frame = pd.concat(
+        [
+            numeric_series(quantity).rename("quantity"),
+            numeric_series(unit_price).rename("unit_price"),
+            numeric_series(line_value).rename("line_value"),
+        ],
+        axis=1,
+    ).replace([np.inf, -np.inf], np.nan)
+    frame = frame.dropna()
+    frame = frame[
+        (frame["quantity"].abs() > 1e-12)
+        & (
+            (frame["unit_price"].abs() > 1e-12)
+            | (frame["line_value"].abs() > 0.02)
+        )
+    ]
+    if len(frame) < minimum_rows:
+        return {
+            "available": False,
+            "rows_tested": int(len(frame)),
+            "score": 0.0,
+            "median_relative_error": None,
+        }
+    predicted = frame["quantity"] * frame["unit_price"]
+    absolute_error = (predicted - frame["line_value"]).abs()
+    scale = pd.concat([predicted.abs(), frame["line_value"].abs()], axis=1).max(axis=1)
+    relative_error = absolute_error / scale.clip(lower=0.02)
+    within_tolerance = (absolute_error <= 0.02) | (relative_error <= 0.03)
+    return {
+        "available": True,
+        "rows_tested": int(len(frame)),
+        "score": round(float(within_tolerance.mean()), 4),
+        "median_relative_error": round(float(relative_error.median()), 4),
+    }
+
+
+class HeaderScorer(Protocol):
+    def scores(self, model_headers: Sequence[str], client_headers: Sequence[str]) -> np.ndarray:
+        """Return a matrix with shape (model headers, client headers)."""
+
+
+class LexicalHeaderScorer:
+    """Offline scorer used for tests and local dry runs."""
+
+    def scores(self, model_headers: Sequence[str], client_headers: Sequence[str]) -> np.ndarray:
+        matrix = np.zeros((len(model_headers), len(client_headers)), dtype=float)
+        for i, target in enumerate(model_headers):
+            left = normalize_header(target)
+            left_tokens = semantic_header_signature(target)
+            for j, source in enumerate(client_headers):
+                right = normalize_header(source)
+                if left and left == right:
+                    matrix[i, j] = 1.0
+                    continue
+                right_tokens = semantic_header_signature(source)
+                union = left_tokens | right_tokens
+                jaccard = len(left_tokens & right_tokens) / len(union) if union else 0.0
+                sequence = SequenceMatcher(None, left, right).ratio()
+                matrix[i, j] = 0.7 * sequence + 0.3 * jaccard
+                if left and semantically_equivalent_headers(target, source):
+                    matrix[i, j] = max(matrix[i, j], SEMANTIC_EQUIVALENCE_SCORE)
+        return matrix
+
+
+class OpenAIEmbeddingHeaderScorer:
+    def __init__(
+        self,
+        client: OpenAI,
+        model: str = DEFAULT_EMBEDDING_MODEL,
+        batch_size: int = 512,
+    ) -> None:
+        self.client = client
+        self.model = model
+        self.batch_size = batch_size
+
+    def _embeddings(self, headers: Sequence[str]) -> np.ndarray:
+        unique_headers = list(dict.fromkeys(headers))
+        vectors: dict[str, list[float]] = {}
+        for start in range(0, len(unique_headers), self.batch_size):
+            batch = unique_headers[start : start + self.batch_size]
+            response = self.client.embeddings.create(
+                model=self.model,
+                input=[f"Brazilian invoice spreadsheet column: {header}" for header in batch],
+                encoding_format="float",
+            )
+            for header, item in zip(batch, response.data, strict=True):
+                vectors[header] = item.embedding
+        return np.asarray([vectors[header] for header in headers], dtype=float)
+
+    def scores(self, model_headers: Sequence[str], client_headers: Sequence[str]) -> np.ndarray:
+        model_vectors = self._embeddings(model_headers)
+        client_vectors = self._embeddings(client_headers)
+        model_norms = np.linalg.norm(model_vectors, axis=1, keepdims=True)
+        client_norms = np.linalg.norm(client_vectors, axis=1, keepdims=True)
+        if np.any(model_norms == 0) or np.any(client_norms == 0):
+            raise ValueError("OpenAI returned a zero-length embedding")
+        similarities = (model_vectors / model_norms) @ (client_vectors / client_norms).T
+        similarities = np.clip(similarities, 0.0, 1.0)
+
+        # Reusable translated, abbreviated, or reordered terms can strengthen the
+        # embedding score, but do not receive a fabricated probability of 1.0.
+        for i, target in enumerate(model_headers):
+            for j, source in enumerate(client_headers):
+                if normalize_header(target) == normalize_header(source):
+                    similarities[i, j] = 1.0
+                elif semantically_equivalent_headers(target, source):
+                    similarities[i, j] = max(
+                        similarities[i, j], SEMANTIC_EQUIVALENCE_SCORE
+                    )
+        return similarities
+
+
+class DataMappingDecision(BaseModel):
+    client_column_id: str | None = Field(
+        description="One candidate client_column_id, or null when none is compatible."
+    )
+    data_confidence: float = Field(ge=0.0, le=1.0)
+    final_confidence: float = Field(ge=0.0, le=1.0)
+    reason: str = Field(description="Short explanation grounded in names and sample values.")
+
+
+class DataResolver(Protocol):
+    def resolve(
+        self,
+        model_column: ColumnRef,
+        model_values: pd.Series,
+        candidates: Sequence[tuple[ColumnRef, pd.Series, float]],
+        sample_size: int,
+        relationship_evidence: dict[str, list[dict[str, object]]] | None = None,
+        catalog_evidence: dict[str, list[dict[str, object]]] | None = None,
+    ) -> DataMappingDecision:
+        """Resolve one low-confidence model column against client candidates."""
+
+
+class OpenAIDataResolver:
+    def __init__(self, client: OpenAI, model: str = DEFAULT_LLM_MODEL) -> None:
+        self.client = client
+        self.model = model
+
+    def resolve(
+        self,
+        model_column: ColumnRef,
+        model_values: pd.Series,
+        candidates: Sequence[tuple[ColumnRef, pd.Series, float]],
+        sample_size: int,
+        relationship_evidence: dict[str, list[dict[str, object]]] | None = None,
+        catalog_evidence: dict[str, list[dict[str, object]]] | None = None,
+    ) -> DataMappingDecision:
+        target_profile = summarize_values(model_values, sample_size)
+        candidate_profiles = {
+            column.id: summarize_values(values, sample_size)
+            for column, values, _ in candidates
+        }
+        payload = {
+            "model_column": {
+                "name": model_column.name,
+                "profile": target_profile,
+            },
+            "client_candidates": [
+                {
+                    "client_column_id": column.id,
+                    "name": column.name,
+                    "column_number": column.index + 1,
+                    "name_confidence": round(name_confidence, 4),
+                    "semantic_header_conflict": semantic_header_conflict(
+                        model_column.name, column.name
+                    ),
+                    "profile_similarity": profile_similarity(
+                        target_profile, candidate_profiles[column.id]
+                    ),
+                    "distinctive_sample_overlap": distinctive_sample_overlap(
+                        target_profile, candidate_profiles[column.id]
+                    ),
+                    "relationship_evidence": (relationship_evidence or {}).get(
+                        column.id, []
+                    ),
+                    "catalog_evidence": (catalog_evidence or {}).get(column.id, []),
+                    "profile": candidate_profiles[column.id],
+                }
+                for column, values, name_confidence in candidates
+            ],
+        }
+        response = self.client.responses.parse(
+            model=self.model,
+            store=False,
+            instructions=(
+                "Map one client spreadsheet column to one canonical Brazilian invoice column. "
+                "The column names and name_confidence remain the primary semantic evidence throughout "
+                "the decision; compare how close the candidate name scores are and never forget them "
+                "after inspecting values. A client header can be bogus or misleading, so distinctive "
+                "content and format evidence may override a weak name; generic numeric similarity "
+                "alone is not enough. profile_similarity is a generic value-shape retrieval signal, "
+                "not proof of a mapping. Then use representative "
+                "values, inferred "
+                "types, formats, lengths, and numeric scales. Recognize dates, monetary values, "
+                "tax bases, tax rates, tax amounts, CFOP, NCM, CNPJ/CPF, invoice numbers, series, "
+                "and 44-digit NF-e keys. First identify the semantic role of each header: a tax "
+                "situation/code is not a tax base, rate, or amount even when all contain numbers. "
+                "semantic_header_conflict identifies explicit tax-family or role disagreement; "
+                "treat it as strong contrary evidence. A conflicting candidate may remain viable "
+                "only when distinctive row content indicates that its header is bogus or wrong. "
+                "Most canonical fields may be absent from a client export. Do not choose the best "
+                "of bad candidates: return null unless the evidence supports the same business "
+                "meaning. Matching only a broad type, generic numbers, zeros, dates, or strings is "
+                "not semantic evidence. distinctive_sample_overlap reports exact overlap after "
+                "excluding zeros and trivial short numbers; a positive value is strong row "
+                "evidence and should be examined together with the headers. "
+                "relationship_evidence contains conservative row-wise fiscal checks such as tax "
+                "value approximately equaling base times rate, or line value approximately "
+                "equaling quantity times unit price. A high score across many rows is strong "
+                "evidence; a low score is contrary evidence, but legitimate adjustments, "
+                "rounding, exemptions, credits, and reversals mean it is not an absolute rule. "
+                "catalog_evidence reports membership in versioned official Brazilian fiscal-code "
+                "tables. coverage is the fraction of all nonblank values found in the catalog; "
+                "score also discounts short, collision-prone domains such as two-digit CST. High "
+                "coverage in CFOP, NCM, municipality, or cClassTrib is distinctive content evidence. "
+                "CST values overlap across taxes, especially PIS and COFINS, so use the header and "
+                "tax-family context to disambiguate them. all_zero_only is not useful evidence. "
+                "State, municipal, and federal registrations are distinct and cannot be selected "
+                "only because their values have similar shapes. CPF/CNPJ values may contain 11 or "
+                "14 digits, may include punctuation, and spreadsheet numeric cells may lose a "
+                "leading zero. Prefer a candidate that explicitly names the compatible identifier "
+                "over a generic document-number field. When candidates are otherwise close, prefer "
+                "the header with the same semantic role and no unrelated extra qualifier. CFOP may "
+                "appear as four digits (5102) or with an ERP suffix "
+                "(5102/AA); those formats are compatible. Do not choose a candidate merely because "
+                "both are numeric. A profile whose evidence_quality is empty or all_zero provides "
+                "little or no row evidence: zeros neither confirm a mapping nor contradict a strong "
+                "name match. When row evidence is weak, keep final_confidence close to the relevant "
+                "name_confidence. "
+                "Return null when the data does not support a mapping. final_confidence must reflect "
+                "both the name and data evidence. Keep the reason to one sentence."
+            ),
+            input=json.dumps(payload, ensure_ascii=False),
+            text_format=DataMappingDecision,
+        )
+        if response.output_parsed is None:
+            raise RuntimeError("OpenAI returned no parsed mapping decision")
+        decision = response.output_parsed
+        selected = next(
+            (
+                (name_confidence, candidate_profiles[column.id])
+                for column, _, name_confidence in candidates
+                if column.id == decision.client_column_id
+            ),
+            None,
+        )
+        if selected is not None:
+            name_confidence, selected_profile = selected
+            weak_data = (
+                target_profile["evidence_quality"] in {"empty", "all_zero"}
+                or selected_profile["evidence_quality"] in {"empty", "all_zero"}
+            )
+            if weak_data and decision.final_confidence < name_confidence:
+                decision = decision.model_copy(update={"final_confidence": name_confidence})
+        return decision
+
+
+@dataclass
+class MappingResult:
+    model_column_number: int
+    model_column: str
+    client_column_number: int | None
+    client_column: str | None
+    name_confidence: float
+    name_runner_up_confidence: float
+    name_margin: float
+    data_confidence: float | None
+    final_confidence: float
+    method: str
+    status: str
+    reason: str
+    catalog_name: str | None = None
+    catalog_coverage: float | None = None
+    catalog_confidence: float | None = None
+
+
+@dataclass(frozen=True)
+class MapperConfig:
+    name_threshold: float = 0.90
+    name_margin_threshold: float = 0.05
+    final_threshold: float = 0.90
+    candidate_count: int = 10
+    sample_size: int = 8
+
+
+def _accepted_source_index(result: MappingResult) -> int | None:
+    if result.status != "accepted" or result.client_column_number is None:
+        return None
+    return result.client_column_number - 1
+
+
+def _accepted_tax_anchors(
+    model_table: SheetTable,
+    results: dict[int, MappingResult],
+    scope: tuple[str, tuple[str, ...]],
+    *,
+    exclude_target: int | None = None,
+) -> dict[str, int]:
+    anchors: dict[str, int] = {}
+    for target_index, result in results.items():
+        if target_index == exclude_target:
+            continue
+        model_column = model_table.columns[target_index]
+        role = header_semantic_role(model_column.name)
+        if (
+            role not in {"base", "rate", "value"}
+            or tax_calculation_scope(model_column.name) != scope
+        ):
+            continue
+        source_index = _accepted_source_index(result)
+        if source_index is not None:
+            anchors.setdefault(role, source_index)
+    return anchors
+
+
+def _accepted_line_anchors(
+    model_table: SheetTable,
+    results: dict[int, MappingResult],
+    *,
+    exclude_target: int | None = None,
+) -> dict[str, int]:
+    anchors: dict[str, int] = {}
+    for target_index, result in results.items():
+        if target_index == exclude_target:
+            continue
+        role = line_calculation_role(model_table.columns[target_index].name)
+        if role is None:
+            continue
+        source_index = _accepted_source_index(result)
+        if source_index is not None:
+            anchors.setdefault(role, source_index)
+    return anchors
+
+
+def _candidate_relationship_evidence(
+    *,
+    target_index: int,
+    candidate_indices: set[int],
+    model_table: SheetTable,
+    client_table: SheetTable,
+    results: dict[int, MappingResult],
+    numeric_client_series: dict[int, pd.Series] | None = None,
+) -> dict[int, list[dict[str, object]]]:
+    """Evaluate reusable row relationships against already accepted anchors."""
+    evidence: dict[int, list[dict[str, object]]] = {
+        index: [] for index in candidate_indices
+    }
+    model_column = model_table.columns[target_index]
+
+    def client_values(index: int) -> pd.Series:
+        if numeric_client_series is not None:
+            return numeric_client_series[index]
+        return client_table.series(client_table.columns[index])
+
+    tax_role = header_semantic_role(model_column.name)
+    tax_scope = tax_calculation_scope(model_column.name)
+    if tax_role in {"base", "rate", "value"} and tax_scope is not None:
+        anchors = _accepted_tax_anchors(
+            model_table, results, tax_scope, exclude_target=target_index
+        )
+        other_roles = {"base", "rate", "value"} - {tax_role}
+        if other_roles <= anchors.keys():
+            for candidate_index in candidate_indices:
+                role_sources = dict(anchors)
+                role_sources[tax_role] = candidate_index
+                relationship = tax_calculation_evidence(
+                    client_values(role_sources["base"]),
+                    client_values(role_sources["rate"]),
+                    client_values(role_sources["value"]),
+                )
+                relationship.update(
+                    {
+                        "rule": "tax_value_equals_base_times_rate",
+                        "target_role": tax_role,
+                        "tax_scope": tax_scope[0],
+                        "tax_qualifiers": list(tax_scope[1]),
+                    }
+                )
+                evidence[candidate_index].append(relationship)
+
+    line_role = line_calculation_role(model_column.name)
+    if line_role is not None:
+        anchors = _accepted_line_anchors(
+            model_table, results, exclude_target=target_index
+        )
+        other_roles = {"quantity", "unit_price", "line_value"} - {line_role}
+        if other_roles <= anchors.keys():
+            for candidate_index in candidate_indices:
+                role_sources = dict(anchors)
+                role_sources[line_role] = candidate_index
+                relationship = line_calculation_evidence(
+                    client_values(role_sources["quantity"]),
+                    client_values(role_sources["unit_price"]),
+                    client_values(role_sources["line_value"]),
+                )
+                relationship.update(
+                    {
+                        "rule": "line_value_equals_quantity_times_unit_price",
+                        "target_role": line_role,
+                    }
+                )
+                evidence[candidate_index].append(relationship)
+
+    return {index: rules for index, rules in evidence.items() if rules}
+
+
+def _relationship_score(rules: Sequence[dict[str, object]]) -> float:
+    return max(
+        (
+            float(rule["score"])
+            for rule in rules
+            if bool(rule.get("available"))
+        ),
+        default=0.0,
+    )
+
+
+def _catalog_score(evidence: Sequence[dict[str, object]]) -> float:
+    best = best_catalog_evidence(evidence)
+    return float(best["score"]) if best is not None else 0.0
+
+
+def _candidate_catalog_evidence(
+    *,
+    target_index: int,
+    candidate_indices: set[int],
+    model_table: SheetTable,
+    client_table: SheetTable,
+    reference_catalogs: ReferenceCatalogs | None,
+    analysis_cache: dict[tuple[str, int], dict[str, object]],
+) -> dict[int, list[dict[str, object]]]:
+    if reference_catalogs is None:
+        return {}
+    catalog_names = [
+        name
+        for name in expected_catalogs(model_table.columns[target_index].name)
+        if name in reference_catalogs.catalogs
+    ]
+    evidence: dict[int, list[dict[str, object]]] = {}
+    for index in candidate_indices:
+        matches = []
+        for name in catalog_names:
+            key = name, index
+            if key not in analysis_cache:
+                analysis_cache[key] = reference_catalogs.analyze(
+                    client_table.series(client_table.columns[index]), name
+                )
+            matches.append(analysis_cache[key])
+        evidence[index] = matches
+    return {index: matches for index, matches in evidence.items() if matches}
+
+
+def _unique_distinctive_catalog_decision(
+    *,
+    candidates: Sequence[tuple[ColumnRef, pd.Series, float]],
+    catalog_evidence: dict[int, list[dict[str, object]]],
+    minimum_score: float = 0.90,
+    minimum_lead: float = 0.10,
+) -> DataMappingDecision | None:
+    """Resolve only distinctive, high-coverage official-code domains locally."""
+    ranked: list[tuple[float, float, ColumnRef, dict[str, object]]] = []
+    for column, _, name_score in candidates:
+        best = best_catalog_evidence(catalog_evidence.get(column.index, []))
+        if best is None:
+            continue
+        if (
+            float(best["specificity"]) < 0.90
+            or int(best["nonempty_count"]) < 5
+            or float(best["format_fraction"]) < 0.90
+            or float(best["coverage"]) < 0.90
+            or bool(best["all_zero_only"])
+        ):
+            continue
+        ranked.append((float(best["score"]), name_score, column, best))
+    ranked.sort(key=lambda item: (-item[0], -item[1], item[2].index))
+    if not ranked or ranked[0][0] < minimum_score:
+        return None
+    runner_up = ranked[1][0] if len(ranked) > 1 else 0.0
+    catalog_score, name_score, column, evidence = ranked[0]
+    if catalog_score - runner_up < minimum_lead:
+        return None
+    final_confidence = max(0.80, 0.35 * name_score + 0.65 * catalog_score)
+    return DataMappingDecision(
+        client_column_id=column.id,
+        data_confidence=round(catalog_score, 4),
+        final_confidence=round(final_confidence, 4),
+        reason=(
+            f"Versioned official {evidence['catalog']} codes cover "
+            f"{float(evidence['coverage']):.1%} of nonblank values and uniquely "
+            "identify this candidate among the available columns."
+        ),
+    )
+
+
+def _demote_inconsistent_tax_header_matches(
+    *,
+    model_table: SheetTable,
+    client_table: SheetTable,
+    similarities: np.ndarray,
+    results: dict[int, MappingResult],
+    available: set[int],
+    low_confidence_targets: list[int],
+    numeric_client_series: dict[int, pd.Series],
+    minimum_relationship_score: float = 0.90,
+) -> None:
+    """Reopen one clear tax-trio outlier when an informative alternative fits."""
+    scopes = {
+        scope
+        for column in model_table.columns
+        if (scope := tax_calculation_scope(column.name)) is not None
+    }
+    for scope in sorted(scopes):
+        anchors = _accepted_tax_anchors(model_table, results, scope)
+        if {"base", "rate", "value"} - anchors.keys():
+            continue
+
+        current = tax_calculation_evidence(
+            numeric_client_series[anchors["base"]],
+            numeric_client_series[anchors["rate"]],
+            numeric_client_series[anchors["value"]],
+        )
+        if bool(current["available"]) and float(current["score"]) >= minimum_relationship_score:
+            continue
+
+        role_targets = {
+            header_semantic_role(model_table.columns[index].name): index
+            for index, result in results.items()
+            if result.status == "accepted"
+            and tax_calculation_scope(model_table.columns[index].name) == scope
+            and header_semantic_role(model_table.columns[index].name)
+            in {"base", "rate", "value"}
+        }
+        alternatives: list[tuple[float, float, str, int, int]] = []
+        for role, target_index in role_targets.items():
+            current_source = anchors[role]
+            current_rules = _candidate_relationship_evidence(
+                target_index=target_index,
+                candidate_indices={current_source},
+                model_table=model_table,
+                client_table=client_table,
+                results=results,
+                numeric_client_series=numeric_client_series,
+            ).get(current_source, [])
+            current_score = _relationship_score(current_rules)
+            candidates = available | {current_source}
+            candidate_rules = _candidate_relationship_evidence(
+                target_index=target_index,
+                candidate_indices=candidates,
+                model_table=model_table,
+                client_table=client_table,
+                results=results,
+                numeric_client_series=numeric_client_series,
+            )
+            for candidate_index, rules in candidate_rules.items():
+                if candidate_index == current_source:
+                    continue
+                candidate_profile = summarize_values(
+                    client_table.series(client_table.columns[candidate_index]), 8
+                )
+                if candidate_profile["evidence_quality"] != "informative":
+                    continue
+                relationship_score = _relationship_score(rules)
+                if relationship_score < minimum_relationship_score:
+                    continue
+                name_score = float(similarities[target_index, candidate_index])
+                alternatives.append(
+                    (
+                        relationship_score - current_score,
+                        name_score,
+                        role,
+                        target_index,
+                        candidate_index,
+                    )
+                )
+
+        if not alternatives:
+            continue
+        improvement, _, _, target_index, _ = max(alternatives)
+        if improvement < 0.50:
+            continue
+        current_source = _accepted_source_index(results[target_index])
+        if current_source is None:
+            continue
+        available.add(current_source)
+        del results[target_index]
+        if target_index not in low_confidence_targets:
+            low_confidence_targets.append(target_index)
+
+
+def _rank_available(
+    target_index: int,
+    similarities: np.ndarray,
+    available: set[int],
+    limit: int,
+) -> list[tuple[int, float]]:
+    ranked = sorted(
+        ((index, float(similarities[target_index, index])) for index in available),
+        key=lambda item: (-item[1], item[0]),
+    )
+    return ranked[:limit]
+
+
+def _rank_header_compatible(
+    target_index: int,
+    similarities: np.ndarray,
+    available: set[int],
+    model_column: ColumnRef,
+    client_columns: Sequence[ColumnRef],
+    limit: int,
+) -> list[tuple[int, float]]:
+    """Prefer explicit semantic compatibility during header-only matching.
+
+    Conflicting headers still enter the row-data pass, where distinctive content
+    can demonstrate that a client header is bogus. They are not valid runner-ups
+    for automatic header-only acceptance.
+    """
+    ranked = _rank_available(target_index, similarities, available, len(available))
+    compatible = [
+        item
+        for item in ranked
+        if semantic_header_conflict(
+            model_column.name, client_columns[item[0]].name
+        )
+        is None
+    ]
+    return (compatible or ranked)[:limit]
+
+
+def _rank_name_and_profile_candidates(
+    target_index: int,
+    similarities: np.ndarray,
+    available: set[int],
+    target_profile: dict[str, object],
+    client_profiles: dict[int, dict[str, object]],
+    limit: int,
+    relationship_evidence: dict[int, list[dict[str, object]]] | None = None,
+    catalog_evidence: dict[int, list[dict[str, object]]] | None = None,
+) -> list[tuple[int, float]]:
+    """Union the strongest header, row-shape, relationship, and catalog candidates."""
+    name_ranked = _rank_available(target_index, similarities, available, limit)
+    profile_ranked = sorted(
+        (
+            (index, profile_similarity(target_profile, client_profiles[index]))
+            for index in available
+        ),
+        key=lambda item: (-item[1], item[0]),
+    )
+    profile_ranked = [item for item in profile_ranked if item[1] > 0.0][:limit]
+    candidate_indices = {index for index, _ in name_ranked}
+    candidate_indices.update(index for index, _ in profile_ranked)
+    relationship_ranked = sorted(
+        (
+            (index, _relationship_score(rules))
+            for index, rules in (relationship_evidence or {}).items()
+            if index in available
+        ),
+        key=lambda item: (-item[1], item[0]),
+    )
+    candidate_indices.update(
+        index for index, score in relationship_ranked[:limit] if score > 0.0
+    )
+    catalog_ranked = sorted(
+        (
+            (index, _catalog_score(matches))
+            for index, matches in (catalog_evidence or {}).items()
+            if index in available
+        ),
+        key=lambda item: (-item[1], item[0]),
+    )
+    candidate_indices.update(
+        index for index, score in catalog_ranked[:limit] if score > 0.0
+    )
+    return sorted(
+        (
+            (index, float(similarities[target_index, index]))
+            for index in candidate_indices
+        ),
+        key=lambda item: (-item[1], item[0]),
+    )
+
+
+def _name_score_context(
+    ranked: Sequence[tuple[int, float]],
+    chosen_index: int | None = None,
+) -> tuple[float, float, float]:
+    """Return selected score, strongest alternative, and the gap between them."""
+    if not ranked:
+        return 0.0, 0.0, 0.0
+    if chosen_index is None:
+        chosen_index = ranked[0][0]
+    chosen_score = next(score for index, score in ranked if index == chosen_index)
+    runner_up = max(
+        (score for index, score in ranked if index != chosen_index),
+        default=0.0,
+    )
+    return chosen_score, runner_up, chosen_score - runner_up
+
+
+def _review_proposal_is_supported(
+    *,
+    name_confidence: float,
+    data_confidence: float,
+    final_confidence: float,
+    header_conflict: str | None,
+    target_profile: dict[str, object],
+    selected_profile: dict[str, object],
+    relationship_score: float,
+    catalog_score: float,
+    catalog_coverage: float,
+    config: MapperConfig,
+) -> bool:
+    """Reject forced fallbacks while retaining plausible review candidates."""
+    near_name_threshold = max(
+        0.0, config.name_threshold - config.name_margin_threshold
+    )
+    weak_name_threshold = max(
+        0.0, config.name_threshold - 2 * config.name_margin_threshold
+    )
+    rows_are_informative = (
+        target_profile["evidence_quality"] == "informative"
+        and selected_profile["evidence_quality"] == "informative"
+    )
+    distinctive_rows = distinctive_profile_match(target_profile, selected_profile)
+    relationship_is_strong = relationship_score >= config.final_threshold
+    distinctive_catalog = (
+        catalog_score >= config.final_threshold and catalog_coverage >= 0.90
+    )
+
+    if header_conflict is not None:
+        return bool(
+            (distinctive_rows or relationship_is_strong)
+            and data_confidence >= config.final_threshold
+            and final_confidence >= config.final_threshold
+        ) or bool(
+            distinctive_catalog
+            and data_confidence >= config.final_threshold
+            and final_confidence
+            >= max(0.0, config.final_threshold - 2 * config.name_margin_threshold)
+        )
+    if name_confidence >= near_name_threshold:
+        return True
+    return bool(
+        rows_are_informative
+        and name_confidence >= weak_name_threshold
+        and data_confidence >= near_name_threshold
+        and final_confidence >= weak_name_threshold
+    ) or bool(
+        (distinctive_rows or relationship_is_strong or distinctive_catalog)
+        and data_confidence >= near_name_threshold
+        and final_confidence >= weak_name_threshold
+    )
+
+
+def map_columns(
+    model_table: SheetTable,
+    client_table: SheetTable,
+    header_scorer: HeaderScorer,
+    data_resolver: DataResolver | None,
+    config: MapperConfig = MapperConfig(),
+    reference_catalogs: ReferenceCatalogs | None = None,
+) -> list[MappingResult]:
+    if not client_table.columns:
+        raise ValueError("Client spreadsheet has no columns")
+
+    similarities = header_scorer.scores(
+        [column.name for column in model_table.columns],
+        [column.name for column in client_table.columns],
+    )
+    expected_shape = (len(model_table.columns), len(client_table.columns))
+    if similarities.shape != expected_shape:
+        raise ValueError(f"Header scorer returned {similarities.shape}, expected {expected_shape}")
+
+    available = set(range(len(client_table.columns)))
+    results: dict[int, MappingResult] = {}
+    low_confidence_targets: list[int] = []
+
+    # Pass 1: walk model columns from left to right using names only.
+    for target_index, model_column in enumerate(model_table.columns):
+        ranked = _rank_header_compatible(
+            target_index,
+            similarities,
+            available,
+            model_column,
+            client_table.columns,
+            2,
+        )
+        if not ranked:
+            results[target_index] = MappingResult(
+                model_column_number=model_column.index + 1,
+                model_column=model_column.name,
+                client_column_number=None,
+                client_column=None,
+                name_confidence=0.0,
+                name_runner_up_confidence=0.0,
+                name_margin=0.0,
+                data_confidence=None,
+                final_confidence=0.0,
+                method="name",
+                status="no_match",
+                reason="No unused client columns remain.",
+            )
+            continue
+
+        client_index, name_confidence = ranked[0]
+        _, runner_up_confidence, name_margin = _name_score_context(ranked)
+        client_column = client_table.columns[client_index]
+        header_conflict = semantic_header_conflict(
+            model_column.name, client_column.name
+        )
+        if (
+            name_confidence >= config.name_threshold
+            and name_margin >= config.name_margin_threshold
+            and header_conflict is None
+        ):
+            results[target_index] = MappingResult(
+                model_column_number=model_column.index + 1,
+                model_column=model_column.name,
+                client_column_number=client_column.index + 1,
+                client_column=client_column.display_name,
+                name_confidence=round(name_confidence, 4),
+                name_runner_up_confidence=round(runner_up_confidence, 4),
+                name_margin=round(name_margin, 4),
+                data_confidence=None,
+                final_confidence=round(name_confidence, 4),
+                method="name",
+                status="accepted",
+                reason="Accepted from header similarity with a clear lead over the runner-up.",
+            )
+            available.remove(client_index)
+        else:
+            low_confidence_targets.append(target_index)
+
+    numeric_client_series = {
+        index: numeric_series(client_table.series(column))
+        for index, column in enumerate(client_table.columns)
+    }
+    _demote_inconsistent_tax_header_matches(
+        model_table=model_table,
+        client_table=client_table,
+        similarities=similarities,
+        results=results,
+        available=available,
+        low_confidence_targets=low_confidence_targets,
+        numeric_client_series=numeric_client_series,
+    )
+    low_confidence_targets.sort()
+
+    client_profiles = (
+        {
+            index: summarize_values(
+                client_table.series(client_table.columns[index]), config.sample_size
+            )
+            for index in range(len(client_table.columns))
+        }
+        if data_resolver is not None
+        else {}
+    )
+    catalog_analysis_cache: dict[tuple[str, int], dict[str, object]] = {}
+
+    # Pass 2: revisit only low-confidence model columns using names and row profiles.
+    for target_index in low_confidence_targets:
+        model_column = model_table.columns[target_index]
+        target_profile = summarize_values(
+            model_table.series(model_column), config.sample_size
+        )
+        candidate_relationships = (
+            _candidate_relationship_evidence(
+                target_index=target_index,
+                candidate_indices=available,
+                model_table=model_table,
+                client_table=client_table,
+                results=results,
+                numeric_client_series=numeric_client_series,
+            )
+            if data_resolver is not None
+            else {}
+        )
+        candidate_catalogs = _candidate_catalog_evidence(
+            target_index=target_index,
+            candidate_indices=available,
+            model_table=model_table,
+            client_table=client_table,
+            reference_catalogs=reference_catalogs,
+            analysis_cache=catalog_analysis_cache,
+        )
+        if data_resolver is None:
+            ranked = _rank_available(
+                target_index,
+                similarities,
+                available,
+                config.candidate_count,
+            )
+        else:
+            ranked = _rank_name_and_profile_candidates(
+                target_index,
+                similarities,
+                available,
+                target_profile,
+                client_profiles,
+                config.candidate_count,
+                candidate_relationships,
+                candidate_catalogs,
+            )
+        if not ranked:
+            results[target_index] = MappingResult(
+                model_column_number=model_column.index + 1,
+                model_column=model_column.name,
+                client_column_number=None,
+                client_column=None,
+                name_confidence=0.0,
+                name_runner_up_confidence=0.0,
+                name_margin=0.0,
+                data_confidence=None,
+                final_confidence=0.0,
+                method="data",
+                status="no_match",
+                reason="No unused client columns remain.",
+            )
+            continue
+
+        compatible_ranked = [
+            item
+            for item in ranked
+            if semantic_header_conflict(
+                model_column.name, client_table.columns[item[0]].name
+            )
+            is None
+        ]
+        fallback_ranked = compatible_ranked or ranked
+        best_client_index, best_name_confidence = fallback_ranked[0]
+        _, best_runner_up_confidence, best_name_margin = _name_score_context(
+            fallback_ranked
+        )
+        best_client = client_table.columns[best_client_index]
+        if data_resolver is None:
+            results[target_index] = MappingResult(
+                model_column_number=model_column.index + 1,
+                model_column=model_column.name,
+                client_column_number=best_client.index + 1,
+                client_column=best_client.display_name,
+                name_confidence=round(best_name_confidence, 4),
+                name_runner_up_confidence=round(best_runner_up_confidence, 4),
+                name_margin=round(best_name_margin, 4),
+                data_confidence=None,
+                final_confidence=round(best_name_confidence, 4),
+                method="name_only",
+                status="review",
+                reason="Header score or runner-up margin was insufficient; data comparison was disabled.",
+            )
+            continue
+
+        candidates = [
+            (
+                client_table.columns[client_index],
+                client_table.series(client_table.columns[client_index]),
+                name_confidence,
+            )
+            for client_index, name_confidence in ranked
+        ]
+        catalog_decision = _unique_distinctive_catalog_decision(
+            candidates=candidates,
+            catalog_evidence=candidate_catalogs,
+        )
+        decision_method = "catalog" if catalog_decision is not None else "data"
+        try:
+            decision = catalog_decision or data_resolver.resolve(
+                model_column=model_column,
+                model_values=model_table.series(model_column),
+                candidates=candidates,
+                sample_size=config.sample_size,
+                relationship_evidence={
+                    client_table.columns[index].id: rules
+                    for index, rules in candidate_relationships.items()
+                    if any(column.index == index for column, _, _ in candidates)
+                },
+                catalog_evidence={
+                    client_table.columns[index].id: matches
+                    for index, matches in candidate_catalogs.items()
+                    if any(column.index == index for column, _, _ in candidates)
+                },
+            )
+        except Exception as exc:  # Continue the report even if one API decision fails.
+            results[target_index] = MappingResult(
+                model_column_number=model_column.index + 1,
+                model_column=model_column.name,
+                client_column_number=best_client.index + 1,
+                client_column=best_client.display_name,
+                name_confidence=round(best_name_confidence, 4),
+                name_runner_up_confidence=round(best_runner_up_confidence, 4),
+                name_margin=round(best_name_margin, 4),
+                data_confidence=None,
+                final_confidence=round(best_name_confidence, 4),
+                method="data_error",
+                status="review",
+                reason=f"Data comparison failed: {type(exc).__name__}: {exc}",
+            )
+            continue
+
+        candidate_by_id = {column.id: column for column, _, _ in candidates}
+        candidate_name_scores = {
+            column.index: name_confidence
+            for column, _, name_confidence in candidates
+        }
+        chosen = candidate_by_id.get(decision.client_column_id or "")
+        relationship_is_unique = False
+        relationship_ranked = sorted(
+            (
+                (
+                    _relationship_score(candidate_relationships.get(column.index, [])),
+                    candidate_name_scores[column.index],
+                    column,
+                )
+                for column, _, _ in candidates
+                if semantic_header_conflict(model_column.name, column.name) is None
+            ),
+            key=lambda item: (-item[0], -item[1], item[2].index),
+        )
+        if relationship_ranked:
+            best_relationship_score, relational_name_score, relational_column = (
+                relationship_ranked[0]
+            )
+            second_relationship_score = (
+                relationship_ranked[1][0] if len(relationship_ranked) > 1 else 0.0
+            )
+            relationship_is_unique = (
+                best_relationship_score >= config.final_threshold
+                and best_relationship_score - second_relationship_score >= 0.10
+            )
+            chosen_relationship_score = (
+                _relationship_score(candidate_relationships.get(chosen.index, []))
+                if chosen is not None
+                else 0.0
+            )
+            if relationship_is_unique:
+                same_candidate = (
+                    chosen is not None and chosen.index == relational_column.index
+                )
+                chosen = relational_column
+                decision_method = "data"
+                relational_final_confidence = round(
+                    0.4 * relational_name_score + 0.6 * best_relationship_score,
+                    4,
+                )
+                decision = decision.model_copy(
+                    update={
+                        "client_column_id": relational_column.id,
+                        "data_confidence": (
+                            max(decision.data_confidence, best_relationship_score)
+                            if same_candidate
+                            else best_relationship_score
+                        ),
+                        "final_confidence": (
+                            max(decision.final_confidence, relational_final_confidence)
+                            if same_candidate
+                            else relational_final_confidence
+                        ),
+                        "reason": (
+                            "A unique high-coverage fiscal relationship supports this column "
+                            "over alternatives (for example, base times rate reproduces value)."
+                        ),
+                    }
+                )
+        if not relationship_is_unique:
+            overlap_ranked = sorted(
+                (
+                    (
+                        distinctive_sample_overlap(
+                            target_profile, client_profiles[column.index]
+                        ),
+                        candidate_name_scores[column.index],
+                        column,
+                    )
+                    for column, _, _ in candidates
+                ),
+                key=lambda item: (-item[0], -item[1], item[2].index),
+            )
+            best_overlap, overlap_name_score, overlap_column = overlap_ranked[0]
+            second_overlap = overlap_ranked[1][0] if len(overlap_ranked) > 1 else 0.0
+            chosen_overlap = (
+                distinctive_sample_overlap(
+                    target_profile, client_profiles[chosen.index]
+                )
+                if chosen is not None
+                else 0.0
+            )
+            chosen_name_score = (
+                candidate_name_scores[chosen.index] if chosen is not None else 0.0
+            )
+            if (
+                best_overlap > 0.0
+                and best_overlap > second_overlap
+                and best_overlap > chosen_overlap
+                and (
+                    overlap_name_score >= chosen_name_score - 0.10
+                    or best_overlap >= 0.50
+                )
+            ):
+                chosen = overlap_column
+                decision_method = "data"
+                overlap_data_confidence = min(0.99, 0.90 + 0.09 * best_overlap)
+                overlap_final_confidence = max(
+                    0.80,
+                    0.35 * overlap_name_score + 0.65 * overlap_data_confidence,
+                )
+                if best_overlap >= 0.50:
+                    overlap_final_confidence = max(
+                        0.90, overlap_final_confidence
+                    )
+                decision = decision.model_copy(
+                    update={
+                        "client_column_id": overlap_column.id,
+                        "data_confidence": round(overlap_data_confidence, 4),
+                        "final_confidence": round(overlap_final_confidence, 4),
+                        "reason": (
+                            "Distinctive non-zero sample values overlap exactly with this "
+                            "candidate and not with the competing columns."
+                        ),
+                    }
+                )
+
+        # A fiscal equation can also be persuasive when more than one numeric
+        # column happens to fit it. In that case, combine the relationship with
+        # the header score and require a clear lead in the combined score. This
+        # avoids discarding a strong base/rate/value mapping merely because a
+        # broad total column coincidentally produces similar arithmetic.
+        if chosen is not None:
+            selected_relationship_score = _relationship_score(
+                candidate_relationships.get(chosen.index, [])
+            )
+            if selected_relationship_score >= config.final_threshold:
+                joint_ranked = sorted(
+                    (
+                        (
+                            0.4 * candidate_name_scores[column.index]
+                            + 0.6
+                            * _relationship_score(
+                                candidate_relationships.get(column.index, [])
+                            ),
+                            column,
+                        )
+                        for column, _, _ in candidates
+                        if semantic_header_conflict(model_column.name, column.name)
+                        is None
+                    ),
+                    key=lambda item: (-item[0], item[1].index),
+                )
+                selected_joint_score = 0.4 * candidate_name_scores[chosen.index] + 0.6 * (
+                    selected_relationship_score
+                )
+                second_joint_score = max(
+                    (
+                        score
+                        for score, column in joint_ranked
+                        if column.index != chosen.index
+                    ),
+                    default=0.0,
+                )
+                if (
+                    selected_joint_score >= config.final_threshold
+                    and selected_joint_score - second_joint_score
+                    >= config.name_margin_threshold
+                ):
+                    decision = decision.model_copy(
+                        update={
+                            "data_confidence": max(
+                                decision.data_confidence,
+                                selected_relationship_score,
+                            ),
+                            "final_confidence": max(
+                                decision.final_confidence,
+                                round(selected_joint_score, 4),
+                            ),
+                            "reason": (
+                                "The header and a row-wise fiscal relationship jointly "
+                                "support this column with a clear lead over alternatives."
+                            ),
+                        }
+                    )
+        if (
+            chosen is None
+            and decision.data_confidence
+            >= max(
+                0.0,
+                config.final_threshold - 2 * config.name_margin_threshold,
+            )
+            and best_name_confidence
+            >= config.name_threshold - config.name_margin_threshold
+        ):
+            chosen = best_client
+            decision = decision.model_copy(
+                update={
+                    "client_column_id": best_client.id,
+                    "final_confidence": best_name_confidence,
+                    "reason": (
+                        "The resolver found supporting evidence but did not commit to a column; "
+                        "retain the strongest header candidate for review."
+                    ),
+                }
+            )
+        best_profile = client_profiles[best_client_index]
+        best_rows_are_weak = (
+            target_profile["evidence_quality"] in {"empty", "all_zero"}
+            or best_profile["evidence_quality"] in {"empty", "all_zero"}
+        )
+        preserve_best_name = (
+            best_name_confidence
+            >= config.name_threshold - config.name_margin_threshold
+            and best_name_margin >= config.name_margin_threshold
+            and best_rows_are_weak
+        )
+        if preserve_best_name and (
+            chosen is None or chosen.index != best_client_index
+        ) and (
+            chosen is None
+            or _relationship_score(candidate_relationships.get(chosen.index, []))
+            < config.final_threshold
+        ) and (
+            chosen is None
+            or _catalog_score(candidate_catalogs.get(chosen.index, []))
+            < config.final_threshold
+        ):
+            chosen = best_client
+            decision = decision.model_copy(
+                update={
+                    "client_column_id": best_client.id,
+                    "data_confidence": 0.0,
+                    "final_confidence": best_name_confidence,
+                    "reason": (
+                        "The strongest header candidate has weak row evidence; preserve the "
+                        "name-based mapping for review instead of replacing it with a merely "
+                        "similar value shape."
+                    ),
+                }
+            )
+        if chosen is None or decision.final_confidence == 0.0:
+            results[target_index] = MappingResult(
+                model_column_number=model_column.index + 1,
+                model_column=model_column.name,
+                client_column_number=None,
+                client_column=None,
+                name_confidence=round(best_name_confidence, 4),
+                name_runner_up_confidence=round(best_runner_up_confidence, 4),
+                name_margin=round(best_name_margin, 4),
+                data_confidence=round(decision.data_confidence, 4),
+                final_confidence=0.0,
+                method="data",
+                status="no_match",
+                reason=decision.reason,
+            )
+            continue
+
+        final_confidence = round(decision.final_confidence, 4)
+        compatible_ranked = [
+            item
+            for item in ranked
+            if semantic_header_conflict(
+                model_column.name, client_table.columns[item[0]].name
+            )
+            is None
+        ]
+        name_context_ranked = (
+            compatible_ranked
+            if any(index == chosen.index for index, _ in compatible_ranked)
+            else ranked
+        )
+        chosen_name_confidence, runner_up_confidence, name_margin = _name_score_context(
+            name_context_ranked, chosen.index
+        )
+        selected_profile = client_profiles[chosen.index]
+        selected_relationship_score = _relationship_score(
+            candidate_relationships.get(chosen.index, [])
+        )
+        selected_catalog = best_catalog_evidence(
+            candidate_catalogs.get(chosen.index, [])
+        )
+        selected_catalog_score = (
+            float(selected_catalog["score"]) if selected_catalog is not None else 0.0
+        )
+        selected_catalog_coverage = (
+            float(selected_catalog["coverage"])
+            if selected_catalog is not None
+            else 0.0
+        )
+        header_conflict = semantic_header_conflict(
+            model_column.name, chosen.name
+        )
+        name_is_decisive = (
+            chosen_name_confidence >= config.name_threshold
+            and name_margin >= config.name_margin_threshold
+        )
+        rows_are_informative = (
+            target_profile["evidence_quality"] == "informative"
+            and selected_profile["evidence_quality"] == "informative"
+        )
+        data_is_decisive = (
+            decision.data_confidence >= config.final_threshold
+            and (
+                (
+                    rows_are_informative
+                    and (
+                        chosen_name_confidence
+                        >= max(
+                            0.0,
+                            config.name_threshold
+                            - 2 * config.name_margin_threshold,
+                        )
+                        or distinctive_profile_match(
+                            target_profile, selected_profile
+                        )
+                    )
+                )
+                or selected_relationship_score >= config.final_threshold
+                or (
+                    selected_catalog_score >= config.final_threshold
+                    and selected_catalog_coverage >= 0.90
+                )
+            )
+        )
+        accepted = (
+            final_confidence >= config.final_threshold
+            and (name_is_decisive or data_is_decisive)
+            and header_conflict is None
+        )
+        reason = decision.reason
+        review_is_supported = _review_proposal_is_supported(
+            name_confidence=chosen_name_confidence,
+            data_confidence=decision.data_confidence,
+            final_confidence=final_confidence,
+            header_conflict=header_conflict,
+            target_profile=target_profile,
+            selected_profile=selected_profile,
+            relationship_score=selected_relationship_score,
+            catalog_score=selected_catalog_score,
+            catalog_coverage=selected_catalog_coverage,
+            config=config,
+        )
+        if not accepted and not review_is_supported:
+            results[target_index] = MappingResult(
+                model_column_number=model_column.index + 1,
+                model_column=model_column.name,
+                client_column_number=None,
+                client_column=None,
+                name_confidence=round(chosen_name_confidence, 4),
+                name_runner_up_confidence=round(runner_up_confidence, 4),
+                name_margin=round(name_margin, 4),
+                data_confidence=round(decision.data_confidence, 4),
+                final_confidence=0.0,
+                method="data",
+                status="no_match",
+                reason=(
+                    "No candidate had enough combined header and distinctive row evidence; "
+                    "the client export may not contain this model field."
+                ),
+            )
+            continue
+        if header_conflict is not None:
+            reason = (
+                f"Explicit {header_conflict}; keep this proposal for review because the "
+                "row content provides distinctive evidence that the client header may be bogus."
+            )
+        elif final_confidence >= config.final_threshold and not accepted:
+            reason = (
+                "The header match is ambiguous and the row samples are empty or all-zero; "
+                "keep this mapping for review."
+            )
+        results[target_index] = MappingResult(
+            model_column_number=model_column.index + 1,
+            model_column=model_column.name,
+            client_column_number=chosen.index + 1,
+            client_column=chosen.display_name,
+            name_confidence=round(chosen_name_confidence, 4),
+            name_runner_up_confidence=round(runner_up_confidence, 4),
+            name_margin=round(name_margin, 4),
+            data_confidence=round(decision.data_confidence, 4),
+            final_confidence=final_confidence,
+            method=decision_method,
+            status="accepted" if accepted else "review",
+            reason=reason,
+            catalog_name=(
+                str(selected_catalog["catalog"])
+                if selected_catalog is not None
+                else None
+            ),
+            catalog_coverage=(
+                round(selected_catalog_coverage, 4)
+                if selected_catalog is not None
+                else None
+            ),
+            catalog_confidence=(
+                round(selected_catalog_score, 4)
+                if selected_catalog is not None
+                else None
+            ),
+        )
+        if accepted:
+            available.remove(chosen.index)
+
+    return [results[index] for index in range(len(model_table.columns))]
+
+
+def write_results(results: Sequence[MappingResult], output_path: str | Path) -> None:
+    output = Path(output_path)
+    frame = pd.DataFrame([asdict(result) for result in results])
+    for column in REVIEWER_COLUMNS:
+        frame[column] = ""
+    if output.suffix.lower() == ".csv":
+        frame.to_csv(output, index=False)
+    elif output.suffix.lower() == ".xlsx":
+        frame.to_excel(output, index=False)
+    else:
+        raise ValueError("Output must end in .xlsx or .csv")
+
+
+def _sheet_argument(value: str) -> str | int:
+    return int(value) if value.isdigit() else value
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Map client spreadsheet columns to model.xlsx in two passes."
+    )
+    parser.add_argument("client", help="Client .xlsx file")
+    parser.add_argument("--model", default="model.xlsx", help="Canonical model workbook")
+    parser.add_argument("--output", help="Mapping report (.xlsx or .csv)")
+    parser.add_argument("--model-sheet", default="0", help="Model sheet index or name")
+    parser.add_argument("--client-sheet", default="0", help="Client sheet index or name")
+    parser.add_argument("--name-threshold", type=float, default=0.90)
+    parser.add_argument(
+        "--name-margin",
+        type=float,
+        default=0.05,
+        help="Minimum lead over the second-best header candidate for pass-one acceptance",
+    )
+    parser.add_argument("--final-threshold", type=float, default=0.90)
+    parser.add_argument("--candidates", type=int, default=10)
+    parser.add_argument("--sample-size", type=int, default=8)
+    parser.add_argument(
+        "--embedding-model",
+        default=os.getenv("OPENAI_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL),
+    )
+    parser.add_argument("--llm-model", default=os.getenv("OPENAI_MODEL", DEFAULT_LLM_MODEL))
+    parser.add_argument(
+        "--reference-data",
+        default=str(Path(__file__).with_name("reference_data")),
+        help="Directory containing manifest.json and versioned fiscal-code catalogs",
+    )
+    parser.add_argument(
+        "--no-reference-data",
+        action="store_true",
+        help="Disable official fiscal-code catalog evidence",
+    )
+    parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="Use lexical name matching and skip OpenAI data comparison.",
+    )
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    if not 0.0 <= args.name_threshold <= 1.0:
+        raise SystemExit("--name-threshold must be between 0 and 1")
+    if not 0.0 <= args.name_margin <= 1.0:
+        raise SystemExit("--name-margin must be between 0 and 1")
+    if not 0.0 <= args.final_threshold <= 1.0:
+        raise SystemExit("--final-threshold must be between 0 and 1")
+    if args.candidates < 1 or args.sample_size < 1:
+        raise SystemExit("--candidates and --sample-size must be positive")
+
+    model_path = Path(args.model)
+    client_path = Path(args.client)
+    output_path = Path(args.output or f"mapping_{client_path.stem}.xlsx")
+
+    model_table = SheetTable.from_excel(model_path, _sheet_argument(args.model_sheet))
+    client_table = SheetTable.from_excel(client_path, _sheet_argument(args.client_sheet))
+    reference_catalogs: ReferenceCatalogs | None = None
+    if not args.no_reference_data:
+        try:
+            reference_catalogs = ReferenceCatalogs.from_directory(args.reference_data)
+        except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+            raise SystemExit(
+                f"Could not load reference catalogs from {args.reference_data}: {exc}. "
+                "Run update_reference_data.py or use --no-reference-data."
+            ) from exc
+
+    if args.offline:
+        header_scorer: HeaderScorer = LexicalHeaderScorer()
+        data_resolver: DataResolver | None = None
+    else:
+        if not os.getenv("OPENAI_API_KEY"):
+            raise SystemExit(
+                "OPENAI_API_KEY is not set. Export a replacement key or use --offline."
+            )
+        openai_client = OpenAI()
+        header_scorer = OpenAIEmbeddingHeaderScorer(
+            openai_client,
+            model=args.embedding_model,
+        )
+        data_resolver = OpenAIDataResolver(openai_client, model=args.llm_model)
+
+    results = map_columns(
+        model_table=model_table,
+        client_table=client_table,
+        header_scorer=header_scorer,
+        data_resolver=data_resolver,
+        config=MapperConfig(
+            name_threshold=args.name_threshold,
+            name_margin_threshold=args.name_margin,
+            final_threshold=args.final_threshold,
+            candidate_count=args.candidates,
+            sample_size=args.sample_size,
+        ),
+        reference_catalogs=reference_catalogs,
+    )
+    write_results(results, output_path)
+
+    accepted = sum(result.status == "accepted" for result in results)
+    review = sum(result.status == "review" for result in results)
+    no_match = sum(result.status == "no_match" for result in results)
+    print(f"Wrote {output_path}")
+    print(f"accepted={accepted} review={review} no_match={no_match}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

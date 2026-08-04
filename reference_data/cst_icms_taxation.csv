@@ -1,0 +1,12 @@
+code,description,valid_from,valid_to
+00,Tributada integralmente,,
+10,Tributada com cobrança do ICMS por substituição tributária,,
+20,Com redução de base de cálculo,,
+30,Isenta ou não tributada com cobrança do ICMS por substituição tributária,,
+40,Isenta,,
+41,Não tributada,,
+50,Suspensão,,
+51,Diferimento,,
+60,ICMS cobrado anteriormente por substituição tributária,,
+70,Com redução de base e cobrança do ICMS por substituição tributária,,
+90,Outras,,

@@ -1,0 +1,350 @@
+"""Create a model-shaped workbook from a client export and a mapping report."""
+
+from __future__ import annotations
+
+import argparse
+import math
+import sys
+from datetime import time
+from pathlib import Path
+from typing import Sequence
+
+import pandas as pd
+from openpyxl.styles import PatternFill
+from openpyxl.utils import get_column_letter
+
+from invoice_mapper import ColumnRef, SheetTable
+
+
+MAPPING_METADATA = [
+    ("client_column_number", "client_column_number"),
+    ("client_column", "client_column"),
+    ("status", "status"),
+    ("method", "method"),
+    ("name_confidence", "name_confidence"),
+    ("name_runner_up_confidence", "name_runner_up_confidence"),
+    ("name_margin", "name_margin"),
+    ("data_confidence", "data_confidence"),
+    ("catalog_name", "catalog_name"),
+    ("catalog_coverage", "catalog_coverage"),
+    ("catalog_confidence", "catalog_confidence"),
+    ("final_confidence", "final_confidence"),
+    ("reason", "reason"),
+    ("reviewer_status", "reviewer_status"),
+    ("reviewer_note", "reviewer_note"),
+]
+
+CONFIDENCE_ROWS = {
+    "name_confidence",
+    "name_runner_up_confidence",
+    "name_margin",
+    "data_confidence",
+    "catalog_coverage",
+    "catalog_confidence",
+    "final_confidence",
+}
+
+REQUIRED_MAPPING_COLUMNS = {
+    "model_column_number",
+    "model_column",
+    "client_column_number",
+    "client_column",
+    "name_confidence",
+    "name_runner_up_confidence",
+    "name_margin",
+    "data_confidence",
+    "final_confidence",
+    "method",
+    "status",
+    "reason",
+}
+
+REVIEW_STATUSES = {"", "correct", "incorrect", "no_mapping_exists"}
+
+
+def _sheet_argument(value: str) -> str | int:
+    return int(value) if value.isdigit() else value
+
+
+def _clean_text(value: object) -> str:
+    return "" if pd.isna(value) else str(value).strip()
+
+
+def _column_from_number(client: SheetTable, value: object) -> ColumnRef | None:
+    if pd.isna(value) or _clean_text(value) == "":
+        return None
+    number = float(value)
+    if not number.is_integer():
+        raise ValueError(f"Client column number must be an integer, got {value!r}")
+    index = int(number) - 1
+    if index < 0 or index >= len(client.columns):
+        raise ValueError(
+            f"Client column number {int(number)} is outside 1..{len(client.columns)}"
+        )
+    return client.columns[index]
+
+
+def _corrected_column(client: SheetTable, value: object) -> ColumnRef:
+    text = _clean_text(value)
+    if not text:
+        raise ValueError("reviewer_status is incorrect but correct_client_column is blank")
+
+    try:
+        number = float(text)
+    except ValueError:
+        number = math.nan
+    if not math.isnan(number):
+        column = _column_from_number(client, number)
+        if column is None:
+            raise ValueError("Corrected client column cannot be blank")
+        return column
+
+    display_matches = [
+        column for column in client.columns if column.display_name.casefold() == text.casefold()
+    ]
+    if len(display_matches) == 1:
+        return display_matches[0]
+
+    name_matches = [
+        column for column in client.columns if column.name.casefold() == text.casefold()
+    ]
+    if len(name_matches) == 1:
+        return name_matches[0]
+    if len(name_matches) > 1:
+        raise ValueError(
+            f"Corrected header {text!r} is duplicated; use its 1-based column number "
+            "or occurrence display name"
+        )
+    raise ValueError(f"Corrected client column {text!r} was not found")
+
+
+def _ordered_mapping(mapping_path: str | Path, model: SheetTable) -> pd.DataFrame:
+    mapping = pd.read_excel(mapping_path, dtype=object)
+    missing = REQUIRED_MAPPING_COLUMNS - set(mapping.columns)
+    if missing:
+        raise ValueError(f"Mapping report is missing columns: {sorted(missing)}")
+
+    mapping = mapping.copy()
+    mapping["model_column_number"] = pd.to_numeric(
+        mapping["model_column_number"], errors="raise"
+    ).astype(int)
+    if mapping["model_column_number"].duplicated().any():
+        raise ValueError("Mapping report contains duplicate model_column_number values")
+
+    expected_numbers = list(range(1, len(model.columns) + 1))
+    actual_numbers = sorted(mapping["model_column_number"].tolist())
+    if actual_numbers != expected_numbers:
+        raise ValueError(
+            f"Mapping report must contain every model column 1..{len(model.columns)} exactly once"
+        )
+
+    mapping = mapping.set_index("model_column_number").loc[expected_numbers].reset_index()
+    for row, model_column in zip(mapping.to_dict("records"), model.columns, strict=True):
+        if _clean_text(row["model_column"]) != model_column.name:
+            raise ValueError(
+                f"Model column {model_column.index + 1} differs between model and mapping: "
+                f"{model_column.name!r} != {_clean_text(row['model_column'])!r}"
+            )
+
+    for optional in [
+        "catalog_name",
+        "catalog_coverage",
+        "catalog_confidence",
+        "reviewer_status",
+        "correct_client_column",
+        "reviewer_note",
+    ]:
+        if optional not in mapping.columns:
+            mapping[optional] = ""
+    return mapping
+
+
+def _effective_columns(
+    mapping: pd.DataFrame,
+    client: SheetTable,
+    accepted_only: bool,
+) -> list[ColumnRef | None]:
+    selected: list[ColumnRef | None] = []
+    used: set[int] = set()
+
+    for row in mapping.to_dict("records"):
+        reviewer_status = _clean_text(row["reviewer_status"]).casefold()
+        if reviewer_status not in REVIEW_STATUSES:
+            raise ValueError(
+                f"Unknown reviewer_status {row['reviewer_status']!r} for "
+                f"model column {row['model_column']!r}"
+            )
+
+        confirmed = False
+        if reviewer_status == "no_mapping_exists":
+            column = None
+        elif reviewer_status == "incorrect":
+            column = _corrected_column(client, row["correct_client_column"])
+            confirmed = True
+        elif reviewer_status == "correct":
+            column = _column_from_number(client, row["client_column_number"])
+            confirmed = True
+        elif accepted_only and reviewer_status != "correct" and row["status"] != "accepted":
+            column = None
+        else:
+            column = _column_from_number(client, row["client_column_number"])
+            confirmed = row["status"] == "accepted"
+
+        proposed = _column_from_number(client, row["client_column_number"])
+        proposed_name = _clean_text(row["client_column"])
+        if proposed is not None and proposed_name and proposed.display_name != proposed_name:
+            raise ValueError(
+                f"Mapping report does not match the client workbook at column "
+                f"{proposed.index + 1}: {proposed_name!r} != {proposed.display_name!r}"
+            )
+
+        # Unconfirmed review proposals may intentionally reference the same source
+        # column. Only accepted or reviewer-confirmed mappings must be one-to-one.
+        if column is not None and confirmed:
+            if column.index in used:
+                raise ValueError(
+                    f"Client column {column.display_name!r} is mapped more than once after "
+                    "reviewer corrections"
+                )
+            used.add(column.index)
+        selected.append(column)
+    return selected
+
+
+def build_mapped_workbook(
+    client_path: str | Path,
+    mapping_path: str | Path,
+    output_path: str | Path,
+    model_path: str | Path = "model.xlsx",
+    model_sheet: str | int = 0,
+    client_sheet: str | int = 0,
+    accepted_only: bool = True,
+) -> None:
+    """Apply confirmed mappings and write metadata rows followed by client data."""
+    model = SheetTable.from_excel(model_path, model_sheet)
+    client = SheetTable.from_excel(client_path, client_sheet)
+    mapping = _ordered_mapping(mapping_path, model)
+    selected = _effective_columns(mapping, client, accepted_only)
+
+    effective_numbers = [column.index + 1 if column is not None else "" for column in selected]
+    effective_names = [column.display_name if column is not None else "" for column in selected]
+    metadata_overrides = {
+        "client_column_number": effective_numbers,
+        "client_column": effective_names,
+    }
+
+    metadata_rows: list[list[object]] = []
+    for label, mapping_field in MAPPING_METADATA:
+        if mapping_field in metadata_overrides:
+            values = metadata_overrides[mapping_field]
+        else:
+            values = ["" if pd.isna(value) else value for value in mapping[mapping_field]]
+        metadata_rows.append([label, *values])
+
+    row_count = len(client.data)
+    mapped_series = []
+    for column in selected:
+        if column is None:
+            mapped_series.append(pd.Series([pd.NA] * row_count, dtype=object))
+        else:
+            mapped_series.append(client.series(column).reset_index(drop=True))
+    mapped_data = pd.concat(mapped_series, axis=1)
+    mapped_data.columns = [column.name for column in model.columns]
+    mapped_data.insert(0, "__mapping_info__", "")
+
+    output_columns = ["__mapping_info__", *[column.name for column in model.columns]]
+    metadata_frame = pd.DataFrame(metadata_rows, columns=output_columns)
+    output_frame = pd.concat([metadata_frame, mapped_data], axis=0, ignore_index=True)
+
+    output = Path(output_path)
+    if output.suffix.lower() != ".xlsx":
+        raise ValueError("Output path must end in .xlsx")
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        output_frame.to_excel(writer, sheet_name="Mapped Data", index=False)
+        worksheet = writer.book["Mapped Data"]
+        first_data_excel_row = len(MAPPING_METADATA) + 2
+        worksheet.freeze_panes = f"B{first_data_excel_row}"
+
+        metadata_fill = PatternFill(fill_type="solid", fgColor="E8F0FE")
+        for excel_row in range(2, first_data_excel_row):
+            for cell in worksheet[excel_row]:
+                cell.fill = metadata_fill
+
+        label_to_excel_row = {
+            label: index + 2 for index, (label, _) in enumerate(MAPPING_METADATA)
+        }
+        for label in CONFIDENCE_ROWS:
+            excel_row = label_to_excel_row[label]
+            for excel_column in range(2, len(output_columns) + 1):
+                worksheet.cell(excel_row, excel_column).number_format = "0.00%"
+
+        # pandas serializes datetime.time objects as strings. Restore true Excel
+        # time cells so mapped values retain their type and remain sortable.
+        for model_index, column in enumerate(selected):
+            if column is None:
+                continue
+            output_excel_column = model_index + 2
+            for row_offset, value in enumerate(client.series(column)):
+                if isinstance(value, time):
+                    cell = worksheet.cell(
+                        first_data_excel_row + row_offset,
+                        output_excel_column,
+                    )
+                    cell.value = value
+                    cell.number_format = "hh:mm:ss"
+
+        worksheet.column_dimensions["A"].width = 34
+        for excel_column in range(2, min(len(output_columns), 30) + 1):
+            worksheet.column_dimensions[get_column_letter(excel_column)].width = 18
+
+    print(f"Wrote {output}")
+    print(
+        f"model_columns={len(model.columns)} client_rows={row_count} "
+        f"mapped_columns={sum(column is not None for column in selected)}"
+    )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Apply a mapping report and create a model-shaped client workbook."
+    )
+    parser.add_argument("client", help="Client .xlsx export")
+    parser.add_argument("mapping", help="Mapping report produced by invoice_mapper.py")
+    parser.add_argument("--model", default="model.xlsx", help="Canonical model workbook")
+    parser.add_argument("--output", required=True, help="Output .xlsx workbook")
+    parser.add_argument("--model-sheet", default="0", help="Model sheet index or name")
+    parser.add_argument("--client-sheet", default="0", help="Client sheet index or name")
+    parser.add_argument(
+        "--accepted-only",
+        action="store_true",
+        help="Deprecated: accepted and reviewer-confirmed mappings are already the default",
+    )
+    parser.add_argument(
+        "--include-review",
+        action="store_true",
+        help="Also populate unconfirmed review proposals in an explicitly unsafe review workbook",
+    )
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    if args.accepted_only and args.include_review:
+        raise SystemExit("--accepted-only and --include-review cannot be used together")
+    try:
+        build_mapped_workbook(
+            client_path=args.client,
+            mapping_path=args.mapping,
+            output_path=args.output,
+            model_path=args.model,
+            model_sheet=_sheet_argument(args.model_sheet),
+            client_sheet=_sheet_argument(args.client_sheet),
+            accepted_only=not args.include_review,
+        )
+    except (ValueError, OSError) as exc:
+        raise SystemExit(str(exc)) from exc
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

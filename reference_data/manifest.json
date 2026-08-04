@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-04T22:14:31.359847+00:00",
+  "catalogs": {
+    "cfop": {
+      "file": "cfop.csv",
+      "width": 4,
+      "normalizer": "cfop",
+      "specificity": 1.0,
+      "source_version": "IT 2023.002 v1.00; effective 2023-04-24",
+      "source_url": "https://www.nfe.fazenda.gov.br/portal/exibirArquivo.aspx?conteudo=UGAhInpwpPw%3D",
+      "sha256": "0f4d12fa162f916da319d2afe71262f14a6f3c361713443298ffa0e412272b81"
+    },
+    "csosn": {
+      "file": "csosn.csv",
+      "width": 3,
+      "normalizer": "digits",
+      "specificity": 0.75,
+      "source_version": "EFD ICMS/IPI Guia Prático 3.2.2, table 4.3.1",
+      "source_url": "https://www.gov.br/sped/pt-br/assuntos/escrituracoes-digitais/efd-icms-ipi/manuais-e-documentos-tecnicos/guia-pratico-da-efd-icms-ipi-3-2.2",
+      "sha256": "110fcf03769d299dc99711815f25c1609c006f79876bc6b9054a2ac44b46b732"
+    },
+    "cst_icms": {
+      "file": "cst_icms.csv",
+      "width": 3,
+      "normalizer": "digits",
+      "specificity": 0.75,
+      "source_version": "EFD ICMS/IPI Guia Prático 3.2.2, table 4.3.1",
+      "source_url": "https://www.gov.br/sped/pt-br/assuntos/escrituracoes-digitais/efd-icms-ipi/manuais-e-documentos-tecnicos/guia-pratico-da-efd-icms-ipi-3-2.2",
+      "sha256": "e2618652a798445d77ebbb1e196bb3769323cbeb6ddb348a5f6eac1d6b06719c"
+    },
+    "cst_icms_taxation": {
+      "file": "cst_icms_taxation.csv",
+      "width": 2,
+      "normalizer": "digits",
+      "specificity": 0.5,
+      "source_version": "EFD ICMS/IPI Guia Prático 3.2.2, table 4.3.1",
+      "source_url": "https://www.gov.br/sped/pt-br/assuntos/escrituracoes-digitais/efd-icms-ipi/manuais-e-documentos-tecnicos/guia-pratico-da-efd-icms-ipi-3-2.2",
+      "sha256": "6849d4a19c2c92a7448ee40f8057348e2dbdfaf98698b400e012f18a195940dc"
+    },
+    "cst_ipi": {
+      "file": "cst_ipi.csv",
+      "width": 2,
+      "normalizer": "digits",
+      "specificity": 0.55,
+      "source_version": "EFD ICMS/IPI Guia Prático 3.2.2, table 4.3.2",
+      "source_url": "https://www.gov.br/sped/pt-br/assuntos/escrituracoes-digitais/efd-icms-ipi/manuais-e-documentos-tecnicos/guia-pratico-da-efd-icms-ipi-3-2.2",
+      "sha256": "8e545128de343dab3c76598d59e87b05d9f6eb58cea9d6e8e211fdf5f4feeec2"
+    },
+    "cst_pis_cofins": {
+      "file": "cst_pis_cofins.csv",
+      "width": 2,
+      "normalizer": "digits",
+      "specificity": 0.55,
+      "source_version": "EFD-Contribuições CST tables II and III",
+      "source_url": "https://sped.rfb.gov.br/item/show/268",
+      "sha256": "2cc57211e471a1320944f91618f0881a494aa45d610d0fdef18c1986fea3eb5d"
+    },
+    "ibge_municipality": {
+      "file": "ibge_municipality.csv",
+      "width": 7,
+      "normalizer": "digits",
+      "specificity": 1.0,
+      "source_version": "NF-e municipality table published 2025-02-18",
+      "source_url": "https://www.nfe.fazenda.gov.br/portal/exibirArquivo.aspx?conteudo=eGl9ISPltUE%3D",
+      "sha256": "ef9fb2c76fd59dc4ae8dd5eedb03028a508b731da6d117de75492eaace37cda7"
+    },
+    "ibs_cbs_classification": {
+      "file": "ibs_cbs_classification.csv",
+      "width": 6,
+      "normalizer": "digits",
+      "specificity": 0.85,
+      "source_version": "IT 2025.002 v1.60; published 2026-06-23",
+      "source_url": "https://www.nfe.fazenda.gov.br/portal/exibirArquivo.aspx?conteudo=D5b4Ov84WDg%3D",
+      "sha256": "b6f44d4dcec2a8dd784484ef7115e9da51272693d459f4c325e4b28a0bba78c7"
+    },
+    "ibs_cbs_cst": {
+      "file": "ibs_cbs_cst.csv",
+      "width": 3,
+      "normalizer": "digits",
+      "specificity": 0.75,
+      "source_version": "IT 2025.002 v1.60; published 2026-06-23",
+      "source_url": "https://www.nfe.fazenda.gov.br/portal/exibirArquivo.aspx?conteudo=D5b4Ov84WDg%3D",
+      "sha256": "4330c8bb49fbc729b250212b1ff06183ebe6ef643abce5716e4262a26ab1edbf"
+    },
+    "ncm": {
+      "file": "ncm.csv",
+      "width": 8,
+      "normalizer": "punctuated_digits",
+      "specificity": 1.0,
+      "source_version": "Vigente em 04/08/2026",
+      "source_url": "https://portalunico.siscomex.gov.br/classif/api/publico/nomenclatura/download/json",
+      "sha256": "93c370b24af04823f5aeb7ca4309c5d1513d846afaf320119adb00080c3021fd"
+    }
+  }
+}

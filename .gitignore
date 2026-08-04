@@ -1,0 +1,8 @@
+.env
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+
+# Temporary audit reruns; published mapping workbooks remain tracked explicitly.
+mapping_*_review_v*.xlsx
