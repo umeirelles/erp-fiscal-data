@@ -276,3 +276,51 @@ def test_incorrect_review_requires_a_corrected_column(tmp_path) -> None:
             output_path=output_path,
             model_path=model_path,
         )
+
+
+def test_unreviewed_accepted_semantic_conflict_is_rejected(tmp_path) -> None:
+    model_path = tmp_path / "model.xlsx"
+    client_path = tmp_path / "client.xlsx"
+    mapping_path = tmp_path / "mapping.xlsx"
+    output_path = tmp_path / "mapped.xlsx"
+    write_workbook(model_path, ["Base ICMS_ST"], [[100.0]])
+    write_workbook(client_path, ["ICMS Base"], [[100.0]])
+    mapping = mapping_rows().iloc[[0]].copy()
+    mapping["model_column"] = "Base ICMS_ST"
+    mapping["client_column_number"] = 1
+    mapping["client_column"] = "ICMS Base"
+    mapping.to_excel(mapping_path, index=False)
+
+    with pytest.raises(ValueError, match="violates current invariants"):
+        build_mapped_workbook(
+            client_path=client_path,
+            mapping_path=mapping_path,
+            output_path=output_path,
+            model_path=model_path,
+        )
+
+
+def test_mapping_run_metadata_detects_changed_inputs(tmp_path) -> None:
+    model_path = tmp_path / "model.xlsx"
+    client_path = tmp_path / "client.xlsx"
+    mapping_path = tmp_path / "mapping.xlsx"
+    output_path = tmp_path / "mapped.xlsx"
+    write_workbook(model_path, ["CFOP"], [["5102"]])
+    write_workbook(client_path, ["CFOP source"], [["5102"]])
+    mapping = mapping_rows().iloc[[0]].copy()
+    mapping["client_column_number"] = 1
+    mapping["client_column"] = "CFOP source"
+    with pd.ExcelWriter(mapping_path, engine="openpyxl") as writer:
+        mapping.to_excel(writer, sheet_name="Mappings", index=False)
+        pd.DataFrame(
+            [["client_sha256", "not-the-current-hash"]],
+            columns=["key", "value"],
+        ).to_excel(writer, sheet_name="Run Metadata", index=False)
+
+    with pytest.raises(ValueError, match="differs from the file used"):
+        build_mapped_workbook(
+            client_path=client_path,
+            mapping_path=mapping_path,
+            output_path=output_path,
+            model_path=model_path,
+        )

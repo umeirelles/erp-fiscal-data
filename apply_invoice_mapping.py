@@ -13,7 +13,7 @@ import pandas as pd
 from openpyxl.styles import PatternFill
 from openpyxl.utils import get_column_letter
 
-from invoice_mapper import ColumnRef, SheetTable
+from invoice_mapper import ColumnRef, SheetTable, file_sha256, semantic_header_conflict
 
 
 MAPPING_METADATA = [
@@ -159,15 +159,51 @@ def _ordered_mapping(mapping_path: str | Path, model: SheetTable) -> pd.DataFram
     return mapping
 
 
+def _run_metadata(mapping_path: str | Path) -> dict[str, str]:
+    workbook = pd.ExcelFile(mapping_path)
+    if "Run Metadata" not in workbook.sheet_names:
+        return {}
+    frame = pd.read_excel(workbook, sheet_name="Run Metadata", dtype=object)
+    if not {"key", "value"} <= set(frame.columns):
+        raise ValueError("Run Metadata sheet must contain key and value columns")
+    if frame["key"].duplicated().any():
+        raise ValueError("Run Metadata contains duplicate keys")
+    return {
+        _clean_text(row["key"]): _clean_text(row["value"])
+        for row in frame.to_dict("records")
+        if _clean_text(row["key"])
+    }
+
+
+def _validate_input_hashes(
+    metadata: dict[str, str],
+    *,
+    client_path: str | Path,
+    model_path: str | Path,
+) -> None:
+    for key, path in (
+        ("client_sha256", client_path),
+        ("model_sha256", model_path),
+    ):
+        expected = metadata.get(key)
+        if expected and expected != file_sha256(path):
+            raise ValueError(
+                f"{Path(path).name} differs from the file used to generate the mapping report"
+            )
+
+
 def _effective_columns(
     mapping: pd.DataFrame,
     client: SheetTable,
+    model: SheetTable,
     accepted_only: bool,
 ) -> list[ColumnRef | None]:
     selected: list[ColumnRef | None] = []
     used: set[int] = set()
 
-    for row in mapping.to_dict("records"):
+    for row, model_column in zip(
+        mapping.to_dict("records"), model.columns, strict=True
+    ):
         reviewer_status = _clean_text(row["reviewer_status"]).casefold()
         if reviewer_status not in REVIEW_STATUSES:
             raise ValueError(
@@ -189,6 +225,18 @@ def _effective_columns(
         else:
             column = _column_from_number(client, row["client_column_number"])
             confirmed = row["status"] == "accepted"
+
+        if (
+            column is not None
+            and row["status"] == "accepted"
+            and reviewer_status == ""
+        ):
+            conflict = semantic_header_conflict(model_column.name, column.name)
+            if conflict is not None:
+                raise ValueError(
+                    f"Accepted mapping {model_column.name!r} -> {column.display_name!r} "
+                    f"violates current invariants: {conflict}. Review it explicitly before applying."
+                )
 
         proposed = _column_from_number(client, row["client_column_number"])
         proposed_name = _clean_text(row["client_column"])
@@ -218,13 +266,21 @@ def build_mapped_workbook(
     model_path: str | Path = "model.xlsx",
     model_sheet: str | int = 0,
     client_sheet: str | int = 0,
+    model_header_row: int = 0,
+    client_header_row: int = 0,
     accepted_only: bool = True,
 ) -> None:
     """Apply confirmed mappings and write metadata rows followed by client data."""
-    model = SheetTable.from_excel(model_path, model_sheet)
-    client = SheetTable.from_excel(client_path, client_sheet)
+    metadata = _run_metadata(mapping_path)
+    _validate_input_hashes(
+        metadata,
+        client_path=client_path,
+        model_path=model_path,
+    )
+    model = SheetTable.from_excel(model_path, model_sheet, model_header_row)
+    client = SheetTable.from_excel(client_path, client_sheet, client_header_row)
     mapping = _ordered_mapping(mapping_path, model)
-    selected = _effective_columns(mapping, client, accepted_only)
+    selected = _effective_columns(mapping, client, model, accepted_only)
 
     effective_numbers = [column.index + 1 if column is not None else "" for column in selected]
     effective_names = [column.display_name if column is not None else "" for column in selected]
@@ -315,6 +371,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model-sheet", default="0", help="Model sheet index or name")
     parser.add_argument("--client-sheet", default="0", help="Client sheet index or name")
     parser.add_argument(
+        "--model-header-row", type=int, default=1, help="1-based model header row"
+    )
+    parser.add_argument(
+        "--client-header-row", type=int, default=1, help="1-based client header row"
+    )
+    parser.add_argument(
         "--accepted-only",
         action="store_true",
         help="Deprecated: accepted and reviewer-confirmed mappings are already the default",
@@ -331,6 +393,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.accepted_only and args.include_review:
         raise SystemExit("--accepted-only and --include-review cannot be used together")
+    if args.model_header_row < 1 or args.client_header_row < 1:
+        raise SystemExit("--model-header-row and --client-header-row must be positive")
     try:
         build_mapped_workbook(
             client_path=args.client,
@@ -339,6 +403,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             model_path=args.model,
             model_sheet=_sheet_argument(args.model_sheet),
             client_sheet=_sheet_argument(args.client_sheet),
+            model_header_row=args.model_header_row - 1,
+            client_header_row=args.client_header_row - 1,
             accepted_only=not args.include_review,
         )
     except (ValueError, OSError) as exc:

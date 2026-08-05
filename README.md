@@ -1,41 +1,19 @@
-# Invoice column mapper
+# Brazilian invoice column mapper
 
-Maps a client's invoice spreadsheet to the columns of `model.xlsx` in two passes:
+Maps client invoice exports to the canonical columns in `model.xlsx`. The included SAP, Datasul, and Oracle files are examples; the mapper does not contain layout-specific column mappings.
 
-1. Compare model and client column names using generic normalization and multilingual OpenAI embeddings.
-2. Accept a name match only when its score is high enough and it clearly leads the runner-up.
-3. For uncertain matches, add row-shape, fiscal-equation, and versioned official-code evidence to the candidate set.
-4. Resolve a uniquely distinctive catalog match locally; otherwise send the compact evidence, names, scores, and representative values to an OpenAI model for a second decision.
+## How it works
 
-The model columns are processed from left to right. An accepted client column is not reused. A low-confidence `review` proposal does not reserve its client column, so an early uncertain decision cannot prevent a later model field from selecting the correct source. Review proposals may therefore reference the same source column until a reviewer confirms one.
+For each model column, from left to right:
 
-The name pass contains no client- or spreadsheet-specific header pairs. It only normalizes reusable language and tax terms, and ignores word order for cases such as `Valor COFINS` / `COFINS Value`, `Data de lançamento` / `Posting date`, and `Base ICMS` / `ICMS Base`. The row-data pass keeps the names and their scores in the decision. Empty or all-zero samples are weak evidence: they do not invalidate name evidence, but they cannot resolve an ambiguous name match by themselves.
+1. Compare column names using normalization and OpenAI embeddings.
+2. Accept clear matches with a sufficient lead over the runner-up.
+3. For uncertain matches, evaluate the names together with representative values, data shape, fiscal-code catalogs, and relevant arithmetic relationships.
+4. Return `accepted`, `review`, or `no_match` with confidence scores and a reason.
 
-The four included exports are validation examples, not a list of supported layouts. A new layout should not require a source-code rule. If a mapping cannot be supported, the mapper can return `review` or `no_match`.
+Accepted source columns are not reused. Empty and all-zero values are weak evidence. A bogus header can still produce a viable mapping when its content is distinctive, but uncertain cases remain `review`.
 
-Row-shape retrieval compares general properties such as data type, numeric content, character composition, and typical value length. It does not encode that a particular client header belongs to a particular model field. `--candidates 10` can therefore send up to ten strong name candidates plus ten strong row-shape candidates after duplicates are removed.
-
-A bogus client header can still be mapped when the values have distinctive evidence, such as 44-digit NF-e keys. Because the name offers little support, the final confidence must still clear the stricter threshold; otherwise the viable candidate is returned as `review`.
-
-Explicit tax-family and semantic-role conflicts are reusable guardrails rather than client-layout rules. For example, a rate cannot be automatically accepted as a base, and an IPI field cannot be automatically accepted as ICMS. A conflicting proposal can remain available for review when distinctive content suggests that the client header itself is bogus, but it cannot be automatically accepted.
-
-The row pass also checks conservative fiscal relationships. For a tax family, it tests both common rate representations when comparing `tax value ~= calculation base * rate`; for item totals, it can compare `line value ~= quantity * unit price`. A relationship only becomes decisive when it has enough usable rows and either clearly leads the alternatives or has supporting header evidence. Zero-only columns do not create arithmetic evidence.
-
-## Versioned fiscal reference data
-
-Finite official code lists are a third evidence source for CFOP, NCM, municipality code, CST, CSOSN, and the IBS/CBS tax-classification codes. They are stored under `reference_data/` as checksummed snapshots and are not downloaded during a mapping run.
-
-Each CSV retains `code`, `description`, `valid_from`, and `valid_to`; `manifest.json` records the source URL, source version, normalization method, specificity discount, and SHA-256 checksum. Codes are read as strings so leading zeros survive. The mapper reports `catalog_name`, `catalog_coverage`, and `catalog_confidence` for the selected candidate.
-
-`catalog_coverage` is the observed fraction of nonblank values found in the official table. `catalog_confidence` discounts small collision-prone domains and small samples; neither is claimed to be a calibrated probability. A catalog match is not sufficient by itself when code domains overlap. PIS and COFINS CST use the same domain, and short CST/status values can occur in unrelated integer columns. All-zero code columns are explicitly prevented from becoming catalog evidence.
-
-Refresh the snapshots separately from client processing:
-
-```bash
-python update_reference_data.py
-```
-
-The updater currently uses the Receita Federal Classif JSON for NCM and NF-e Portal spreadsheets for CFOP, municipalities, and IBS/CBS codes. CST/CSOSN domains are generated from the official SPED definitions. Review and commit the changed CSVs and `manifest.json` together after an update.
+Confidence values are decision signals, not calibrated probabilities. Review low-confidence mappings before using them in tax calculations.
 
 ## Setup
 
@@ -43,60 +21,30 @@ The updater currently uses the Receita Federal Classif JSON for NCM and NF-e Por
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-export OPENAI_API_KEY='your-replacement-key'
+export OPENAI_API_KEY='your-key'
 ```
 
-Never put the API key in this repository or pass it as a command-line argument.
+The default low-cost LLM is `gpt-4o-mini`. Never commit the API key; `.env` is ignored by Git.
 
-The low-confidence data pass defaults to the older, inexpensive `gpt-4o-mini`. The models can be changed with `OPENAI_EMBEDDING_MODEL` and `OPENAI_MODEL`, or with the corresponding command-line options.
-
-Reference data is enabled by default. Use `--reference-data path/to/snapshot` to select another pinned snapshot or `--no-reference-data` for a comparison run.
-
-## Run
+## Generate a mapping report
 
 ```bash
 python invoice_mapper.py oracle.xlsx --model model.xlsx
 ```
 
-This writes `mapping_oracle.xlsx` with:
+The default output is `mapping_<client-file>.xlsx`. Its `Mappings` sheet records the selected source column, locally computed name/data/final scores, LLM scores for audit, catalog evidence, status, and reason. `Run Metadata` records file hashes and run settings so stale reports can be rejected when applied.
 
-- model and client column names and positions;
-- name confidence, runner-up confidence, and the margin between them;
-- data confidence for low-confidence name matches;
-- official catalog name, coverage, and confidence when applicable;
-- final confidence, status, method, and reason.
+If headers are not on the first row, pass their 1-based positions with `--client-header-row` or `--model-header-row`.
 
-Useful options:
+For a no-cost header-only run:
 
 ```bash
-python invoice_mapper.py datasul_maio.xlsx \
-  --name-threshold 0.90 \
-  --name-margin 0.05 \
-  --final-threshold 0.90 \
-  --candidates 10 \
-  --sample-size 8 \
-  --output mapping_datasul.xlsx
+python invoice_mapper.py oracle.xlsx --offline
 ```
 
-`--offline` performs a no-cost dry run using lexical name similarity. It does not call OpenAI or run the row/catalog decision pass:
+Only representative values from uncertain columns are sent to OpenAI. Confirm that the client permits this before using online mode. Run `python invoice_mapper.py --help` for all options.
 
-```bash
-python invoice_mapper.py oracle.xlsx --offline --output /tmp/mapping_oracle.xlsx
-```
-
-Only the header names and representative values used by the low-confidence second pass are sent to OpenAI. Review whether the client permits those values to leave your environment before running the online mode.
-
-The reported embedding and LLM confidence values are decision signals, not statistically calibrated probabilities. They can be calibrated later using mappings confirmed by reviewers across many independent client layouts.
-
-## Tests
-
-```bash
-pytest -q
-```
-
-## Create the mapped client workbook
-
-After generating and optionally reviewing a mapping report, apply it to the client export:
+## Create the mapped workbook
 
 ```bash
 python apply_invoice_mapping.py \
@@ -106,30 +54,24 @@ python apply_invoice_mapping.py \
   --output sap_terumo_mapped.xlsx
 ```
 
-The `Mapped Data` sheet contains:
+The output follows the model's column order. Mapping metadata and scores occupy the first rows; client data begins at Excel row 17. By default, only `accepted` and reviewer-confirmed mappings are populated. Unconfirmed `review` columns remain blank.
 
-- an extra `__mapping_info__` column used to label the metadata rows;
-- all model columns in their canonical order;
-- mapping status, method, reason, source column, and confidence rows at the top;
-- confidence values stored numerically and displayed as percentages;
-- the mapped client rows beginning at Excel row 17;
-- blank cells for model columns without a viable mapping.
+Reviewer values supported in the mapping report are `correct`, `incorrect` with `correct_client_column`, and `no_mapping_exists`.
 
-By default, only `accepted` and reviewer-confirmed mappings are populated. Unconfirmed `review` proposals remain visible in the metadata rows but their data columns stay blank. This safe default prevents uncertain mappings from entering tax calculations.
+Use `--include-review` only to create an explicitly unsafe workbook containing unconfirmed proposals.
 
-To create an explicitly unsafe workbook that also populates unconfirmed review proposals, use:
+## Fiscal reference data
+
+`reference_data/` contains checksummed snapshots for CFOP, NCM, municipality, CST, CSOSN, and IBS/CBS codes. Refresh them separately with:
 
 ```bash
-python apply_invoice_mapping.py \
-  client.xlsx mapping_client.xlsx \
-  --include-review \
-  --output client_mapped.xlsx
+python update_reference_data.py
 ```
 
-Reviewer fields in the mapping report are honored:
+Review and commit the updated CSV files and `manifest.json` together.
 
-- `correct` keeps the proposed client column;
-- `incorrect` requires `correct_client_column`, which can contain an exact header, occurrence display name, or 1-based column number;
-- `no_mapping_exists` leaves the model column blank.
+## Tests
 
-The script validates the model order, mapping completeness, source headers, corrected columns, and one-to-one column usage before writing any result.
+```bash
+pytest -q
+```

@@ -14,6 +14,8 @@ from invoice_mapper import (
     OpenAIEmbeddingHeaderScorer,
     SheetTable,
     LexicalHeaderScorer,
+    header_semantic_role,
+    header_tax_families,
     map_columns,
     line_calculation_evidence,
     profile_similarity,
@@ -22,6 +24,7 @@ from invoice_mapper import (
     semantic_header_signature,
     summarize_values,
     tax_calculation_evidence,
+    underspecified_header_match,
     write_results,
 )
 
@@ -183,7 +186,7 @@ def test_review_proposal_does_not_reserve_source_column() -> None:
     assert results[0].status == "review"
     assert "semantic-role conflict" in results[0].reason
     assert results[1].client_column == "CBS Base"
-    assert results[1].status == "accepted"
+    assert results[1].status == "review"
     assert resolver.calls == ["Tipo de Imposto CBS", "Base CBS"]
 
 
@@ -232,7 +235,17 @@ def test_semantic_header_conflict_is_generic_and_conservative() -> None:
     assert semantic_header_conflict("Aliquota ICMS_ST", "ICMS Taxa") == (
         "tax-qualifier conflict (st vs regular)"
     )
+    assert semantic_header_conflict("Grupo de imposto", "Grupo de mercadorias") == (
+        "semantic-role conflict (tax_group vs product_group)"
+    )
     assert semantic_header_conflict("Chave de acesso", "X9") is None
+
+
+def test_one_word_subset_header_is_not_decisive_by_itself() -> None:
+    assert underspecified_header_match("Centro custo", "Centro")
+    assert underspecified_header_match("Base ICMS", "ICMS")
+    assert not underspecified_header_match("Centro custo", "Cost center")
+    assert not underspecified_header_match("Empresa", "Company Name")
 
 
 def test_duplicate_headers_keep_unique_column_ids(tmp_path) -> None:
@@ -264,10 +277,46 @@ def test_mapping_report_contains_reviewer_columns(tmp_path) -> None:
     ]
 
 
+def test_mapping_report_writes_run_metadata(tmp_path) -> None:
+    model = table(["CFOP"], [["5102"]])
+    client = table(["CFOP"], [["5102"]])
+    result = map_columns(model, client, LexicalHeaderScorer(), data_resolver=None)
+    output = tmp_path / "mapping.xlsx"
+
+    write_results(result, output, metadata={"mapping_schema_version": 2})
+
+    workbook = pd.ExcelFile(output)
+    assert workbook.sheet_names == ["Mappings", "Run Metadata"]
+    metadata = pd.read_excel(workbook, sheet_name="Run Metadata")
+    assert metadata.to_dict("records") == [
+        {"key": "mapping_schema_version", "value": 2}
+    ]
+
+
+def test_sheet_table_supports_an_explicit_header_row(tmp_path) -> None:
+    path = tmp_path / "preamble.xlsx"
+    pd.DataFrame(
+        [["Invoice export", None], ["CFOP", "Amount"], ["5102", 100.0]]
+    ).to_excel(path, header=False, index=False)
+
+    parsed = SheetTable.from_excel(path, header_row=1)
+
+    assert [column.name for column in parsed.columns] == ["CFOP", "Amount"]
+    assert parsed.data.to_dict("records") == [{0: "5102", 1: 100}]
+
+
 def test_sample_values_preserves_strings_and_removes_duplicates() -> None:
     values = pd.Series([None, "", "000051789", "000051789", "001", 12.5])
 
     assert sample_values(values, limit=3) == ["000051789", "001", "12.5"]
+
+
+def test_sample_values_are_independent_of_row_order() -> None:
+    values = pd.Series([0, 100, 25, 50, 75, 100, 125, 150, 175, 200])
+
+    assert sample_values(values, limit=6) == sample_values(
+        values.iloc[::-1].reset_index(drop=True), limit=6
+    )
 
 
 def test_semantic_header_signature_handles_translation_and_word_order() -> None:
@@ -350,7 +399,8 @@ def test_close_runner_up_forces_row_data_pass() -> None:
     assert resolver.calls == ["Valor do imposto"]
     assert result.method == "data"
     assert result.name_margin == 0.02
-    assert result.status == "accepted"
+    assert result.status == "review"
+    assert result.llm_final_confidence == 0.95
 
 
 def test_explicitly_conflicting_runner_up_does_not_block_header_acceptance() -> None:
@@ -371,6 +421,44 @@ def test_tax_montante_abbreviation_is_a_base_role() -> None:
     assert semantic_header_conflict("Valor PIS", "PIS Mont.") == (
         "semantic-role conflict (value vs base)"
     )
+
+
+def test_semantic_roles_use_generic_aliases_and_context() -> None:
+    assert header_semantic_role("Aliq. COFINS") == "rate"
+    assert header_semantic_role("Vlr ICMS Com") == "value"
+    assert header_semantic_role("Vlr Base IPI") == "base"
+    assert header_semantic_role("TOTAL DO ITEM") == "value"
+    assert header_semantic_role("Lei COFINS") == "tax_rule"
+    assert header_semantic_role("Direito fi") == "tax_rule"
+    assert header_semantic_role("Unidade de medida") == "unit_of_measure"
+    assert header_semantic_role("COD_MEDIDA") == "unit_of_measure"
+    assert header_tax_families("Tax Situation COFI") == frozenset({"cofins"})
+    assert header_tax_families("IBSS Value") == frozenset({"ibs"})
+    assert semantic_header_conflict("Valor líquido", "TOTAL DO ITEM") is None
+    assert semantic_header_conflict("Lei COFINS", "Aliq. COFINS") == (
+        "semantic-role conflict (tax_rule vs rate)"
+    )
+
+
+def test_same_role_header_is_retained_for_review_when_resolver_returns_null() -> None:
+    model = table(["Unidade de medida"], [["KG"], ["UN"]])
+    client = table(["COD_MEDIDA"], [["KG"], ["UN"]])
+    scorer = FixedScorer(np.array([[0.846]]))
+    resolver = FixedResolver(
+        {
+            "Unidade de medida": DataMappingDecision(
+                client_column_id=None,
+                data_confidence=0.0,
+                final_confidence=0.0,
+                reason="No decision.",
+            )
+        }
+    )
+
+    result = map_columns(model, client, scorer, resolver)[0]
+
+    assert result.client_column == "COD_MEDIDA"
+    assert result.status == "review"
 
 
 def test_low_name_generic_data_fallback_becomes_no_match() -> None:
@@ -395,19 +483,19 @@ def test_low_name_generic_data_fallback_becomes_no_match() -> None:
 
 
 def test_fiscal_math_relationships_handle_percent_and_decimal_rates() -> None:
-    base = pd.Series([100.0, 200.0, 50.0, 300.0, 80.0])
-    value = pd.Series([18.0, 36.0, 9.0, 54.0, 14.4])
+    base = pd.Series([100.0, 200.0, 50.0, 300.0, 80.0] * 4)
+    value = pd.Series([18.0, 36.0, 9.0, 54.0, 14.4] * 4)
 
     percent = tax_calculation_evidence(
-        base, pd.Series([18.0] * 5), value
+        base, pd.Series([18.0] * 20), value
     )
     decimal = tax_calculation_evidence(
-        base, pd.Series([0.18] * 5), value
+        base, pd.Series([0.18] * 20), value
     )
     line = line_calculation_evidence(
-        pd.Series([2, 3, 4, 5, 6]),
-        pd.Series([10.0, 20.0, 7.5, 4.0, 3.0]),
-        pd.Series([20.0, 60.0, 30.0, 20.0, 18.0]),
+        pd.Series([2, 3, 4, 5, 6] * 4),
+        pd.Series([10.0, 20.0, 7.5, 4.0, 3.0] * 4),
+        pd.Series([20.0, 60.0, 30.0, 20.0, 18.0] * 4),
     )
 
     assert percent["score"] == 1.0
@@ -417,17 +505,29 @@ def test_fiscal_math_relationships_handle_percent_and_decimal_rates() -> None:
     assert line["score"] == 1.0
 
 
+def test_small_relationship_samples_are_discounted() -> None:
+    base = pd.Series([100.0, 200.0, 50.0, 300.0, 80.0])
+    rate = pd.Series([18.0] * 5)
+    value = base * 0.18
+
+    evidence = tax_calculation_evidence(base, rate, value)
+
+    assert evidence["fit_score"] == 1.0
+    assert evidence["score"] == 0.5
+    assert evidence["rows_tested"] == 5
+
+
 def test_tax_relationship_reopens_an_inconsistent_exact_header_match() -> None:
-    base = [100.0, 200.0, 50.0, 300.0, 80.0]
-    precise_rate = [10.0, 20.0, 5.0, 5.0, 10.0]
-    value = [10.0, 40.0, 2.5, 15.0, 8.0]
+    base = [100.0, 200.0, 50.0, 300.0, 80.0] * 4
+    precise_rate = [10.0, 20.0, 5.0, 5.0, 10.0] * 4
+    value = [10.0, 40.0, 2.5, 15.0, 8.0] * 4
     model = table(
         ["Base CBS", "Aliquota CBS", "Valor CBS"],
-        [[base[i], precise_rate[i], value[i]] for i in range(5)],
+        [[base[i], precise_rate[i], value[i]] for i in range(20)],
     )
     client = table(
         ["CBS basis", "CBS Rate", "CBS Value", "Tax rate 4 decimals"],
-        [[base[i], 0.0, value[i], precise_rate[i]] for i in range(5)],
+        [[base[i], 0.0, value[i], precise_rate[i]] for i in range(20)],
     )
     scorer = FixedScorer(
         np.array(
@@ -457,17 +557,17 @@ def test_tax_relationship_reopens_an_inconsistent_exact_header_match() -> None:
 
 
 def test_unique_tax_relationship_overrides_a_plausible_llm_alternative() -> None:
-    correct_base = [100.0, 200.0, 300.0, 400.0, 500.0]
-    weaker_base = [100.0, 200.0, 300.0, 400.0, 625.0]
-    rate = [10.0] * 5
-    value = [10.0, 20.0, 30.0, 40.0, 50.0]
+    correct_base = [100.0, 200.0, 300.0, 400.0, 500.0] * 4
+    weaker_base = [100.0, 200.0, 300.0, 400.0, 625.0] * 4
+    rate = [10.0] * 20
+    value = [10.0, 20.0, 30.0, 40.0, 50.0] * 4
     model = table(
         ["Base ICMS", "Aliquota ICMS", "Valor ICMS"],
-        [[correct_base[i], rate[i], value[i]] for i in range(5)],
+        [[correct_base[i], rate[i], value[i]] for i in range(20)],
     )
     client = table(
         ["X1", "X2", "ICMS Taxa", "ICMS Valor"],
-        [[correct_base[i], weaker_base[i], rate[i], value[i]] for i in range(5)],
+        [[correct_base[i], weaker_base[i], rate[i], value[i]] for i in range(20)],
     )
     scorer = FixedScorer(
         np.array(
@@ -497,16 +597,16 @@ def test_unique_tax_relationship_overrides_a_plausible_llm_alternative() -> None
 
 
 def test_header_and_nonunique_tax_relationship_can_jointly_accept_a_mapping() -> None:
-    base = [100.0, 200.0, 300.0, 400.0, 500.0]
-    rate = [10.0] * 5
-    value = [10.0, 20.0, 30.0, 40.0, 50.0]
+    base = [100.0, 200.0, 300.0, 400.0, 500.0] * 4
+    rate = [10.0] * 20
+    value = [10.0, 20.0, 30.0, 40.0, 50.0] * 4
     model = table(
         ["Base IPI", "Aliquota IPI", "Valor IPI"],
-        [[base[i], rate[i], value[i]] for i in range(5)],
+        [[base[i], rate[i], value[i]] for i in range(20)],
     )
     client = table(
         ["IPI Monta", "Broad total", "IPI Taxa", "IPI Valor"],
-        [[base[i], base[i], rate[i], value[i]] for i in range(5)],
+        [[base[i], base[i], rate[i], value[i]] for i in range(20)],
     )
     scorer = FixedScorer(
         np.array(
@@ -616,6 +716,28 @@ def test_all_zero_profile_is_marked_as_weak_evidence() -> None:
     assert profile["zero_fraction"] == 1.0
 
 
+def test_profiles_validate_nfe_check_digits() -> None:
+    valid = summarize_values(
+        pd.Series(
+            [
+                "35260112345678000123550010000000011000000011",
+                "35260198765432000123550010000000021000000020",
+            ]
+        )
+    )
+    invalid = summarize_values(
+        pd.Series(
+            [
+                "35260112345678000123550010000000011000000010",
+                "35260198765432000123550010000000021000000021",
+            ]
+        )
+    )
+
+    assert valid["valid_nfe_key_fraction"] == 1.0
+    assert invalid["valid_nfe_key_fraction"] == 0.0
+
+
 def test_profile_similarity_uses_generic_value_shape_and_ignores_weak_rows() -> None:
     tax_ids = summarize_values(pd.Series(["12345678000199", "98765432000188"]))
     same_shape = summarize_values(pd.Series(["11111111000111", "22222222000122"]))
@@ -658,12 +780,12 @@ def test_data_candidate_pool_includes_row_shape_matches_outside_name_top_k() -> 
 
     assert result.client_column == "Registration"
     assert result.method == "data"
-    assert result.status == "accepted"
+    assert result.status == "review"
 
 
 def test_distinctive_rows_can_override_a_bogus_client_header() -> None:
     access_keys = [
-        "35260112345678000123550010000000011000000010",
+        "35260112345678000123550010000000011000000011",
         "35260198765432000123550010000000021000000020",
     ]
     model = table(["Chave de acesso"], [[value] for value in access_keys])
@@ -693,8 +815,9 @@ def test_distinctive_rows_can_override_a_bogus_client_header() -> None:
 
     assert result.client_column == "X9"
     assert result.name_confidence == 0.10
-    assert result.data_confidence == 0.99
-    assert result.status == "accepted"
+    assert result.data_confidence == 1.0
+    assert result.llm_data_confidence == 0.99
+    assert result.status == "review"
 
 
 def test_openai_embedding_scorer_batches_headers_and_scores_cosine() -> None:
@@ -753,6 +876,7 @@ def test_openai_data_resolver_uses_structured_response() -> None:
     assert decision == expected
     assert responses.arguments["model"] == "llm-test"
     assert responses.arguments["store"] is False
+    assert responses.arguments["temperature"] == 0
     assert "reasoning" not in responses.arguments
     assert responses.arguments["text_format"] is DataMappingDecision
     assert '"samples": ["5102", "6102"]' in responses.arguments["input"]

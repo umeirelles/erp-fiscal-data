@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import sys
 import unicodedata
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Protocol, Sequence
@@ -24,6 +26,8 @@ from reference_catalog import ReferenceCatalogs, best_catalog_evidence, expected
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large"
 DEFAULT_LLM_MODEL = "gpt-4o-mini"
 SEMANTIC_EQUIVALENCE_SCORE = 0.98
+MAPPING_SCHEMA_VERSION = 2
+PROMPT_VERSION = "2026-08-04.2"
 REVIEWER_COLUMNS = ["reviewer_status", "correct_client_column", "reviewer_note"]
 
 _HEADER_STOPWORDS = {
@@ -53,6 +57,7 @@ _HEADER_TOKEN_ALIASES = {
     "business": "negocio",
     "cof": "cofins",
     "cofi": "cofins",
+    "cod": "codigo",
     "ctg": "categoria",
     "date": "data",
     "desc": "descricao",
@@ -62,6 +67,7 @@ _HEADER_TOKEN_ALIASES = {
     "electronic": "eletronico",
     "eletronica": "eletronico",
     "empresa": "empresa",
+    "goods": "mercadoria",
     "invoice": "nota",
     "ibss": "ibs",
     "key": "chave",
@@ -69,6 +75,7 @@ _HEADER_TOKEN_ALIASES = {
     "liq": "liquido",
     "liquido": "liquido",
     "measure": "medida",
+    "mercadorias": "mercadoria",
     "name": "nome",
     "negocios": "negocio",
     "net": "liquido",
@@ -128,7 +135,25 @@ def semantically_equivalent_headers(left: object, right: object) -> bool:
     return bool(left_signature) and left_signature == semantic_header_signature(right)
 
 
+def underspecified_header_match(model_header: object, client_header: object) -> bool:
+    """Return whether the client header drops all but one model concept.
+
+    A single generic word such as ``Centro`` is useful as a proposal for
+    ``Centro custo``, but it is not enough for automatic acceptance. Distinctive
+    row or catalog evidence can still promote the proposal in the second pass.
+    """
+    model_signature = semantic_header_signature(model_header)
+    client_signature = semantic_header_signature(client_header)
+    return (
+        len(model_signature) > 1
+        and len(client_signature) == 1
+        and client_signature < model_signature
+    )
+
+
 _TAX_FAMILY_ALIASES = {
+    "cof": "cofins",
+    "cofi": "cofins",
     "fcp": "fecp",
     "ibss": "ibs",
 }
@@ -157,7 +182,7 @@ def header_tax_families(value: object) -> frozenset[str]:
     """Return explicit tax families found in a header using domain vocabulary."""
     families = {
         _TAX_FAMILY_ALIASES.get(token, token)
-        for token in normalize_header(value).split()
+        for token in semantic_header_signature(value)
     }
     return frozenset(families & _TAX_FAMILIES)
 
@@ -166,7 +191,8 @@ def header_semantic_role(value: object) -> str | None:
     """Return an explicit tax-value role without guessing from row values."""
     normalized = normalize_header(value)
     padded = f" {normalized} "
-    tokens = set(normalized.split())
+    raw_tokens = set(normalized.split())
+    tokens = set(semantic_header_signature(value)) | raw_tokens
 
     if (
         {"classification", "classificacao"} & tokens
@@ -197,10 +223,6 @@ def header_semantic_role(value: object) -> str | None:
         return "exempt"
     if {"reduzida", "reduzido", "reduced"} & tokens and {"base", "basis"} & tokens:
         return "reduced_base"
-    if (
-        {"valor", "value", "amount"} & tokens
-    ):
-        return "value"
     # SAP commonly abbreviates the taxable amount/base as ``Mont.`` or
     # ``Monta`` in a tax-family column (for example, PIS Mont. beside PIS
     # Taxa and Valor do PIS). Outside tax-family context, ``mont.`` retains
@@ -209,10 +231,30 @@ def header_semantic_role(value: object) -> str | None:
         return "base"
     if {"base", "basis"} & tokens:
         return "base"
+    if (
+        {"valor", "value", "amount"} & tokens
+        or ({"total"} & tokens and {"item", "linha"} & tokens)
+    ):
+        return "value"
     if {"mont", "monta", "montante"} & tokens:
         return "value"
     if {"grupo", "group"} & tokens and {"imposto", "tax"} & tokens:
         return "tax_group"
+    if (
+        {"grupo", "group"} & tokens
+        and {"material", "mercadoria", "produto"} & tokens
+    ):
+        return "product_group"
+    if {"lei", "law", "direito"} & tokens:
+        return "tax_rule"
+    if {"texto", "text", "descricao", "description"} & tokens:
+        return "text"
+    if "medida" in tokens and {"unidade", "codigo"} & tokens:
+        return "unit_of_measure"
+    if "preco" in tokens:
+        return "unit_price"
+    if ({"chave", "key"} & tokens and {"acesso", "nfe", "nf"} & tokens):
+        return "nfe_key"
     if {"cnpj", "cpf"} & tokens or (
         {"fiscal", "tax"} & tokens
         and {"id", "identificador"} & tokens
@@ -224,7 +266,14 @@ def header_semantic_role(value: object) -> str | None:
         and {"fiscal", "tax", "id", "inscricao", "registration"} & tokens
     ):
         return "regional_tax_id"
-    if "item" in tokens and not {"imposto", "tax"} & tokens:
+    if (
+        "item" in tokens
+        and not {"imposto", "tax", "total", "valor", "value", "amount"} & tokens
+        and (
+            len(tokens) == 1
+            or bool({"numero", "codigo", "id", "identificador"} & tokens)
+        )
+    ):
         return "item_id"
     if (
         {"numero", "number", "documento", "document", "nf", "nfe", "invoice"}
@@ -296,12 +345,23 @@ class SheetTable:
     data: pd.DataFrame
 
     @classmethod
-    def from_excel(cls, path: str | Path, sheet_name: str | int = 0) -> "SheetTable":
+    def from_excel(
+        cls,
+        path: str | Path,
+        sheet_name: str | int = 0,
+        header_row: int = 0,
+    ) -> "SheetTable":
         raw = pd.read_excel(path, sheet_name=sheet_name, header=None, dtype=object)
         if raw.empty:
             raise ValueError(f"Spreadsheet has no rows: {path}")
+        if header_row < 0 or header_row >= len(raw):
+            raise ValueError(
+                f"Header row {header_row + 1} is outside spreadsheet rows: {path}"
+            )
 
-        headers = [_header_text(value, i) for i, value in enumerate(raw.iloc[0])]
+        headers = [
+            _header_text(value, i) for i, value in enumerate(raw.iloc[header_row])
+        ]
         occurrences: dict[str, int] = {}
         columns: list[ColumnRef] = []
         for index, name in enumerate(headers):
@@ -316,7 +376,7 @@ class SheetTable:
                 )
             )
 
-        data = raw.iloc[1:].reset_index(drop=True)
+        data = raw.iloc[header_row + 1 :].reset_index(drop=True)
         data.columns = range(data.shape[1])
         return cls(columns=columns, data=data)
 
@@ -332,20 +392,126 @@ def _json_value(value: object, max_length: int = 100) -> str:
     return text if len(text) <= max_length else f"{text[: max_length - 1]}…"
 
 
+def _numeric_value(value: object) -> float:
+    if pd.isna(value):
+        return float("nan")
+    if isinstance(value, (int, float, np.number)) and not isinstance(value, bool):
+        return float(value)
+    text = str(value).strip().replace(" ", "")
+    if not text:
+        return float("nan")
+    parenthesized_negative = text.startswith("(") and text.endswith(")")
+    negative = text.endswith("-") or parenthesized_negative
+    if text.endswith("-"):
+        text = text[:-1]
+    if parenthesized_negative:
+        text = text[1:-1]
+    text = re.sub(r"[^0-9,.-]", "", text)
+    if not text or text in {"-", ".", ","}:
+        return float("nan")
+    if "," in text and "." in text:
+        if text.rfind(",") > text.rfind("."):
+            text = text.replace(".", "").replace(",", ".")
+        else:
+            text = text.replace(",", "")
+    elif "," in text:
+        text = text.replace(".", "").replace(",", ".")
+    try:
+        number = float(text)
+    except ValueError:
+        return float("nan")
+    return -abs(number) if negative else number
+
+
+def _sample_sort_key(text: str) -> tuple[int, float | str, str]:
+    number = _numeric_value(text)
+    if np.isfinite(number):
+        return (0, number, text)
+    return (1, normalize_header(text), text)
+
+
 def sample_values(series: pd.Series, limit: int = 8) -> list[str]:
-    samples: list[str] = []
-    seen: set[str] = set()
-    for value in series:
-        if pd.isna(value) or not str(value).strip():
-            continue
-        text = _json_value(value)
-        if text in seen:
-            continue
-        seen.add(text)
-        samples.append(text)
-        if len(samples) >= limit:
-            break
-    return samples
+    """Return stable, representative values independent of spreadsheet row order."""
+    if limit < 1:
+        return []
+    texts = [
+        _json_value(value)
+        for value in series
+        if not pd.isna(value) and str(value).strip()
+    ]
+    if not texts:
+        return []
+
+    counts = pd.Series(texts, dtype="object").value_counts(sort=False).to_dict()
+    ordered_unique = sorted(counts, key=_sample_sort_key)
+    selected: list[str] = []
+
+    def add(value: str) -> None:
+        if value not in selected and len(selected) < limit:
+            selected.append(value)
+
+    # Frequent values represent the dominant distribution, while evenly spaced
+    # values expose range and format differences. Both selections are stable.
+    for value in sorted(counts, key=lambda item: (-counts[item], _sample_sort_key(item)))[:2]:
+        add(value)
+    if len(ordered_unique) == 1:
+        return selected
+    for position in np.linspace(0, len(ordered_unique) - 1, num=limit, dtype=int):
+        add(ordered_unique[int(position)])
+    for value in sorted(counts, key=lambda item: (-counts[item], _sample_sort_key(item))):
+        add(value)
+    return selected
+
+
+def _digits_only(value: object) -> str:
+    return re.sub(r"\D", "", str(value).strip())
+
+
+def _cpf_is_valid(digits: str) -> bool:
+    if len(digits) != 11 or len(set(digits)) == 1:
+        return False
+    numbers = [int(value) for value in digits]
+    for length in (9, 10):
+        total = sum(numbers[index] * (length + 1 - index) for index in range(length))
+        check = (total * 10) % 11
+        if check == 10:
+            check = 0
+        if numbers[length] != check:
+            return False
+    return True
+
+
+def _cnpj_is_valid(digits: str) -> bool:
+    if len(digits) != 14 or len(set(digits)) == 1:
+        return False
+    numbers = [int(value) for value in digits]
+    for length, weights in (
+        (12, [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]),
+        (13, [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]),
+    ):
+        remainder = sum(numbers[index] * weights[index] for index in range(length)) % 11
+        check = 0 if remainder < 2 else 11 - remainder
+        if numbers[length] != check:
+            return False
+    return True
+
+
+def _nfe_key_is_valid(digits: str) -> bool:
+    if len(digits) != 44 or len(set(digits)) == 1:
+        return False
+    numbers = [int(value) for value in digits]
+    weight = 2
+    total = 0
+    for number in reversed(numbers[:43]):
+        total += number * weight
+        weight = 2 if weight == 9 else weight + 1
+    remainder = total % 11
+    check = 0 if remainder in {0, 1} else 11 - remainder
+    return numbers[43] == check
+
+
+def _validation_fraction(texts: pd.Series, validator) -> float:
+    return float(texts.map(lambda value: validator(_digits_only(value))).mean()) if len(texts) else 0.0
 
 
 def summarize_values(series: pd.Series, limit: int = 8) -> dict[str, object]:
@@ -353,7 +519,7 @@ def summarize_values(series: pd.Series, limit: int = 8) -> dict[str, object]:
     if not nonempty.empty:
         nonempty = nonempty[nonempty.astype(str).str.strip() != ""]
 
-    numeric = pd.to_numeric(nonempty, errors="coerce")
+    numeric = nonempty.map(_numeric_value).astype(float)
     numeric_fraction = float(numeric.notna().mean()) if len(nonempty) else 0.0
     numeric_values = numeric[numeric.notna()].astype(float)
     zero_fraction = (
@@ -368,6 +534,11 @@ def summarize_values(series: pd.Series, limit: int = 8) -> dict[str, object]:
     texts = nonempty.astype(str).str.strip()
     lengths = texts.str.len().astype(float)
     digit_counts = texts.str.count(r"\d").astype(float)
+    width_counts = digit_counts[digit_counts > 0].value_counts()
+    fixed_digit_width = int(width_counts.index[0]) if len(width_counts) else 0
+    fixed_digit_width_fraction = (
+        float(width_counts.iloc[0] / len(texts)) if len(width_counts) else 0.0
+    )
 
     def character_fraction(text: str, predicate) -> float:
         return sum(bool(predicate(character)) for character in text) / len(text) if text else 0.0
@@ -400,6 +571,30 @@ def summarize_values(series: pd.Series, limit: int = 8) -> dict[str, object]:
         ),
         "digit_fraction": round(digit_fraction, 3),
         "alpha_fraction": round(alpha_fraction, 3),
+        "negative_fraction": round(
+            float((numeric_values < 0).mean()) if len(numeric_values) else 0.0,
+            3,
+        ),
+        "numeric_min": round(float(numeric_values.min()), 4)
+        if len(numeric_values)
+        else None,
+        "numeric_q25": round(float(numeric_values.quantile(0.25)), 4)
+        if len(numeric_values)
+        else None,
+        "numeric_median": round(float(numeric_values.median()), 4)
+        if len(numeric_values)
+        else None,
+        "numeric_q75": round(float(numeric_values.quantile(0.75)), 4)
+        if len(numeric_values)
+        else None,
+        "numeric_max": round(float(numeric_values.max()), 4)
+        if len(numeric_values)
+        else None,
+        "fixed_digit_width": fixed_digit_width,
+        "fixed_digit_width_fraction": round(fixed_digit_width_fraction, 3),
+        "valid_cpf_fraction": round(_validation_fraction(texts, _cpf_is_valid), 3),
+        "valid_cnpj_fraction": round(_validation_fraction(texts, _cnpj_is_valid), 3),
+        "valid_nfe_key_fraction": round(_validation_fraction(texts, _nfe_key_is_valid), 3),
         "evidence_quality": evidence_quality,
         "samples": sample_values(series, limit),
     }
@@ -482,6 +677,29 @@ def distinctive_sample_overlap(
     )
 
 
+def distinctive_sample_overlap_count(
+    left: dict[str, object], right: dict[str, object]
+) -> int:
+    return len(_distinctive_samples(left) & _distinctive_samples(right))
+
+
+def identifier_match_score(
+    left: dict[str, object], right: dict[str, object]
+) -> float:
+    """Return strong content evidence only for validated Brazilian identifiers."""
+    scores = []
+    for key in (
+        "valid_cpf_fraction",
+        "valid_cnpj_fraction",
+        "valid_nfe_key_fraction",
+    ):
+        left_score = float(left.get(key, 0.0))
+        right_score = float(right.get(key, 0.0))
+        if left_score >= 0.80 and right_score >= 0.80:
+            scores.append(min(left_score, right_score))
+    return round(max(scores, default=0.0), 4)
+
+
 def distinctive_profile_match(
     left: dict[str, object], right: dict[str, object]
 ) -> bool:
@@ -491,47 +709,9 @@ def distinctive_profile_match(
         or right["evidence_quality"] != "informative"
     ):
         return False
-    if distinctive_sample_overlap(left, right) > 0.0:
+    if distinctive_sample_overlap_count(left, right) >= 2:
         return True
-
-    left_digit_counts = set(left["digit_count_values"])
-    right_digit_counts = set(right["digit_count_values"])
-    shared_long_digit_count = any(
-        count >= 8 for count in left_digit_counts & right_digit_counts
-    )
-    return bool(
-        shared_long_digit_count
-        and float(left["digit_fraction"]) >= 0.8
-        and float(right["digit_fraction"]) >= 0.8
-    )
-
-
-def _numeric_value(value: object) -> float:
-    if pd.isna(value):
-        return float("nan")
-    if isinstance(value, (int, float, np.number)) and not isinstance(value, bool):
-        return float(value)
-    text = str(value).strip().replace(" ", "")
-    if not text:
-        return float("nan")
-    negative = text.endswith("-")
-    if negative:
-        text = text[:-1]
-    text = re.sub(r"[^0-9,.-]", "", text)
-    if not text or text in {"-", ".", ","}:
-        return float("nan")
-    if "," in text and "." in text:
-        if text.rfind(",") > text.rfind("."):
-            text = text.replace(".", "").replace(",", ".")
-        else:
-            text = text.replace(",", "")
-    elif "," in text:
-        text = text.replace(".", "").replace(",", ".")
-    try:
-        number = float(text)
-    except ValueError:
-        return float("nan")
-    return -number if negative else number
+    return identifier_match_score(left, right) >= 0.90
 
 
 def numeric_series(series: pd.Series) -> pd.Series:
@@ -562,18 +742,24 @@ def tax_calculation_evidence(
         ],
         axis=1,
     ).replace([np.inf, -np.inf], np.nan)
-    frame = frame.dropna()
-    frame = frame[
+    eligible = frame[
         (frame["base"].abs() > 1e-12)
         & ((frame["rate"].abs() > 1e-12) | (frame["value"].abs() > 0.02))
     ]
+    eligible_count = len(eligible)
+    frame = eligible.dropna()
+    coverage = len(frame) / eligible_count if eligible_count else 0.0
     if len(frame) < minimum_rows:
         return {
             "available": False,
             "rows_tested": int(len(frame)),
+            "eligible_rows": int(eligible_count),
+            "coverage": round(coverage, 4),
             "score": 0.0,
+            "fit_score": 0.0,
             "rate_representation": None,
             "median_relative_error": None,
+            "degenerate": True,
         }
 
     alternatives: list[tuple[float, float, int]] = []
@@ -591,15 +777,26 @@ def tax_calculation_evidence(
             )
         )
 
-    score, median_error, divisor = max(
+    fit_score, median_error, divisor = max(
         alternatives, key=lambda item: (item[0], -item[1])
     )
+    degenerate = bool(
+        frame["base"].nunique(dropna=True) < 3
+        or frame["value"].nunique(dropna=True) < 3
+    )
+    sample_factor = min(1.0, float(np.sqrt(len(frame) / 20.0)))
+    variation_factor = 0.75 if degenerate else 1.0
+    score = fit_score * float(np.sqrt(coverage)) * sample_factor * variation_factor
     return {
         "available": True,
         "rows_tested": int(len(frame)),
+        "eligible_rows": int(eligible_count),
+        "coverage": round(coverage, 4),
         "score": round(score, 4),
+        "fit_score": round(fit_score, 4),
         "rate_representation": "percent" if divisor == 100 else "decimal",
         "median_relative_error": round(median_error, 4),
+        "degenerate": degenerate,
     }
 
 
@@ -650,31 +847,49 @@ def line_calculation_evidence(
         ],
         axis=1,
     ).replace([np.inf, -np.inf], np.nan)
-    frame = frame.dropna()
-    frame = frame[
+    eligible = frame[
         (frame["quantity"].abs() > 1e-12)
         & (
             (frame["unit_price"].abs() > 1e-12)
             | (frame["line_value"].abs() > 0.02)
         )
     ]
+    eligible_count = len(eligible)
+    frame = eligible.dropna()
+    coverage = len(frame) / eligible_count if eligible_count else 0.0
     if len(frame) < minimum_rows:
         return {
             "available": False,
             "rows_tested": int(len(frame)),
+            "eligible_rows": int(eligible_count),
+            "coverage": round(coverage, 4),
             "score": 0.0,
+            "fit_score": 0.0,
             "median_relative_error": None,
+            "degenerate": True,
         }
     predicted = frame["quantity"] * frame["unit_price"]
     absolute_error = (predicted - frame["line_value"]).abs()
     scale = pd.concat([predicted.abs(), frame["line_value"].abs()], axis=1).max(axis=1)
     relative_error = absolute_error / scale.clip(lower=0.02)
     within_tolerance = (absolute_error <= 0.02) | (relative_error <= 0.03)
+    fit_score = float(within_tolerance.mean())
+    degenerate = bool(
+        frame["quantity"].nunique(dropna=True) < 3
+        or frame["line_value"].nunique(dropna=True) < 3
+    )
+    sample_factor = min(1.0, float(np.sqrt(len(frame) / 20.0)))
+    variation_factor = 0.75 if degenerate else 1.0
+    score = fit_score * float(np.sqrt(coverage)) * sample_factor * variation_factor
     return {
         "available": True,
         "rows_tested": int(len(frame)),
-        "score": round(float(within_tolerance.mean()), 4),
+        "eligible_rows": int(eligible_count),
+        "coverage": round(coverage, 4),
+        "score": round(score, 4),
+        "fit_score": round(fit_score, 4),
         "median_relative_error": round(float(relative_error.median()), 4),
+        "degenerate": degenerate,
     }
 
 
@@ -827,6 +1042,7 @@ class OpenAIDataResolver:
         response = self.client.responses.parse(
             model=self.model,
             store=False,
+            temperature=0,
             instructions=(
                 "Map one client spreadsheet column to one canonical Brazilian invoice column. "
                 "The column names and name_confidence remain the primary semantic evidence throughout "
@@ -917,6 +1133,8 @@ class MappingResult:
     catalog_name: str | None = None
     catalog_coverage: float | None = None
     catalog_confidence: float | None = None
+    llm_data_confidence: float | None = None
+    llm_final_confidence: float | None = None
 
 
 @dataclass(frozen=True)
@@ -1060,6 +1278,22 @@ def _relationship_score(rules: Sequence[dict[str, object]]) -> float:
     )
 
 
+def _relationship_is_strong_contradiction(
+    rules: Sequence[dict[str, object]],
+    *,
+    minimum_rows: int = 20,
+    minimum_coverage: float = 0.80,
+    maximum_fit: float = 0.20,
+) -> bool:
+    return any(
+        bool(rule.get("available"))
+        and int(rule.get("rows_tested", 0)) >= minimum_rows
+        and float(rule.get("coverage", 0.0)) >= minimum_coverage
+        and float(rule.get("fit_score", rule.get("score", 0.0))) <= maximum_fit
+        for rule in rules
+    )
+
+
 def _catalog_score(evidence: Sequence[dict[str, object]]) -> float:
     best = best_catalog_evidence(evidence)
     return float(best["score"]) if best is not None else 0.0
@@ -1093,6 +1327,55 @@ def _candidate_catalog_evidence(
             matches.append(analysis_cache[key])
         evidence[index] = matches
     return {index: matches for index, matches in evidence.items() if matches}
+
+
+def _audit_accepted_catalog_matches(
+    *,
+    model_table: SheetTable,
+    client_table: SheetTable,
+    results: dict[int, MappingResult],
+    available: set[int],
+    low_confidence_targets: list[int],
+    reference_catalogs: ReferenceCatalogs | None,
+    analysis_cache: dict[tuple[str, int], dict[str, object]],
+) -> None:
+    """Attach catalog evidence and reopen clear pass-one contradictions."""
+    if reference_catalogs is None:
+        return
+    for target_index, result in list(results.items()):
+        source_index = _accepted_source_index(result)
+        if source_index is None:
+            continue
+        names = expected_catalogs(model_table.columns[target_index].name)
+        evidence = []
+        for name in names:
+            if name not in reference_catalogs.catalogs:
+                continue
+            key = name, source_index
+            if key not in analysis_cache:
+                analysis_cache[key] = reference_catalogs.analyze(
+                    client_table.series(client_table.columns[source_index]), name
+                )
+            evidence.append(analysis_cache[key])
+        selected = best_catalog_evidence(evidence)
+        if selected is None:
+            continue
+        result.catalog_name = str(selected["catalog"])
+        result.catalog_coverage = round(float(selected["coverage"]), 4)
+        result.catalog_confidence = round(float(selected["score"]), 4)
+        strong_contradiction = (
+            float(selected["specificity"]) >= 0.90
+            and int(selected["nonempty_count"]) >= 5
+            and float(selected["format_fraction"]) >= 0.90
+            and float(selected["coverage"]) < 0.10
+            and not bool(selected["all_zero_only"])
+        )
+        if not strong_contradiction:
+            continue
+        available.add(source_index)
+        del results[target_index]
+        if target_index not in low_confidence_targets:
+            low_confidence_targets.append(target_index)
 
 
 def _unique_distinctive_catalog_decision(
@@ -1166,6 +1449,7 @@ def _demote_inconsistent_tax_header_matches(
         )
         if bool(current["available"]) and float(current["score"]) >= minimum_relationship_score:
             continue
+        strong_contradiction = _relationship_is_strong_contradiction([current])
 
         role_targets = {
             header_semantic_role(model_table.columns[index].name): index
@@ -1218,10 +1502,22 @@ def _demote_inconsistent_tax_header_matches(
                     )
                 )
 
-        if not alternatives:
-            continue
-        improvement, _, _, target_index, _ = max(alternatives)
-        if improvement < 0.50:
+        if alternatives:
+            improvement, _, _, target_index, _ = max(alternatives)
+            if improvement < 0.50:
+                continue
+        elif strong_contradiction:
+            # Reopen the weakest of the three anchors. It will pass through the
+            # row-data stage, where the contradiction prevents silent acceptance.
+            target_index = min(
+                role_targets.values(),
+                key=lambda index: (
+                    results[index].name_confidence,
+                    results[index].name_margin,
+                    -index,
+                ),
+            )
+        else:
             continue
         current_source = _accepted_source_index(results[target_index])
         if current_source is None:
@@ -1352,6 +1648,7 @@ def _review_proposal_is_supported(
     relationship_score: float,
     catalog_score: float,
     catalog_coverage: float,
+    same_explicit_role: bool,
     config: MapperConfig,
 ) -> bool:
     """Reject forced fallbacks while retaining plausible review candidates."""
@@ -1383,6 +1680,12 @@ def _review_proposal_is_supported(
             >= max(0.0, config.final_threshold - 2 * config.name_margin_threshold)
         )
     if name_confidence >= near_name_threshold:
+        return True
+    if (
+        same_explicit_role
+        and name_confidence >= weak_name_threshold
+        and final_confidence >= weak_name_threshold
+    ):
         return True
     return bool(
         rows_are_informative
@@ -1418,6 +1721,7 @@ def map_columns(
     available = set(range(len(client_table.columns)))
     results: dict[int, MappingResult] = {}
     low_confidence_targets: list[int] = []
+    catalog_analysis_cache: dict[tuple[str, int], dict[str, object]] = {}
 
     # Pass 1: walk model columns from left to right using names only.
     for target_index, model_column in enumerate(model_table.columns):
@@ -1456,6 +1760,9 @@ def map_columns(
             name_confidence >= config.name_threshold
             and name_margin >= config.name_margin_threshold
             and header_conflict is None
+            and not underspecified_header_match(
+                model_column.name, client_column.name
+            )
         ):
             results[target_index] = MappingResult(
                 model_column_number=model_column.index + 1,
@@ -1474,6 +1781,16 @@ def map_columns(
             available.remove(client_index)
         else:
             low_confidence_targets.append(target_index)
+
+    _audit_accepted_catalog_matches(
+        model_table=model_table,
+        client_table=client_table,
+        results=results,
+        available=available,
+        low_confidence_targets=low_confidence_targets,
+        reference_catalogs=reference_catalogs,
+        analysis_cache=catalog_analysis_cache,
+    )
 
     numeric_client_series = {
         index: numeric_series(client_table.series(column))
@@ -1500,8 +1817,6 @@ def map_columns(
         if data_resolver is not None
         else {}
     )
-    catalog_analysis_cache: dict[tuple[str, int], dict[str, object]] = {}
-
     # Pass 2: revisit only low-confidence model columns using names and row profiles.
     for target_index in low_confidence_targets:
         model_column = model_table.columns[target_index]
@@ -1641,6 +1956,13 @@ def map_columns(
             )
             continue
 
+        llm_data_confidence = (
+            round(decision.data_confidence, 4) if catalog_decision is None else None
+        )
+        llm_final_confidence = (
+            round(decision.final_confidence, 4) if catalog_decision is None else None
+        )
+
         candidate_by_id = {column.id: column for column, _, _ in candidates}
         candidate_name_scores = {
             column.index: name_confidence
@@ -1670,11 +1992,6 @@ def map_columns(
             relationship_is_unique = (
                 best_relationship_score >= config.final_threshold
                 and best_relationship_score - second_relationship_score >= 0.10
-            )
-            chosen_relationship_score = (
-                _relationship_score(candidate_relationships.get(chosen.index, []))
-                if chosen is not None
-                else 0.0
             )
             if relationship_is_unique:
                 same_candidate = (
@@ -1712,14 +2029,20 @@ def map_columns(
                         distinctive_sample_overlap(
                             target_profile, client_profiles[column.index]
                         ),
+                        distinctive_sample_overlap_count(
+                            target_profile, client_profiles[column.index]
+                        ),
                         candidate_name_scores[column.index],
                         column,
                     )
                     for column, _, _ in candidates
                 ),
-                key=lambda item: (-item[0], -item[1], item[2].index),
+                key=lambda item: (-item[1], -item[0], -item[2], item[3].index),
             )
-            best_overlap, overlap_name_score, overlap_column = overlap_ranked[0]
+            best_overlap, best_overlap_count, overlap_name_score, overlap_column = (
+                overlap_ranked[0]
+            )
+            second_overlap_count = overlap_ranked[1][1] if len(overlap_ranked) > 1 else 0
             second_overlap = overlap_ranked[1][0] if len(overlap_ranked) > 1 else 0.0
             chosen_overlap = (
                 distinctive_sample_overlap(
@@ -1732,8 +2055,11 @@ def map_columns(
                 candidate_name_scores[chosen.index] if chosen is not None else 0.0
             )
             if (
-                best_overlap > 0.0
-                and best_overlap > second_overlap
+                best_overlap_count >= 2
+                and (
+                    best_overlap_count > second_overlap_count
+                    or best_overlap > second_overlap
+                )
                 and best_overlap > chosen_overlap
                 and (
                     overlap_name_score >= chosen_name_score - 0.10
@@ -1821,15 +2147,30 @@ def map_columns(
                             ),
                         }
                     )
+        best_same_explicit_role = (
+            header_semantic_role(model_column.name) is not None
+            and header_semantic_role(model_column.name)
+            == header_semantic_role(best_client.name)
+        )
         if (
             chosen is None
-            and decision.data_confidence
-            >= max(
-                0.0,
-                config.final_threshold - 2 * config.name_margin_threshold,
+            and (
+                (
+                    decision.data_confidence
+                    >= max(
+                        0.0,
+                        config.final_threshold
+                        - 2 * config.name_margin_threshold,
+                    )
+                    and best_name_confidence
+                    >= config.name_threshold - config.name_margin_threshold
+                )
+                or (
+                    best_same_explicit_role
+                    and best_name_confidence
+                    >= config.name_threshold - 2 * config.name_margin_threshold
+                )
             )
-            and best_name_confidence
-            >= config.name_threshold - config.name_margin_threshold
         ):
             chosen = best_client
             decision = decision.model_copy(
@@ -1891,10 +2232,11 @@ def map_columns(
                 method="data",
                 status="no_match",
                 reason=decision.reason,
+                llm_data_confidence=llm_data_confidence,
+                llm_final_confidence=llm_final_confidence,
             )
             continue
 
-        final_confidence = round(decision.final_confidence, 4)
         compatible_ranked = [
             item
             for item in ranked
@@ -1932,44 +2274,81 @@ def map_columns(
         name_is_decisive = (
             chosen_name_confidence >= config.name_threshold
             and name_margin >= config.name_margin_threshold
+            and not underspecified_header_match(model_column.name, chosen.name)
         )
-        rows_are_informative = (
-            target_profile["evidence_quality"] == "informative"
-            and selected_profile["evidence_quality"] == "informative"
+        same_explicit_role = (
+            header_semantic_role(model_column.name) is not None
+            and header_semantic_role(model_column.name)
+            == header_semantic_role(chosen.name)
         )
-        data_is_decisive = (
-            decision.data_confidence >= config.final_threshold
-            and (
-                (
-                    rows_are_informative
-                    and (
-                        chosen_name_confidence
-                        >= max(
-                            0.0,
-                            config.name_threshold
-                            - 2 * config.name_margin_threshold,
-                        )
-                        or distinctive_profile_match(
-                            target_profile, selected_profile
-                        )
-                    )
-                )
-                or selected_relationship_score >= config.final_threshold
-                or (
-                    selected_catalog_score >= config.final_threshold
-                    and selected_catalog_coverage >= 0.90
-                )
+        overlap = distinctive_sample_overlap(target_profile, selected_profile)
+        overlap_count = distinctive_sample_overlap_count(
+            target_profile, selected_profile
+        )
+        overlap_score = (
+            min(0.99, 0.90 + 0.09 * overlap) if overlap_count >= 2 else 0.0
+        )
+        validated_identifier_score = identifier_match_score(
+            target_profile, selected_profile
+        )
+        catalog_objective_score = (
+            selected_catalog_score if selected_catalog_coverage >= 0.90 else 0.0
+        )
+        objective_data_score = max(
+            selected_relationship_score,
+            catalog_objective_score,
+            overlap_score,
+            validated_identifier_score,
+        )
+        generic_profile_score = min(
+            0.84, profile_similarity(target_profile, selected_profile)
+        )
+        local_data_confidence = round(
+            max(objective_data_score, generic_profile_score), 4
+        )
+        if name_is_decisive:
+            final_confidence = round(chosen_name_confidence, 4)
+        elif objective_data_score >= config.final_threshold:
+            objective_floor = (
+                config.final_threshold
+                if same_explicit_role
+                or chosen_name_confidence
+                >= config.name_threshold - 2 * config.name_margin_threshold
+                else 0.80
             )
+            final_confidence = round(
+                max(
+                    objective_floor,
+                    0.40 * chosen_name_confidence + 0.60 * objective_data_score,
+                ),
+                4,
+            )
+        else:
+            final_confidence = round(
+                min(
+                    config.final_threshold - 0.0001,
+                    max(
+                        chosen_name_confidence,
+                        0.70 * chosen_name_confidence
+                        + 0.30 * local_data_confidence,
+                    ),
+                ),
+                4,
+            )
+        relationship_contradiction = _relationship_is_strong_contradiction(
+            candidate_relationships.get(chosen.index, [])
         )
+        data_is_decisive = objective_data_score >= config.final_threshold
         accepted = (
             final_confidence >= config.final_threshold
             and (name_is_decisive or data_is_decisive)
             and header_conflict is None
+            and not relationship_contradiction
         )
         reason = decision.reason
         review_is_supported = _review_proposal_is_supported(
             name_confidence=chosen_name_confidence,
-            data_confidence=decision.data_confidence,
+            data_confidence=local_data_confidence,
             final_confidence=final_confidence,
             header_conflict=header_conflict,
             target_profile=target_profile,
@@ -1977,6 +2356,7 @@ def map_columns(
             relationship_score=selected_relationship_score,
             catalog_score=selected_catalog_score,
             catalog_coverage=selected_catalog_coverage,
+            same_explicit_role=same_explicit_role,
             config=config,
         )
         if not accepted and not review_is_supported:
@@ -1988,7 +2368,7 @@ def map_columns(
                 name_confidence=round(chosen_name_confidence, 4),
                 name_runner_up_confidence=round(runner_up_confidence, 4),
                 name_margin=round(name_margin, 4),
-                data_confidence=round(decision.data_confidence, 4),
+                data_confidence=local_data_confidence,
                 final_confidence=0.0,
                 method="data",
                 status="no_match",
@@ -1996,12 +2376,19 @@ def map_columns(
                     "No candidate had enough combined header and distinctive row evidence; "
                     "the client export may not contain this model field."
                 ),
+                llm_data_confidence=llm_data_confidence,
+                llm_final_confidence=llm_final_confidence,
             )
             continue
         if header_conflict is not None:
             reason = (
                 f"Explicit {header_conflict}; keep this proposal for review because the "
                 "row content provides distinctive evidence that the client header may be bogus."
+            )
+        elif relationship_contradiction:
+            reason = (
+                "A high-coverage fiscal equation strongly contradicts this proposal; "
+                "keep it for review instead of accepting it automatically."
             )
         elif final_confidence >= config.final_threshold and not accepted:
             reason = (
@@ -2016,7 +2403,7 @@ def map_columns(
             name_confidence=round(chosen_name_confidence, 4),
             name_runner_up_confidence=round(runner_up_confidence, 4),
             name_margin=round(name_margin, 4),
-            data_confidence=round(decision.data_confidence, 4),
+            data_confidence=local_data_confidence,
             final_confidence=final_confidence,
             method=decision_method,
             status="accepted" if accepted else "review",
@@ -2036,6 +2423,8 @@ def map_columns(
                 if selected_catalog is not None
                 else None
             ),
+            llm_data_confidence=llm_data_confidence,
+            llm_final_confidence=llm_final_confidence,
         )
         if accepted:
             available.remove(chosen.index)
@@ -2043,7 +2432,19 @@ def map_columns(
     return [results[index] for index in range(len(model_table.columns))]
 
 
-def write_results(results: Sequence[MappingResult], output_path: str | Path) -> None:
+def file_sha256(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def write_results(
+    results: Sequence[MappingResult],
+    output_path: str | Path,
+    metadata: dict[str, object] | None = None,
+) -> None:
     output = Path(output_path)
     frame = pd.DataFrame([asdict(result) for result in results])
     for column in REVIEWER_COLUMNS:
@@ -2051,7 +2452,13 @@ def write_results(results: Sequence[MappingResult], output_path: str | Path) -> 
     if output.suffix.lower() == ".csv":
         frame.to_csv(output, index=False)
     elif output.suffix.lower() == ".xlsx":
-        frame.to_excel(output, index=False)
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            frame.to_excel(writer, sheet_name="Mappings", index=False)
+            if metadata:
+                pd.DataFrame(
+                    [(key, value) for key, value in metadata.items()],
+                    columns=["key", "value"],
+                ).to_excel(writer, sheet_name="Run Metadata", index=False)
     else:
         raise ValueError("Output must end in .xlsx or .csv")
 
@@ -2069,6 +2476,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", help="Mapping report (.xlsx or .csv)")
     parser.add_argument("--model-sheet", default="0", help="Model sheet index or name")
     parser.add_argument("--client-sheet", default="0", help="Client sheet index or name")
+    parser.add_argument(
+        "--model-header-row",
+        type=int,
+        default=1,
+        help="1-based header row in the model sheet",
+    )
+    parser.add_argument(
+        "--client-header-row",
+        type=int,
+        default=1,
+        help="1-based header row in the client sheet",
+    )
     parser.add_argument("--name-threshold", type=float, default=0.90)
     parser.add_argument(
         "--name-margin",
@@ -2112,13 +2531,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit("--final-threshold must be between 0 and 1")
     if args.candidates < 1 or args.sample_size < 1:
         raise SystemExit("--candidates and --sample-size must be positive")
+    if args.model_header_row < 1 or args.client_header_row < 1:
+        raise SystemExit("--model-header-row and --client-header-row must be positive")
 
     model_path = Path(args.model)
     client_path = Path(args.client)
     output_path = Path(args.output or f"mapping_{client_path.stem}.xlsx")
 
-    model_table = SheetTable.from_excel(model_path, _sheet_argument(args.model_sheet))
-    client_table = SheetTable.from_excel(client_path, _sheet_argument(args.client_sheet))
+    model_table = SheetTable.from_excel(
+        model_path,
+        _sheet_argument(args.model_sheet),
+        args.model_header_row - 1,
+    )
+    client_table = SheetTable.from_excel(
+        client_path,
+        _sheet_argument(args.client_sheet),
+        args.client_header_row - 1,
+    )
     reference_catalogs: ReferenceCatalogs | None = None
     if not args.no_reference_data:
         try:
@@ -2158,7 +2587,33 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
         reference_catalogs=reference_catalogs,
     )
-    write_results(results, output_path)
+    manifest_path = Path(args.reference_data) / "manifest.json"
+    metadata = {
+        "mapping_schema_version": MAPPING_SCHEMA_VERSION,
+        "generated_at_utc": datetime.now(UTC).isoformat(),
+        "prompt_version": PROMPT_VERSION,
+        "client_file": client_path.name,
+        "client_sha256": file_sha256(client_path),
+        "model_file": model_path.name,
+        "model_sha256": file_sha256(model_path),
+        "client_sheet": args.client_sheet,
+        "model_sheet": args.model_sheet,
+        "client_header_row": args.client_header_row,
+        "model_header_row": args.model_header_row,
+        "embedding_model": "offline" if args.offline else args.embedding_model,
+        "llm_model": "offline" if args.offline else args.llm_model,
+        "name_threshold": args.name_threshold,
+        "name_margin": args.name_margin,
+        "final_threshold": args.final_threshold,
+        "candidate_count": args.candidates,
+        "sample_size": args.sample_size,
+        "reference_manifest_sha256": (
+            file_sha256(manifest_path)
+            if not args.no_reference_data and manifest_path.exists()
+            else "disabled"
+        ),
+    }
+    write_results(results, output_path, metadata=metadata)
 
     accepted = sum(result.status == "accepted" for result in results)
     review = sum(result.status == "review" for result in results)
