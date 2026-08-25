@@ -38,6 +38,7 @@ def main(argv: list[str] | None = None) -> int:
     wanted = args.client or list(CLIENTS)
 
     total_correct = 0
+    total_delivered = 0
     total_present = 0
     fabrications = 0
 
@@ -70,6 +71,7 @@ def main(argv: list[str] | None = None) -> int:
 
         correct = score.count(Outcome.CORRECT)
         total_correct += correct
+        total_delivered += score.delivered_correct
         total_present += score.present
         fabrications += score.count(Outcome.FABRICATED)
 
@@ -81,6 +83,11 @@ def main(argv: list[str] | None = None) -> int:
               + ("   <-- BLOCKING" if score.count(Outcome.FABRICATED) else ""))
         print(f"  accepted         {len(score.accepted):3}      precision (lower bound) "
               f"{_pct(score.accept_precision_lower)}")
+        print(f"  DELIVERED        {score.delivered_correct:3}      delivered recall "
+              f"{_pct(score.delivered_recall)}   <-- what the customer receives")
+        if score.withheld_correct:
+            print(f"  withheld          {len(score.withheld_correct):3}      right column found, "
+                  "held back by the accept gate")
         print(f"  header-independent accepts        {_pct(score.header_independent_share)}"
               "   <-- generalization metric")
         print(f"  method census    {dict(method_census(score))}")
@@ -90,6 +97,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"    FABRICATION m{row.model_column} {row.model_name!r} <- c{row.client_column}"
                   f" (0 populated rows, final={row.final_confidence})")
         if args.show_losses:
+            for row in score.withheld_correct:
+                print(f"    withheld     m{row.model_column:<4} "
+                      f"{row.model_name[:30]:30} <- c{row.client_column} "
+                      f"final={row.final_confidence} ({row.status})")
             for row in score.rows:
                 if row.outcome in (Outcome.MISSED, Outcome.WRONG_COLUMN):
                     want = key.present.get(row.model_column)
@@ -97,8 +108,14 @@ def main(argv: list[str] | None = None) -> int:
                           f"{row.model_name[:30]:30} chose={row.client_column} want=c{want}")
 
     if total_present:
-        print(f"\nKEYED TOTAL  {total_correct}/{total_present} "
-              f"({total_correct / total_present * 100:.1f}%)   fabrications {fabrications}")
+        print(f"\nKEYED TOTAL  found {total_correct}/{total_present} "
+              f"({total_correct / total_present * 100:.1f}%)   "
+              f"DELIVERED {total_delivered}/{total_present} "
+              f"({total_delivered / total_present * 100:.1f}%)   "
+              f"fabrications {fabrications}")
+        if total_correct != total_delivered:
+            print(f"             {total_correct - total_delivered} correct mappings found "
+                  "but not delivered - run with --show-losses to list them")
     return 1 if fabrications else 0
 
 

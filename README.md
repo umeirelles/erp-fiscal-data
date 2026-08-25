@@ -77,6 +77,35 @@ python update_reference_data.py
 
 Review and commit the updated CSV files and `manifest.json` together.
 
+## Scoring a run
+
+`mapeval` scores the archived reports against the `de_para_*.xlsx` answer keys:
+
+```bash
+python -m mapeval                 # all clients
+python -m mapeval --show-losses   # list every miss, wrong column and withheld row
+```
+
+It reports two recall figures and they are not interchangeable:
+
+- **found** — the mapper picked the client column the key names. Measures retrieval.
+- **delivered** — that pick also cleared the accept gate, so `apply_invoice_mapping.py`
+  populates it. Measures what the customer actually receives.
+
+Delivered is currently 31/56 against found 42/56: eleven correct mappings are
+located and then withheld, every one of them in the confidence band just under
+the 0.90 accept threshold. Lowering the threshold is not the fix — on the keyed
+clients, moving the gate from 0.90 to 0.83 recovers those eleven and admits 116
+proposals the keys cannot adjudicate. Closing this gap needs reviewer
+adjudication of the sub-gate band, not a looser constant.
+
+The harness exits non-zero on any fabrication — a mapping delivered onto a
+client column with zero populated rows.
+
+`sap_procosa` and `sap_terumo` have no column-level key, so no precision or
+recall figure is printed for them; only the accept count and the adjudication
+backlog.
+
 ## Tests
 
 ```bash

@@ -147,3 +147,45 @@ def test_no_report_delivers_a_column_with_no_data(client: str, report: str) -> N
     assert [
         (row.model_column, row.client_column) for row in score.vacuous_targets
     ] == []
+
+
+@requires_workbooks
+def test_delivered_recall_is_never_above_picking_recall() -> None:
+    # The invariant that makes the two numbers safe to print side by side:
+    # delivery is a subset of picking, so a run can never deliver a column it
+    # did not first find.
+    for client, (client_file, report_file, key_file) in KEYED.items():
+        key = load_answer_key(ROOT / key_file, client)
+        score = score_report(ROOT / report_file, ROOT / client_file, key)
+        assert score.delivered_correct <= score.count(Outcome.CORRECT)
+        assert len(score.withheld_correct) == (
+            score.count(Outcome.CORRECT) - score.delivered_correct
+        )
+
+
+@requires_workbooks
+def test_the_accept_gate_withholds_eleven_correct_mappings() -> None:
+    # Picking recall is 42/56 but the customer receives 31. The gap is the
+    # single largest loss in the pipeline and it is invisible to any metric
+    # that scores the pick alone, so it is pinned here.
+    found = delivered = 0
+    for client, (client_file, report_file, key_file) in KEYED.items():
+        key = load_answer_key(ROOT / key_file, client)
+        score = score_report(ROOT / report_file, ROOT / client_file, key)
+        found += score.count(Outcome.CORRECT)
+        delivered += score.delivered_correct
+    assert (found, delivered) == (42, 31)
+
+
+@requires_workbooks
+def test_every_withheld_correct_mapping_sits_below_the_accept_threshold() -> None:
+    # Confirms the gap is the confidence gate and not some other refusal:
+    # if a withheld row ever clears 0.90, something else is blocking it and
+    # this analysis no longer explains the loss.
+    for client, (client_file, report_file, key_file) in KEYED.items():
+        key = load_answer_key(ROOT / key_file, client)
+        score = score_report(ROOT / report_file, ROOT / client_file, key)
+        for row in score.withheld_correct:
+            assert (row.final_confidence or 0.0) < 0.90, (
+                f"{client} m{row.model_column} withheld at {row.final_confidence}"
+            )

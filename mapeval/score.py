@@ -65,6 +65,40 @@ class Score:
         return [r for r in self.rows if r.status == "accepted"]
 
     @property
+    def delivered_correct(self) -> int:
+        """Correct mappings the downstream app actually receives.
+
+        apply_invoice_mapping.py populates accepted and reviewer-confirmed
+        rows only, so a correct pick left in *review* is invisible to the
+        customer. Reporting picking recall alone overstates delivery.
+        """
+        return sum(
+            1
+            for r in self.rows
+            if r.outcome is Outcome.CORRECT and r.status == "accepted"
+        )
+
+    @property
+    def delivered_recall(self) -> float | None:
+        """The number that describes the product. Never above recall_on_present."""
+        return self.delivered_correct / self.present if self.present else None
+
+    @property
+    def withheld_correct(self) -> list[Row]:
+        """Right column found, then held back by the accept gate.
+
+        Not a scoring artefact: every one of these is a column the firm could
+        have delivered and did not. Sorted by how close it came to shipping,
+        because that is the order a reviewer should work them in.
+        """
+        held = [
+            r
+            for r in self.rows
+            if r.outcome is Outcome.CORRECT and r.status != "accepted"
+        ]
+        return sorted(held, key=lambda r: -(r.final_confidence or 0.0))
+
+    @property
     def accept_precision_lower(self) -> float | None:
         """Undetermined accepts counted as wrong, so a new unverified accept
         lowers the bound rather than leaving it flatteringly unchanged."""
