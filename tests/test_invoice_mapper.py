@@ -19,6 +19,9 @@ from invoice_mapper import (
     _trio_proof_text,
     summarize_adjudication_queue,
     MappingResult,
+    _supporting_step_ids,
+    map_columns,
+    LexicalHeaderScorer,
     client_column_is_vacuous,
     ColumnRef,
     DataMappingDecision,
@@ -1258,3 +1261,49 @@ def test_the_queue_says_when_the_branch_rather_than_the_evidence_held_a_row() ->
         final_threshold=0.90, sample_size=8,
     )
     assert "cannot auto-accept" in rows[0].why_held
+
+
+def test_the_report_names_the_step_that_carried_each_decision() -> None:
+    # "which step of our code made this possible" has to be answerable per
+    # column, and the answer must come from the same scores the decision was
+    # made on rather than from a label chosen after the fact.
+    base = [1000.0 + index for index in range(60)]
+    model = table(["Base ICMS", "Aliquota ICMS", "Valor ICMS", "Série"], [])
+    client = table(
+        ["Base ICMS", "Aliq. ICMS", "Valor ICMS", "SERIE"],
+        [[base[i], 18.0, round(base[i] * 0.18, 2), "1"] for i in range(60)],
+    )
+    results = map_columns(model, client, LexicalHeaderScorer(), None)
+    by_name = {r.model_column: r for r in results}
+    icms = by_name["Base ICMS"]
+    # the header matched AND the trio closed, so both are listed - but the
+    # decision is reported as the claim that survives an unknown vocabulary
+    assert icms.supported_by == "lexical + arithmetic"
+    assert icms.decided_by == "arithmetic"
+    # a column with nothing but its header says so, and says only that
+    serie = by_name["Série"]
+    assert serie.supported_by == "lexical"
+    assert serie.decided_by == "lexical"
+
+
+def test_an_offline_run_never_claims_the_semantic_step() -> None:
+    # The header step is a property of the scorer. Reporting 'semantic' for a
+    # lexical run would credit evidence that never ran.
+    model = table(["Série"], [])
+    client = table(["SERIE"], [["1"], ["2"]])
+    results = map_columns(model, client, LexicalHeaderScorer(), None)
+    assert all("semantic" not in (r.supported_by or "") for r in results)
+    assert all("resolver" not in (r.supported_by or "") for r in results)
+
+
+def test_a_non_discriminating_proof_is_not_reported_as_arithmetic_support() -> None:
+    # A proof that cannot single out a column corroborates the tax scope, not
+    # the mapping, so it must not appear as evidence for it.
+    steps = _supporting_step_ids(
+        header_step="lexical",
+        name_confidence=0.9,
+        arithmetic_proof="valor = base x aliquota holds for pis on 5501 rows at fit "
+        "0.9996 - but this client has 2 disjoint pis blocks that each satisfy it, "
+        "so this does not single out this column",
+    )
+    assert steps == ["lexical"]

@@ -20,6 +20,7 @@ import pandas as pd
 from openai import OpenAI
 from pydantic import BaseModel, Field
 
+from mapping_steps import deciding_step, format_steps
 from reference_catalog import ReferenceCatalogs, best_catalog_evidence, expected_catalogs
 
 
@@ -1206,6 +1207,42 @@ class OpenAIDataResolver:
         return decision
 
 
+def _supporting_step_ids(
+    *,
+    header_step: str,
+    name_confidence: float,
+    relationship_score: float = 0.0,
+    catalog_score: float = 0.0,
+    overlap_score: float = 0.0,
+    identifier_score: float = 0.0,
+    arithmetic_proof: str | None = None,
+    resolver_ran: bool = False,
+) -> list[str]:
+    """Which named steps actually supported this mapping.
+
+    Read from the same scores the decision was made on, so the report cannot
+    claim evidence the pipeline did not use. A step is listed when it produced
+    a positive signal for the chosen column, not merely when it ran.
+    """
+    steps: list[str] = []
+    if resolver_ran:
+        steps.append("resolver")
+    if name_confidence > 0.0:
+        steps.append(header_step)
+    if overlap_score > 0.0:
+        steps.append("profile")
+    if identifier_score > 0.0:
+        steps.append("identifier")
+    if catalog_score > 0.0:
+        steps.append("catalog")
+    # A proof that cannot single out a column corroborates the tax scope, not
+    # this mapping, so it is not evidence for it. See _trio_proof_text.
+    proof_is_decisive = bool(arithmetic_proof) and "does not single out" not in arithmetic_proof
+    if relationship_score > 0.0 or proof_is_decisive:
+        steps.append("arithmetic")
+    return steps
+
+
 @dataclass
 class MappingResult:
     model_column_number: int
@@ -1231,6 +1268,10 @@ class MappingResult:
     #: here. Header-independent, so it is what tells a reviewer - and the eval
     #: harness - that this mapping would survive an unfamiliar ERP.
     arithmetic_proof: str | None = None
+    #: The named analysis steps behind this row - see mapping_steps.py.
+    supported_by: str = ""
+    decided_by: str = ""
+    vetoed_by: str = ""
     llm_data_confidence: float | None = None
     llm_final_confidence: float | None = None
 
@@ -2201,6 +2242,8 @@ def map_columns(
     if not client_table.columns:
         raise ValueError("Client spreadsheet has no columns")
 
+    # Which header step ran is a property of the scorer, not of any column.
+    header_step = "lexical" if isinstance(header_scorer, LexicalHeaderScorer) else "semantic"
     similarities = header_scorer.scores(
         [column.name for column in model_table.columns],
         [column.name for column in client_table.columns],
@@ -2273,9 +2316,17 @@ def map_columns(
                 method="name",
                 status="accepted",
                 reason="Accepted from header similarity with a clear lead over the runner-up.",
-                arithmetic_proof=_trio_proof_text(
-                trio_corroboration(client_tax_trios, model_column.name, client_column.index)
-            ),
+                arithmetic_proof=(proof := _trio_proof_text(
+                    trio_corroboration(client_tax_trios, model_column.name, client_column.index)
+                )),
+                supported_by=format_steps(
+                    steps := _supporting_step_ids(
+                        header_step=header_step,
+                        name_confidence=name_confidence,
+                        arithmetic_proof=proof,
+                    )
+                ),
+                decided_by=deciding_step(steps),
             )
             available.remove(client_index)
         else:
@@ -2936,8 +2987,26 @@ def map_columns(
             method=decision_method,
             status="accepted" if accepted else "review",
             reason=reason,
-            arithmetic_proof=_trio_proof_text(
+            arithmetic_proof=(proof := _trio_proof_text(
                 trio_corroboration(client_tax_trios, model_column.name, chosen.index)
+            )),
+            supported_by=format_steps(
+                steps := _supporting_step_ids(
+                    header_step=header_step,
+                    name_confidence=chosen_name_confidence,
+                    relationship_score=selected_relationship_score,
+                    catalog_score=catalog_objective_score,
+                    overlap_score=overlap_score,
+                    identifier_score=validated_identifier_score,
+                    arithmetic_proof=proof,
+                    resolver_ran=llm_final_confidence is not None,
+                )
+            ),
+            decided_by=deciding_step(steps),
+            vetoed_by=(
+                "vacuity" if accepted_but_for_vacuity
+                else "family_conflict" if header_conflict is not None
+                else ""
             ),
             catalog_name=(
                 str(selected_catalog["catalog"])

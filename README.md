@@ -39,7 +39,11 @@ shortlist is marked, and everything else carries a sentence explaining why it
 was set aside. A long list is expected — the base model is a superset and a
 client supplies only part of it.
 
-Its `Mappings` sheet records the selected source column, locally computed name/data/final scores, LLM scores for audit, catalog evidence, status, and reason. `Run Metadata` records file hashes and run settings so stale reports can be rejected when applied.
+Its `Mappings` sheet records the selected source column, locally computed name/data/final scores, LLM scores for audit, catalog evidence, status, and reason.
+
+Three columns answer *which step of the analysis produced this mapping*: `supported_by` lists every named step that found evidence for the chosen column, `decided_by` names the strongest of them, and `vetoed_by` names any guard that refused an otherwise viable match. The steps are defined in `mapping_steps.py`, which is the single place they are named — seven evidence steps (`resolver`, `lexical`, `semantic`, `profile`, `identifier`, `catalog`, `arithmetic`) and four guards (`vacuity`, `family_conflict`, `underspecified`, `exclusivity`).
+
+Each evidence step declares whether it **transfers** — whether its reasoning survives an ERP whose vocabulary nobody has seen. `lexical` and `semantic` read the words this client chose and do not; `catalog`, `arithmetic`, `identifier` and `profile` rest on tax law, official code tables and check digits, and do. `resolver` is ranked weakest and marked non-transferring on purpose: it is an adjudicator, not evidence, so `decided_by = resolver` keeps its honest meaning — nothing objective supported this and the model's judgment carried it. The share of accepts whose `decided_by` transfers is the generalization metric for the tool. `Run Metadata` records file hashes and run settings so stale reports can be rejected when applied.
 
 If headers are not on the first row, pass their 1-based positions with `--client-header-row` or `--model-header-row`.
 

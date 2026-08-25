@@ -31,6 +31,9 @@ MAPPING_METADATA = [
     ("catalog_coverage", "catalog_coverage"),
     ("catalog_confidence", "catalog_confidence"),
     ("final_confidence", "final_confidence"),
+    ("decided_by", "decided_by"),
+    ("supported_by", "supported_by"),
+    ("vetoed_by", "vetoed_by"),
     ("arithmetic_proof", "arithmetic_proof"),
     ("reason", "reason"),
     ("reviewer_status", "reviewer_status"),
@@ -158,6 +161,10 @@ def _ordered_mapping(mapping_path: str | Path, model: SheetTable) -> pd.DataFram
             )
 
     for optional in [
+        # Reports written before these columns existed must still apply.
+        "decided_by",
+        "supported_by",
+        "vetoed_by",
         "arithmetic_proof",
         "catalog_name",
         "catalog_coverage",
