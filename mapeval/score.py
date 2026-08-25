@@ -37,7 +37,10 @@ class Score:
     rows: list[Row] = field(default_factory=list)
     present: int = 0
     client_columns: int = 0
+    #: Delivered onto a column with no data. Blocking.
     vacuous_targets: list[Row] = field(default_factory=list)
+    #: Proposed onto a column with no data but not delivered. Reported only.
+    vacuous_proposals: list[Row] = field(default_factory=list)
 
     def count(self, outcome: Outcome) -> int:
         return sum(1 for row in self.rows if row.outcome is outcome)
@@ -140,11 +143,14 @@ def score_report(
                 expected_client_column=expected,
                 chosen_is_vacuous=chosen in vacuous if chosen is not None else False,
                 in_key=position in key.present,
+                delivered=str(raw_row[column["status"]]) == "accepted",
             ),
         )
         result.rows.append(row)
         if row.outcome is Outcome.FABRICATED:
             result.vacuous_targets.append(row)
+        elif chosen is not None and chosen in vacuous:
+            result.vacuous_proposals.append(row)
     return result
 
 

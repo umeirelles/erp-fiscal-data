@@ -36,18 +36,26 @@ def classify(
     expected_client_column: int | None,
     chosen_is_vacuous: bool,
     in_key: bool,
+    delivered: bool = True,
 ) -> Outcome:
     """Classify one model column's outcome.
 
     ``chosen_is_vacuous`` means the selected client column has zero populated
-    rows. That is fabrication by construction - the downstream app receives a
-    column that looks mapped and is silently blank - and it is checked before
-    anything else, because a vacuous target is wrong regardless of the key.
+    rows. Delivered, that is fabrication by construction - the downstream app
+    receives a column that looks mapped and is silently blank - so it is
+    checked before anything else.
+
+    ``delivered`` gates that. apply_invoice_mapping.py populates only accepted
+    and reviewer-confirmed rows, so a *review* proposal onto a vacuous column
+    never reaches the customer. It is a latent risk worth reporting (one
+    --include-review away) but it is not a fabrication, and conflating the two
+    overstates the delivered risk by an order of magnitude: the offline run
+    proposes 35 such rows while delivering none of them.
 
     Vacuity is *not* all-zero. An exempt operation has a zero base, and six of
     oracle's all-zero columns are client-authored ground truth.
     """
-    if chosen_client_column is not None and chosen_is_vacuous:
+    if delivered and chosen_client_column is not None and chosen_is_vacuous:
         return Outcome.FABRICATED
 
     if not in_key:

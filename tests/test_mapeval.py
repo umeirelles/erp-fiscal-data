@@ -50,7 +50,7 @@ def test_annotation_ignores_cells_that_are_not_annotations() -> None:
     assert parse_coluna_annotation("Base CBS") is None
 
 
-def test_a_vacuous_target_is_fabrication_even_when_the_key_agrees() -> None:
+def test_a_delivered_vacuous_target_is_fabrication_even_when_the_key_agrees() -> None:
     # An accepted mapping onto a column with no data reaches the customer's
     # workbook looking mapped and silently blank. It is wrong regardless of
     # what the key says, so vacuity is checked before anything else.
@@ -60,7 +60,22 @@ def test_a_vacuous_target_is_fabrication_even_when_the_key_agrees() -> None:
         expected_client_column=5,
         chosen_is_vacuous=True,
         in_key=True,
+        delivered=True,
     ) is Outcome.FABRICATED
+
+
+def test_an_undelivered_vacuous_proposal_is_not_a_fabrication() -> None:
+    # A review row is never populated by apply_invoice_mapping, so it cannot
+    # reach the customer. Conflating the two made the offline run report 35
+    # fabrications where it delivers none.
+    assert classify(
+        model_column=1,
+        chosen_client_column=5,
+        expected_client_column=5,
+        chosen_is_vacuous=True,
+        in_key=True,
+        delivered=False,
+    ) is Outcome.CORRECT
 
 
 def test_absence_is_a_correct_answer_not_a_miss() -> None:
