@@ -113,7 +113,7 @@ def test_harness_reproduces_the_corrected_baseline() -> None:
         key = load_answer_key(ROOT / key_file, client)
         score = score_report(ROOT / report_file, ROOT / client_file, key)
         total += score.count(Outcome.CORRECT)
-    assert total == 37
+    assert total == 38
 
 
 @requires_workbooks
@@ -129,15 +129,21 @@ def test_the_four_key_corrections_are_worth_exactly_four_columns() -> None:
                 strict += score.count(Outcome.CORRECT)
             else:
                 corrected += score.count(Outcome.CORRECT)
-    assert (strict, corrected) == (33, 37)
+    assert (strict, corrected) == (34, 38)
     assert sum(len(v) for v in KEY_CORRECTIONS.values()) == 4
 
 
 @requires_workbooks
-def test_the_two_known_datasul_fabrications_are_detected() -> None:
-    key = load_answer_key(ROOT / "de_para_datasul.xlsx", "datasul")
-    score = score_report(
-        ROOT / "mapping_datasul_full.xlsx", ROOT / "datasul_maio.xlsx", key
-    )
-    fabricated = {row.model_column for row in score.vacuous_targets}
-    assert fabricated == {32, 188}
+@pytest.mark.parametrize(("client", "report"), [
+    ("datasul", "mapping_datasul_full.xlsx"),
+    ("oracle", "mapping_oracle_full.xlsx"),
+])
+def test_no_report_delivers_a_column_with_no_data(client: str, report: str) -> None:
+    # datasul shipped two of these - m32 <- c280 and m188 <- c326, both
+    # accepted on header similarity onto columns with zero populated rows out
+    # of 6,804. The vacuity guard removed them; this keeps them gone.
+    key = load_answer_key(ROOT / KEYED[client][2], client)
+    score = score_report(ROOT / report, ROOT / KEYED[client][0], key)
+    assert [
+        (row.model_column, row.client_column) for row in score.vacuous_targets
+    ] == []
