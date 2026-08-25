@@ -1132,6 +1132,10 @@ class MappingResult:
     reason: str
     catalog_name: str | None = None
     catalog_coverage: float | None = None
+    #: Coverage over distinct codes. catalog_coverage stays row-weighted so the
+    #: reported column keeps its meaning; the gates use this one, because it is
+    #: what catalog_confidence is now computed from.
+    catalog_distinct_coverage: float | None = None
     catalog_confidence: float | None = None
     llm_data_confidence: float | None = None
     llm_final_confidence: float | None = None
@@ -1362,6 +1366,9 @@ def _audit_accepted_catalog_matches(
             continue
         result.catalog_name = str(selected["catalog"])
         result.catalog_coverage = round(float(selected["coverage"]), 4)
+        result.catalog_distinct_coverage = round(
+            float(selected.get("distinct_coverage", selected["coverage"])), 4
+        )
         result.catalog_confidence = round(float(selected["score"]), 4)
         strong_contradiction = (
             float(selected["specificity"]) >= 0.90
@@ -1395,7 +1402,7 @@ def _unique_distinctive_catalog_decision(
             float(best["specificity"]) < 0.90
             or int(best["nonempty_count"]) < 5
             or float(best["format_fraction"]) < 0.90
-            or float(best["coverage"]) < 0.90
+            or float(best.get("distinct_coverage", best["coverage"])) < 0.90
             or bool(best["all_zero_only"])
         ):
             continue
@@ -2268,6 +2275,14 @@ def map_columns(
             if selected_catalog is not None
             else 0.0
         )
+        # The gates read distinct coverage - the statistic catalog_confidence
+        # is computed from - while the reported catalog_coverage column keeps
+        # its original row-weighted meaning so existing reports stay readable.
+        selected_catalog_distinct_coverage = (
+            float(selected_catalog.get("distinct_coverage", selected_catalog["coverage"]))
+            if selected_catalog is not None
+            else 0.0
+        )
         header_conflict = semantic_header_conflict(
             model_column.name, chosen.name
         )
@@ -2292,7 +2307,9 @@ def map_columns(
             target_profile, selected_profile
         )
         catalog_objective_score = (
-            selected_catalog_score if selected_catalog_coverage >= 0.90 else 0.0
+            selected_catalog_score
+            if selected_catalog_distinct_coverage >= 0.90
+            else 0.0
         )
         objective_data_score = max(
             selected_relationship_score,
@@ -2355,7 +2372,7 @@ def map_columns(
             selected_profile=selected_profile,
             relationship_score=selected_relationship_score,
             catalog_score=selected_catalog_score,
-            catalog_coverage=selected_catalog_coverage,
+            catalog_coverage=selected_catalog_distinct_coverage,
             same_explicit_role=same_explicit_role,
             config=config,
         )
