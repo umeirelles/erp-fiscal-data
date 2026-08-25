@@ -205,3 +205,20 @@ def test_a_non_discriminating_proof_is_not_independent_evidence() -> None:
         "client has 2 disjoint pis blocks that each satisfy it, so this does not "
         "single out this column"
     ).header_independent
+
+
+@requires_workbooks
+def test_accepts_the_key_cannot_check_are_counted_and_visible() -> None:
+    # The exit code reads fabrications only, and an out-of-key accept onto a
+    # POPULATED column is UNDETERMINED, not FABRICATED - so a rule that invents
+    # mappings outside the key exits 0. This pins the number that exposes it.
+    for client, (client_file, report_file, key_file) in KEYED.items():
+        key = load_answer_key(ROOT / key_file, client)
+        score = score_report(ROOT / report_file, ROOT / client_file, key)
+        assert len(score.undetermined_accepts) == (
+            len(score.accepted)
+            - sum(1 for r in score.accepted if r.outcome is not Outcome.UNDETERMINED)
+        )
+        # and it is exactly what separates the precision bound from 100%
+        good = sum(1 for r in score.accepted if r.outcome is Outcome.CORRECT)
+        assert good + len(score.undetermined_accepts) <= len(score.accepted)

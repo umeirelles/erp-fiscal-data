@@ -88,6 +88,8 @@ def main(argv: list[str] | None = None) -> int:
         if score.withheld_correct:
             print(f"  withheld          {len(score.withheld_correct):3}      right column found, "
                   "held back by the accept gate")
+        print(f"  unadjudicable    {len(score.undetermined_accepts):3}      accepted, key cannot "
+              "check either way")
         print(f"  header-independent accepts        {_pct(score.header_independent_share)}"
               "   <-- generalization metric")
         print(f"  method census    {dict(method_census(score))}")
@@ -116,6 +118,10 @@ def main(argv: list[str] | None = None) -> int:
         if total_correct != total_delivered:
             print(f"             {total_correct - total_delivered} correct mappings found "
                   "but not delivered - run with --show-losses to list them")
+    # Fabrication is the only automatic block. Everything else needs a human:
+    # the key covers 56 of 227 model columns, so a change that invents
+    # mappings outside it raises "unadjudicable" while leaving this at zero.
+    # Read that line before trusting a green exit.
     return 1 if fabrications else 0
 
 

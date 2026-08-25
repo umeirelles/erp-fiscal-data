@@ -118,6 +118,22 @@ class Score:
         return good / len(accepts)
 
     @property
+    def undetermined_accepts(self) -> list[Row]:
+        """Accepted mappings the key cannot adjudicate either way.
+
+        The blind spot, and it is structural rather than a bug: with the key
+        covering 56 of 227 model columns, ``classify`` cannot say whether an
+        out-of-key accept is right, and inventing a verdict is exactly what
+        Outcome.UNDETERMINED exists to prevent. But a change that invents
+        mappings outside the key grows this number while ``fabrications`` -
+        the only thing the exit code reads - stays at zero. A hand-tuned
+        ICSP<-ICMS rule scores +3 correct, 0 fabrications, exit 0, and writes
+        wrong tax rates onto thousands of rows. Print the count so the silence
+        is visible; accept_precision_lower already prices it in.
+        """
+        return [r for r in self.accepted if r.outcome is Outcome.UNDETERMINED]
+
+    @property
     def header_independent_share(self) -> float | None:
         accepts = self.accepted
         if not accepts:

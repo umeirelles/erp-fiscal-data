@@ -1167,3 +1167,22 @@ def test_rate_aliases_for_one_block_are_not_counted_as_rival_blocks() -> None:
     trios = discover_client_tax_trios(sheet)
     assert len(trios[("icms", ())]) >= 2
     assert all(t["alternatives"] == 1 for t in trios[("icms", ())])
+
+
+def test_valor_contabil_is_the_document_total_not_a_bookkeeping_field() -> None:
+    # SPED EFD registro C100 field VL_DOC: in the fiscal register "valor
+    # contabil" is the document total. datasul's own rows prove it - Vlr
+    # Contabil == Vlr Total + Valor IPI holds on 6,737 of 6,800 rows (0.9907)
+    # while plain equality with Vlr Total holds on 51%.
+    target = semantic_header_signature("Val.Total NF")
+    for header in ("Vlr Contábil", "Valor Contabil", "Val Contab", "VL CONTABIL"):
+        assert semantic_header_signature(header) == target, header
+
+
+def test_the_value_word_is_what_spares_the_bookkeeping_false_friends() -> None:
+    # The rewrite needs a value word in front. Without that anchor it would
+    # swallow the chart-of-accounts vocabulary that shares the same adjective.
+    target = semantic_header_signature("Val.Total NF")
+    for header in ("Conta Contábil", "Lançamento Contábil", "Data Contábil",
+                   "Contábil", "Plano de Contas Contábil", "Centro de Custo Contábil"):
+        assert semantic_header_signature(header) != target, header

@@ -118,6 +118,14 @@ def semantic_header_signature(value: object) -> frozenset[str]:
     # replacement is domain vocabulary, not a mapping learned from a client file.
     normalized = re.sub(r"\btax\s+situation\b", "cst", normalized)
     normalized = re.sub(r"\bsituacao\s+tributaria\b", "cst", normalized)
+    # In the Livro Registro de Entradas/Saidas - and SPED EFD registro C100
+    # field VL_DOC - "valor contabil" IS the total value of the fiscal
+    # document. Model columns 40-51 are that register's value block, so this
+    # states what the canonical model means, not what one client calls it. The
+    # value word is load-bearing: it is what leaves "Conta Contabil",
+    # "Lancamento Contabil" and "Data Contabil" alone, since each keeps a
+    # surviving token that the model column does not have.
+    normalized = re.sub(r"\b(?:valor|vlr|val|vl)\s+contab\w*", "valor total nf", normalized)
     tokens = []
     for token in normalized.split():
         if token in _HEADER_STOPWORDS:
