@@ -209,10 +209,31 @@ def header_semantic_role(value: object) -> str | None:
         or re.search(r"\btipo\s+(?:de\s+|do\s+)?imposto\b", normalized)
     ):
         return "tax_status"
+    # A tax-family name can smuggle a rate signal into the signature: DIF_ALIQ
+    # tokenises to include ``aliq``, which the alias table expands to
+    # ``aliquota``, so every column of that block - Base, Valor, Isentas,
+    # Outras, Base Reduzida - reported role ``rate`` before this guard. When
+    # the header also states an explicit slot, the explicit word wins; the
+    # rate reading survives wherever it is the only role evidence, which is
+    # what keeps abbreviations like ``Aliq. PIS`` and ``Alíq. ICMS`` working.
+    explicit_slot = (
+        {"outra", "outras", "outro", "other"} & tokens
+        or {"isenta", "isentas", "isento", "exempt"} & tokens
+        or {"reduzida", "reduzido", "reduced"} & tokens
+        or {"base", "basis"} & tokens
+        or {"valor", "value", "amount"} & tokens
+    )
+    # ...but only when the rate reading rests on the abbreviation alone. A
+    # header that states a full rate word keeps it even beside a slot word,
+    # which is what leaves sap_terumo's "Tax rate (Tax/Base)" a rate.
+    rate_is_abbreviation_only = not (
+        {"aliquota", "rate", "taxa", "tximp"} & raw_tokens
+        or " tx imposto " in padded
+    )
     if (
         {"aliquota", "rate", "taxa", "tximp"} & tokens
         or " tx imposto " in padded
-    ):
+    ) and not (explicit_slot and rate_is_abbreviation_only):
         return "rate"
     if {"outra", "outras", "outro", "other"} & tokens:
         return "other"

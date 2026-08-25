@@ -6,6 +6,8 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 
+import pytest
+
 from invoice_mapper import (
     ColumnRef,
     DataMappingDecision,
@@ -906,3 +908,34 @@ def test_data_resolver_preserves_name_confidence_when_rows_are_all_zero() -> Non
     )
 
     assert decision.final_confidence == 0.88
+
+
+@pytest.mark.parametrize(
+    ("header", "role"),
+    [
+        ("Tipo de Imposto DIF_ALIQ", "tax_status"),
+        ("Base DIF_ALIQ", "base"),
+        ("Aliquota DIF_ALIQ", "rate"),
+        ("Valor DIF_ALIQ", "value"),
+        ("Isentas DIF_ALIQ", "exempt"),
+        ("Outras DIF_ALIQ", "other"),
+        ("Base Reduzida DIF_ALIQ", "reduced_base"),
+    ],
+)
+def test_a_family_name_does_not_smuggle_a_rate_role(header: str, role: str) -> None:
+    # DIF_ALIQ tokenises to include "aliq", which the alias table expands to
+    # "aliquota". Five of these seven model columns reported role "rate", so
+    # semantic_header_conflict misfired across the whole block.
+    assert header_semantic_role(header) == role
+
+
+@pytest.mark.parametrize(
+    "header",
+    ["Aliq. PIS", "Alíq. ICMS", "ICMS Taxa", "Tx.imposto 4 c.decs.", "Tax rate (Tax/Base)"],
+)
+def test_real_rate_headers_keep_the_rate_role(header: str) -> None:
+    # The guard above must stay narrow. "Aliq." really is the rate word in the
+    # Datasul exports, and "Tax rate (Tax/Base)" is a rate despite naming a
+    # base - a broader guard demoted it, which is why the rule keys on whether
+    # the rate signal rests on the abbreviation alone.
+    assert header_semantic_role(header) == "rate"
