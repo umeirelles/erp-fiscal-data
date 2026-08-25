@@ -113,7 +113,7 @@ def test_harness_reproduces_the_corrected_baseline() -> None:
         key = load_answer_key(ROOT / key_file, client)
         score = score_report(ROOT / report_file, ROOT / client_file, key)
         total += score.count(Outcome.CORRECT)
-    assert total == 42
+    assert total == 43
 
 
 @requires_workbooks
@@ -129,7 +129,10 @@ def test_the_four_key_corrections_are_worth_exactly_four_columns() -> None:
                 strict += score.count(Outcome.CORRECT)
             else:
                 corrected += score.count(Outcome.CORRECT)
-    assert (strict, corrected) == (38, 42)
+    # The literals move whenever the mapper improves; the DELTA is the
+    # invariant, and it is what this test exists to protect.
+    assert corrected - strict == 4
+    assert (strict, corrected) == (39, 43)
     assert sum(len(v) for v in KEY_CORRECTIONS.values()) == 4
 
 
@@ -174,7 +177,10 @@ def test_the_accept_gate_withholds_eleven_correct_mappings() -> None:
         score = score_report(ROOT / report_file, ROOT / client_file, key)
         found += score.count(Outcome.CORRECT)
         delivered += score.delivered_correct
-    assert (found, delivered) == (42, 31)
+    # The gap is the invariant this test is named for; the totals move as the
+    # mapper improves and both must move together or something regressed.
+    assert found - delivered == 11
+    assert (found, delivered) == (43, 32)
 
 
 @requires_workbooks
