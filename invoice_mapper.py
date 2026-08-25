@@ -1959,6 +1959,185 @@ def client_column_is_vacuous(table: SheetTable, column: ColumnRef) -> bool:
     )
 
 
+@dataclass
+class UnmatchedColumn:
+    """A client column whose data does not reach the base model.
+
+    Unmatched means NOT CONSUMED BY AN ACCEPTED MAPPING, which is what decides
+    whether the data actually lands: apply_invoice_mapping populates accepted
+    and reviewer-confirmed rows only. Defining it as "never referenced by any
+    row" instead would hide the majority of real misses - measured against the
+    client answer keys, that definition surfaces 10 of 21 unconsumed truths,
+    and four of the hidden ones are unreachable from a model-indexed view at
+    all because no row ever offers them for their true concept.
+    """
+
+    client_column_number: int
+    client_column: str
+    disposition: str
+    review_priority: str
+    rows_with_value: int
+    distinct_values: int
+    signals: str
+    signal_detail: str
+    closest_model_column: str
+    closest_name_confidence: float
+
+
+def _unmatched_signals(
+    *,
+    column: ColumnRef,
+    profile: dict[str, object],
+    values: pd.Series,
+    reference_catalogs: ReferenceCatalogs | None,
+    trio_slots: dict[int, str],
+) -> tuple[list[str], str]:
+    """Reasons a leftover column might matter, from universal evidence only.
+
+    Every signal here is a property of Brazilian fiscal data rather than of any
+    client's vocabulary: membership of an official code table, a check digit,
+    participation in valor = base x aliquota. That is deliberate. A ranking
+    built from the sample clients' header words would rank the next client's
+    columns by how much they resemble these four, which is exactly backwards.
+
+    Two vocabulary-based cuts were tested and rejected: requiring a fiscal
+    token destroys datasul 'Cod. Produto' and oracle 'ORGANIZACAO', and a
+    bookkeeping blocklist destroys datasul 'Vlr Contabil', which is a real
+    answer. Nothing is filtered on words.
+    """
+    signals: list[str] = []
+    details: list[str] = []
+
+    slot = trio_slots.get(column.index)
+    if slot is not None:
+        signals.append("arithmetic")
+        details.append(
+            f"participates in a proven valor = base x aliquota trio as the {slot}"
+        )
+
+    if reference_catalogs is not None:
+        evidence = best_catalog_evidence(
+            [
+                reference_catalogs.analyze(values, name)
+                for name in reference_catalogs.catalogs
+            ]
+        )
+        if evidence is not None and catalog_evidence_is_distinctive(
+            evidence, final_threshold=1.0
+        ):
+            signals.append("catalog")
+            details.append(
+                f"{float(evidence['distinct_coverage']):.1%} of its "
+                f"{int(evidence['unique_formatted_count'])} distinct codes are valid "
+                f"{evidence['catalog']}"
+            )
+
+    for kind in ("nfe_key", "cnpj", "cpf"):
+        fraction = float(profile.get(f"valid_{kind}_fraction", 0.0) or 0.0)
+        if fraction >= 0.80:
+            signals.append(f"{kind}_checkdigit")
+            details.append(f"{fraction:.1%} of values pass the {kind} check digit")
+            break
+
+    if profile.get("inferred_type") == "datetime":
+        signals.append("date")
+        details.append("holds dates")
+
+    if not signals:
+        quality = profile.get("evidence_quality")
+        if quality == "empty":
+            details.append("No values in this column.")
+        elif quality == "all_zero":
+            details.append("Every value in this column is zero.")
+        else:
+            details.append("Carries data, but no signal matched. Listed for completeness.")
+    return signals, "; ".join(details)
+
+
+def summarize_unmatched_columns(
+    *,
+    model_table: SheetTable,
+    client_table: SheetTable,
+    results: dict[int, MappingResult],
+    similarities: np.ndarray,
+    reference_catalogs: ReferenceCatalogs | None,
+    client_tax_trios: dict[tuple[str, tuple[str, ...]], dict[str, object]],
+    sample_size: int,
+) -> list[UnmatchedColumn]:
+    """Every client column whose data does not reach the base model.
+
+    Nothing is omitted. A shortlist is marked, because 294 rows is not a report
+    anybody reads, but the rest are still written with a sentence saying why
+    they were set aside - two candidate cut rules were each measured to destroy
+    a real answer, so demotion is as far as this goes.
+
+    A long list here is NOT a defect signal. The base model is a deliberate
+    superset and a client legitimately supplies only a minority of it, so most
+    of a client's own columns having no model counterpart is the ordinary case.
+
+    One caveat on reading the shortlist: --offline is a degenerate regime for
+    it. With no resolver every unresolved column becomes a review rather than a
+    no_match, so "was proposed" carries no information and almost everything is
+    shortlisted - 28 of oracle's 30, against 15 of 30 on the same client with
+    the resolver enabled. Judge a shortlist from a full run.
+    """
+    consumed: set[int] = set()
+    referenced: set[int] = set()
+    for result in results.values():
+        if result.client_column_number is None:
+            continue
+        index = result.client_column_number - 1
+        referenced.add(index)
+        if result.status == "accepted":
+            consumed.add(index)
+
+    trio_slots: dict[int, str] = {}
+    for trio in client_tax_trios.values():
+        for slot in ("base", "rate", "value"):
+            trio_slots[int(trio[slot])] = slot
+
+    rows: list[UnmatchedColumn] = []
+    for index, column in enumerate(client_table.columns):
+        if index in consumed:
+            continue
+        values = client_table.series(column)
+        profile = summarize_values(values, sample_size)
+        signals, detail = _unmatched_signals(
+            column=column,
+            profile=profile,
+            values=values,
+            reference_catalogs=reference_catalogs,
+            trio_slots=trio_slots,
+        )
+        informative = profile["evidence_quality"] == "informative"
+        disposition = (
+            "proposed_not_accepted" if index in referenced else "never_referenced"
+        )
+        # A proposal needs no signal: the mapper already produced evidence for
+        # it, there are few of them, and gating them on the detectors was
+        # measured to drop recall of known truths from 21/21 to 18/21.
+        shortlist = informative and (
+            bool(signals) or disposition == "proposed_not_accepted"
+        )
+        best_model = int(np.argmax(similarities[:, index]))
+        rows.append(
+            UnmatchedColumn(
+                client_column_number=index + 1,
+                client_column=column.display_name,
+                disposition=disposition,
+                review_priority="shortlist" if shortlist else "low",
+                rows_with_value=int(profile["non_empty_count"]),
+                distinct_values=int(profile["unique_count"]),
+                signals=",".join(signals),
+                signal_detail=detail,
+                closest_model_column=model_table.columns[best_model].name,
+                closest_name_confidence=round(float(similarities[best_model, index]), 4),
+            )
+        )
+    rows.sort(key=lambda row: (row.review_priority != "shortlist", row.client_column_number))
+    return rows
+
+
 def map_columns(
     model_table: SheetTable,
     client_table: SheetTable,
@@ -2744,6 +2923,7 @@ def write_results(
     results: Sequence[MappingResult],
     output_path: str | Path,
     metadata: dict[str, object] | None = None,
+    unmatched: Sequence[UnmatchedColumn] | None = None,
 ) -> None:
     output = Path(output_path)
     frame = pd.DataFrame([asdict(result) for result in results])
@@ -2759,6 +2939,21 @@ def write_results(
                     [(key, value) for key, value in metadata.items()],
                     columns=["key", "value"],
                 ).to_excel(writer, sheet_name="Run Metadata", index=False)
+            # Appended LAST, and on purpose. apply_invoice_mapping reads sheet
+            # index 0 with no name, so anything inserted ahead of "Mappings"
+            # makes it fail with a misleading missing-columns error.
+            #
+            # Written on `is not None` rather than on truthiness: an empty list
+            # states "every column of yours reached the model", which is a
+            # different and stronger claim than an older report that has no
+            # such sheet at all.
+            if unmatched is not None:
+                pd.DataFrame(
+                    [asdict(row) for row in unmatched]
+                    or [{field: "" for field in UnmatchedColumn.__annotations__}]
+                ).to_excel(
+                    writer, sheet_name="Unmatched Client Columns", index=False
+                )
     else:
         raise ValueError("Output must end in .xlsx or .csv")
 
@@ -2913,7 +3108,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             else "disabled"
         ),
     }
-    write_results(results, output_path, metadata=metadata)
+    # The closest-model-column hint is computed lexically rather than reusing
+    # the run's scorer: it is a reviewer convenience, and recomputing sentence
+    # embeddings for a hint would spend money to no purpose.
+    unmatched = summarize_unmatched_columns(
+        model_table=model_table,
+        client_table=client_table,
+        results={index: result for index, result in enumerate(results)},
+        similarities=LexicalHeaderScorer().scores(
+            [column.name for column in model_table.columns],
+            [column.name for column in client_table.columns],
+        ),
+        reference_catalogs=reference_catalogs,
+        client_tax_trios=discover_client_tax_trios(client_table),
+        sample_size=args.sample_size,
+    )
+    write_results(results, output_path, metadata=metadata, unmatched=unmatched)
 
     accepted = sum(result.status == "accepted" for result in results)
     review = sum(result.status == "review" for result in results)

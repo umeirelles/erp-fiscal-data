@@ -32,7 +32,14 @@ The default low-cost LLM is `gpt-4o-mini`. Never commit the API key; `.env` is i
 python invoice_mapper.py oracle.xlsx --model model.xlsx
 ```
 
-The default output is `mapping_<client-file>.xlsx`. Its `Mappings` sheet records the selected source column, locally computed name/data/final scores, LLM scores for audit, catalog evidence, status, and reason. `Run Metadata` records file hashes and run settings so stale reports can be rejected when applied.
+The default output is `mapping_<client-file>.xlsx`. Its `Unmatched Client Columns` sheet lists every client column whose data did
+not reach the base model, so a reviewer can judge whether each is genuinely
+irrelevant or a real miss and feed the answer back. Nothing is omitted; a
+shortlist is marked, and everything else carries a sentence explaining why it
+was set aside. A long list is expected — the base model is a superset and a
+client supplies only part of it.
+
+Its `Mappings` sheet records the selected source column, locally computed name/data/final scores, LLM scores for audit, catalog evidence, status, and reason. `Run Metadata` records file hashes and run settings so stale reports can be rejected when applied.
 
 If headers are not on the first row, pass their 1-based positions with `--client-header-row` or `--model-header-row`.
 

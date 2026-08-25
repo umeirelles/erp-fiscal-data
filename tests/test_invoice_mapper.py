@@ -9,6 +9,8 @@ import pandas as pd
 import pytest
 
 from invoice_mapper import (
+    MappingResult,
+    summarize_unmatched_columns,
     _MIN_ROLE_PREFIX,
     _ROLE_CONCEPT_WORDS,
     expand_truncated_role_words,
@@ -1051,3 +1053,67 @@ def test_expansion_leaves_full_words_and_short_tokens_alone() -> None:
     assert expand_truncated_role_words({"icms"}) == {"icms"}      # not a role word
     # additive: the original token survives alongside the expansion
     assert expand_truncated_role_words({"isen"}) == {"isen", "isentas"}
+
+
+def _unmatched(results: dict[int, MappingResult], client: SheetTable, model: SheetTable):
+    return summarize_unmatched_columns(
+        model_table=model,
+        client_table=client,
+        results=results,
+        similarities=LexicalHeaderScorer().scores(
+            [c.name for c in model.columns], [c.name for c in client.columns]
+        ),
+        reference_catalogs=None,
+        client_tax_trios={},
+        sample_size=8,
+    )
+
+
+def test_unmatched_means_not_consumed_not_merely_unreferenced() -> None:
+    # The distinction decides whether the report finds real misses. Defining
+    # unmatched as "never referenced" hides every column a review proposal
+    # touched, and measured against the client answer keys that hides more
+    # than half of the truths the mapper failed to deliver.
+    client = table(["Base ICMS", "Vlr Frete", "Ruido"], [[10, 20, 30]] * 40)
+    model = table(["Base ICMS", "Frete"], [[10, 20]] * 40)
+    results = {
+        0: MappingResult(
+            model_column_number=1, model_column="Base ICMS",
+            client_column_number=1, client_column="Base ICMS",
+            name_confidence=1.0, name_runner_up_confidence=0.0, name_margin=1.0,
+            data_confidence=None, final_confidence=1.0, method="name",
+            status="accepted", reason="",
+        ),
+        1: MappingResult(
+            model_column_number=2, model_column="Frete",
+            client_column_number=2, client_column="Vlr Frete",
+            name_confidence=0.8, name_runner_up_confidence=0.0, name_margin=0.8,
+            data_confidence=None, final_confidence=0.8, method="name",
+            status="review", reason="",
+        ),
+    }
+    rows = {row.client_column_number: row for row in _unmatched(results, client, model)}
+    assert 1 not in rows                                   # consumed
+    assert rows[2].disposition == "proposed_not_accepted"  # proposed, not delivered
+    assert rows[3].disposition == "never_referenced"
+
+
+def test_nothing_is_omitted_only_demoted() -> None:
+    # Two candidate cut rules were each measured to destroy a real answer, so
+    # a column that matches nothing is still written, with a sentence saying
+    # why it was set aside.
+    client = table(["Vazio", "Ruido"], [[None, 7]] * 40)
+    model = table(["Frete"], [[1]] * 40)
+    rows = _unmatched({}, client, model)
+    assert {r.client_column_number for r in rows} == {1, 2}
+    empty = next(r for r in rows if r.client_column_number == 1)
+    assert empty.review_priority == "low"
+    assert "No values in this column." in empty.signal_detail
+
+
+def test_shortlist_leads_and_the_rest_follow_in_column_order() -> None:
+    client = table(["A", "B", "C"], [[None, 5, None]] * 40)
+    model = table(["Frete"], [[1]] * 40)
+    rows = _unmatched({}, client, model)
+    priorities = [r.review_priority for r in rows]
+    assert priorities == sorted(priorities, key=lambda p: p != "shortlist")
