@@ -13,7 +13,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Protocol, Sequence
+from typing import Mapping, Protocol, Sequence
 
 import numpy as np
 import pandas as pd
@@ -1385,6 +1385,52 @@ def _audit_accepted_catalog_matches(
             low_confidence_targets.append(target_index)
 
 
+#: Floor for catalog evidence from a nationally-unique code domain.
+#:
+#: Measured over 348 scored column-catalog pairs across the four sample
+#: clients: for the specificity-1.0 catalogs (CFOP, NCM, IBGE municipality)
+#: the six true code columns score 0.8824-1.0000 while all 1,301 other pairs
+#: score 0.0000-0.0137 - a 64x empty gap. Any floor inside that gap separates
+#: perfectly and survives leave-one-client-out; 0.90 does not, because it sits
+#: at the top edge of the code cluster rather than in the gap, which is why a
+#: textbook CFOP column with 15 of 17 official codes was rejected.
+#:
+#: The floor is deliberately NOT applied to lower-specificity catalogs. Those
+#: are small closed domains - cst_ipi has 14 codes, cst_pis_cofins 33 - and
+#: any column of small integers matches them: at 0.50 the same corpus admits
+#: 123 pairs instead of 6, including 'Means of Transport' against cst_ipi and
+#: 'Valor Frete' against cst_icms. For those catalogs there is no gap at all,
+#: so the existing threshold stands and they remain LLM evidence rather than
+#: accepting evidence.
+DISTINCTIVE_CATALOG_FLOOR = 0.50
+
+#: A nationally-unique domain still needs enough distinct codes to be evidence:
+#: two matching values prove nothing however official the table.
+DISTINCTIVE_CATALOG_MIN_CODES = 5
+
+
+def catalog_evidence_is_distinctive(
+    evidence: Mapping[str, object] | None,
+    *,
+    final_threshold: float,
+) -> bool:
+    """Whether catalog evidence is strong enough to decide a mapping alone."""
+    if evidence is None:
+        return False
+    specificity = float(evidence["specificity"])
+    score = float(evidence["score"])
+    if bool(evidence["all_zero_only"]):
+        return False
+    if int(evidence["nonempty_count"]) < 5 or float(evidence["format_fraction"]) < 0.90:
+        return False
+    if specificity >= 1.0:
+        return (
+            score >= DISTINCTIVE_CATALOG_FLOOR
+            and int(evidence["unique_valid_count"]) >= DISTINCTIVE_CATALOG_MIN_CODES
+        )
+    return score >= final_threshold
+
+
 def _unique_distinctive_catalog_decision(
     *,
     candidates: Sequence[tuple[ColumnRef, pd.Series, float]],
@@ -1398,17 +1444,11 @@ def _unique_distinctive_catalog_decision(
         best = best_catalog_evidence(catalog_evidence.get(column.index, []))
         if best is None:
             continue
-        if (
-            float(best["specificity"]) < 0.90
-            or int(best["nonempty_count"]) < 5
-            or float(best["format_fraction"]) < 0.90
-            or float(best.get("distinct_coverage", best["coverage"])) < 0.90
-            or bool(best["all_zero_only"])
-        ):
+        if not catalog_evidence_is_distinctive(best, final_threshold=minimum_score):
             continue
         ranked.append((float(best["score"]), name_score, column, best))
     ranked.sort(key=lambda item: (-item[0], -item[1], item[2].index))
-    if not ranked or ranked[0][0] < minimum_score:
+    if not ranked:
         return None
     runner_up = ranked[1][0] if len(ranked) > 1 else 0.0
     catalog_score, name_score, column, evidence = ranked[0]
@@ -1421,7 +1461,9 @@ def _unique_distinctive_catalog_decision(
         final_confidence=round(final_confidence, 4),
         reason=(
             f"Versioned official {evidence['catalog']} codes cover "
-            f"{float(evidence['coverage']):.1%} of nonblank values and uniquely "
+            f"{float(evidence.get('distinct_coverage', evidence['coverage'])):.1%} "
+            f"of the {int(evidence['unique_formatted_count'])} distinct codes used "
+            f"({float(evidence['coverage']):.1%} of rows) and uniquely "
             "identify this candidate among the available columns."
         ),
     )
@@ -2308,7 +2350,9 @@ def map_columns(
         )
         catalog_objective_score = (
             selected_catalog_score
-            if selected_catalog_distinct_coverage >= 0.90
+            if catalog_evidence_is_distinctive(
+                selected_catalog, final_threshold=config.final_threshold
+            )
             else 0.0
         )
         objective_data_score = max(
