@@ -248,6 +248,9 @@ def test_accepted_only_leaves_unreviewed_review_mapping_blank(tmp_path) -> None:
     )
     mapping = mapping_rows()
     mapping.loc[2, "reviewer_status"] = "no_mapping_exists"
+    # The fixture row carries a correction for the 'incorrect' status it had.
+    # Only 'incorrect' consumes one, so it has to go with the status.
+    mapping.loc[2, "correct_client_column"] = ""
     mapping.to_excel(mapping_path, index=False)
 
     build_mapped_workbook(
@@ -333,5 +336,53 @@ def test_mapping_run_metadata_detects_changed_inputs(tmp_path) -> None:
             client_path=client_path,
             mapping_path=mapping_path,
             output_path=output_path,
+            model_path=model_path,
+        )
+
+
+def test_a_correction_outside_the_incorrect_branch_is_refused(tmp_path) -> None:
+    # Only the 'incorrect' branch reads correct_client_column. On 'correct' the
+    # row still ships, carrying the mapper's column rather than the reviewer's,
+    # so a mis-picked status put WRONG client data into the base model instead
+    # of leaving it blank - and exited 0.
+    model_path = tmp_path / "model.xlsx"
+    client_path = tmp_path / "client.xlsx"
+    mapping_path = tmp_path / "mapping.xlsx"
+    write_workbook(model_path, ["CFOP", "Valor COFINS", "Nº do NCM"], [["5102", 10.0, "85167910"]])
+    write_workbook(client_path, ["Other", "CFOP source", "COFI value", "Corrected NCM"],
+                   [["A", "5102", 12.5, "85167910"]])
+    for status in ("correct", "no_mapping_exists", ""):
+        mapping = mapping_rows()
+        mapping.loc[0, "reviewer_status"] = status
+        mapping.loc[0, "correct_client_column"] = 4
+        mapping.to_excel(mapping_path, index=False)
+        with pytest.raises(ValueError, match="Only 'incorrect' consumes a correction"):
+            build_mapped_workbook(
+                client_path=client_path,
+                mapping_path=mapping_path,
+                output_path=tmp_path / "out.xlsx",
+                model_path=model_path,
+            )
+
+
+def test_confirming_a_row_that_names_no_column_is_refused(tmp_path) -> None:
+    # 'correct' asserts the proposal is right, so there must be a proposal.
+    # Without the guard the row is confirmed onto nothing and ships a blank
+    # column under a reviewer's signature, exit code 0.
+    model_path = tmp_path / "model.xlsx"
+    client_path = tmp_path / "client.xlsx"
+    mapping_path = tmp_path / "mapping.xlsx"
+    write_workbook(model_path, ["CFOP", "Valor COFINS", "Nº do NCM"], [["5102", 10.0, "85167910"]])
+    write_workbook(client_path, ["Other", "CFOP source", "COFI value", "Corrected NCM"],
+                   [["A", "5102", 12.5, "85167910"]])
+    mapping = mapping_rows()
+    mapping.loc[2, "reviewer_status"] = "correct"
+    mapping.loc[2, "correct_client_column"] = ""
+    mapping.to_excel(mapping_path, index=False)
+    with pytest.raises(ValueError, match="client_column_number is blank"):
+        build_mapped_workbook(
+            client_path=client_path,
+            mapping_path=mapping_path,
+            output_path=tmp_path / "out.xlsx",
             model_path=model_path,
         )

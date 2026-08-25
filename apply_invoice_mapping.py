@@ -225,6 +225,22 @@ def _effective_columns(
                 f"model column {row['model_column']!r}"
             )
 
+        # A correction is only ever consumed on the ``incorrect`` branch. On
+        # every other branch it is silently discarded, and on ``correct`` that
+        # discard is worse than a dropped answer: the row still ships, carrying
+        # the *mapper's* column rather than the reviewer's, so a reviewer who
+        # mis-picks the status puts wrong client data into the base model
+        # instead of leaving it blank. The mirror mistake - ``incorrect`` with
+        # a blank correction - has always raised. Make the pairing symmetric.
+        correction = _clean_text(row["correct_client_column"])
+        if correction and reviewer_status != "incorrect":
+            raise ValueError(
+                f"correct_client_column {correction!r} is set on model column "
+                f"{row['model_column']!r} but reviewer_status is "
+                f"{row['reviewer_status']!r}. Only 'incorrect' consumes a "
+                "correction; any other status would discard it silently."
+            )
+
         confirmed = False
         if reviewer_status == "no_mapping_exists":
             column = None
@@ -233,6 +249,16 @@ def _effective_columns(
             confirmed = True
         elif reviewer_status == "correct":
             column = _column_from_number(client, row["client_column_number"])
+            # 'correct' asserts the proposal is right, so there must be a
+            # proposal. Without this the row is confirmed onto nothing and
+            # ships a blank column under a reviewer's signature, exit code 0.
+            if column is None:
+                raise ValueError(
+                    f"reviewer_status is 'correct' for model column "
+                    f"{row['model_column']!r} but client_column_number is blank. "
+                    "Use 'no_mapping_exists' to confirm that no counterpart "
+                    "exists, or 'incorrect' with correct_client_column."
+                )
             confirmed = True
         elif accepted_only and reviewer_status != "correct" and row["status"] != "accepted":
             column = None

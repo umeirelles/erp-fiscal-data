@@ -16,6 +16,7 @@ from invoice_mapper import (
     expand_truncated_role_words,
     trio_corroboration,
     discover_client_tax_trios,
+    _trio_proof_text,
     client_column_is_vacuous,
     ColumnRef,
     DataMappingDecision,
@@ -984,10 +985,11 @@ def test_a_trio_is_discovered_from_the_client_alone() -> None:
     )
     trios = discover_client_tax_trios(sheet)
     assert ("icms", ()) in trios
-    trio = trios[("icms", ())]
+    trio = trios[("icms", ())][0]
     assert (trio["base"], trio["rate"], trio["value"]) == (0, 1, 2)
     assert trio["rows_tested"] >= 30
     assert trio["fit_score"] >= 0.97
+    assert trio["alternatives"] == 1
 
 
 def test_a_trio_needs_enough_rows_to_be_proof() -> None:
@@ -1117,3 +1119,51 @@ def test_shortlist_leads_and_the_rest_follow_in_column_order() -> None:
     rows = _unmatched({}, client, model)
     priorities = [r.review_priority for r in rows]
     assert priorities == sorted(priorities, key=lambda p: p != "shortlist")
+
+
+def test_two_disjoint_blocks_for_one_tax_are_both_kept() -> None:
+    # datasul runs an apuracao PIS block and an escrituracao PIS block. Neither
+    # 'Ap' nor the bare name is a recognised qualifier, so both collapse to the
+    # scope ('pis', ()) and the argmax kept only the larger - discarding the
+    # block the model's own slots actually want.
+    base_a = [1000.0 + index for index in range(60)]
+    base_b = [500.0 + index for index in range(60)]
+    sheet = table(
+        ["Base PIS Ap", "Aliq. PIS", "Vlr PIS Ap", "Base Pis", "Aliq. PIS", "Valor Pis"],
+        [
+            [base_a[i], 1.65, round(base_a[i] * 0.0165, 2),
+             base_b[i], 0.65, round(base_b[i] * 0.0065, 2)]
+            for i in range(60)
+        ],
+    )
+    trios = discover_client_tax_trios(sheet)
+    blocks = {
+        (t["base"], t["rate"], t["value"]) for t in trios[("pis", ())]
+    }
+    assert (0, 1, 2) in blocks and (3, 4, 5) in blocks
+    assert all(t["alternatives"] == 2 for t in trios[("pis", ())])
+
+
+def test_a_proof_says_so_when_it_cannot_single_out_a_column() -> None:
+    # The identity corroborates a scope, not a column. Where two disjoint
+    # blocks each satisfy it, an unqualified proof on the losing block reads as
+    # an endorsement - which is how datasul m213 -> c96 came to carry one.
+    lone = {"tax_scope": "icms", "rows_tested": 500, "fit_score": 0.99, "alternatives": 1}
+    rival = {"tax_scope": "pis", "rows_tested": 5501, "fit_score": 0.9996, "alternatives": 2}
+    assert "does not single out" not in _trio_proof_text(lone)
+    assert "2 disjoint pis blocks" in _trio_proof_text(rival)
+    assert "does not single out this column" in _trio_proof_text(rival)
+
+
+def test_rate_aliases_for_one_block_are_not_counted_as_rival_blocks() -> None:
+    # sap_terumo names every rate twice - 'ICMS Taxa' and 'Tax rate ICMS' -
+    # and both close on the same base and value. Sharing a column makes them
+    # one block described twice, not two readings of the model's slots.
+    base = [1000.0 + index for index in range(60)]
+    sheet = table(
+        ["ICMS Base", "ICMS Taxa", "ICMS Valor", "Tax rate ICMS"],
+        [[base[i], 18.0, round(base[i] * 0.18, 2), 18.0] for i in range(60)],
+    )
+    trios = discover_client_tax_trios(sheet)
+    assert len(trios[("icms", ())]) >= 2
+    assert all(t["alternatives"] == 1 for t in trios[("icms", ())])

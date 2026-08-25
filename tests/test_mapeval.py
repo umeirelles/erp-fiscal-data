@@ -16,7 +16,7 @@ from mapeval.excel import (
     parse_coluna_annotation,
 )
 from mapeval.outcomes import Outcome, classify
-from mapeval.score import score_report
+from mapeval.score import Row, score_report
 from mapeval.truth import KEY_CORRECTIONS, load_answer_key
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -189,3 +189,19 @@ def test_every_withheld_correct_mapping_sits_below_the_accept_threshold() -> Non
             assert (row.final_confidence or 0.0) < 0.90, (
                 f"{client} m{row.model_column} withheld at {row.final_confidence}"
             )
+
+
+def test_a_non_discriminating_proof_is_not_independent_evidence() -> None:
+    # Two disjoint blocks for one tax both satisfy valor = base x aliquota, so
+    # a proof drawn from either singles out neither. Crediting it would let a
+    # coin-flip between blocks read as arithmetic evidence.
+    def row(proof: str) -> Row:
+        return Row(model_column=213, model_name="Aliquota PIS", client_column=96,
+                   status="accepted", method="data", final_confidence=0.98,
+                   outcome=Outcome.CORRECT, arithmetic_proof=proof)
+    assert row("valor = base x aliquota holds for pis on 500 rows at fit 0.99").header_independent
+    assert not row(
+        "valor = base x aliquota holds for pis on 5501 rows at fit 0.9996 - but this "
+        "client has 2 disjoint pis blocks that each satisfy it, so this does not "
+        "single out this column"
+    ).header_independent

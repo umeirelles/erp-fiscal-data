@@ -38,7 +38,16 @@ class Row:
         rather than the deliverable. Arithmetic and official code domains both
         transfer; a header match does not.
         """
-        return bool(self.arithmetic_proof) or self.method in HEADER_INDEPENDENT_METHODS
+        proof = self.arithmetic_proof or ""
+        # A proof corroborates a tax *scope*. Where the client runs two
+        # disjoint blocks for one tax, both satisfy the identity, so the proof
+        # is true of either and singles out neither - the mapper says so in the
+        # string. Crediting it as independent evidence would let a coin-flip
+        # between two blocks masquerade as arithmetic. No accepted row carries
+        # one today; this keeps it that way.
+        if "does not single out" in proof:
+            proof = ""
+        return bool(proof) or self.method in HEADER_INDEPENDENT_METHODS
 
 
 @dataclass

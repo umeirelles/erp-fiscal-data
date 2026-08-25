@@ -1843,18 +1843,33 @@ TRIO_MIN_ROWS = 30
 
 
 def _trio_proof_text(trio: dict[str, object] | None) -> str | None:
-    """A reviewer-checkable sentence, or nothing."""
+    """A reviewer-checkable sentence, or nothing.
+
+    The identity corroborates a *scope*, not a column. Where a client carries
+    two disjoint blocks for one tax - an apuracao block and an escrituracao
+    block, say - both satisfy valor = base x aliquota, so the proof is true of
+    either and discriminates between them not at all. Saying so is the whole
+    point: an unqualified proof on the losing block reads as an endorsement,
+    and that is how datasul m213 came to carry one.
+    """
     if trio is None:
         return None
-    return (
+    text = (
         f"valor = base x aliquota holds for {trio['tax_scope']} on "
         f"{trio['rows_tested']} rows at fit {trio['fit_score']}"
     )
+    alternatives = int(trio.get("alternatives", 1))
+    if alternatives > 1:
+        text += (
+            f" - but this client has {alternatives} disjoint {trio['tax_scope']} "
+            "blocks that each satisfy it, so this does not single out this column"
+        )
+    return text
 
 
 def discover_client_tax_trios(
     client_table: SheetTable,
-) -> dict[tuple[str, tuple[str, ...]], dict[str, object]]:
+) -> dict[tuple[str, tuple[str, ...]], list[dict[str, object]]]:
     """Find base/rate/value trios that satisfy valor = base x aliquota.
 
     Runs over the client's own columns alone - no model, no prior acceptance,
@@ -1869,8 +1884,14 @@ def discover_client_tax_trios(
     four sample clients it unlocks nothing that acceptance had not unlocked
     first.
 
-    Returns one entry per scope, keyed exactly like tax_calculation_scope, with
-    the winning column indices and the evidence that proved them.
+    Returns EVERY qualifying trio per scope, best first, keyed exactly like
+    tax_calculation_scope. Keeping only the argmax was wrong: a client may run
+    two disjoint blocks for one tax - datasul carries both an apuracao block
+    (Base PIS Ap x Aliq. PIS = Vlr PIS Ap, fit 0.9996 over 5,501 rows) and an
+    escrituracao block (Base Pis x Aliq. PIS = Valor Pis, fit 0.9857 over 70)
+    - and the larger one is not automatically the one the model's slots want.
+    Each trio carries ``alternatives``: how many mutually disjoint blocks the
+    scope holds, which is what tells a reader whether the proof discriminates.
     """
     by_scope: dict[tuple[str, tuple[str, ...]], dict[str, list[int]]] = {}
     for index, column in enumerate(client_table.columns):
@@ -1889,11 +1910,11 @@ def discover_client_tax_trios(
             series_cache[index] = client_table.series(client_table.columns[index])
         return series_cache[index]
 
-    proven: dict[tuple[str, tuple[str, ...]], dict[str, object]] = {}
+    proven: dict[tuple[str, tuple[str, ...]], list[dict[str, object]]] = {}
     for scope, roles in by_scope.items():
         if not {"base", "rate", "value"} <= roles.keys():
             continue
-        best: tuple[float, int, dict[str, object]] | None = None
+        found: list[tuple[float, int, dict[str, object]]] = []
         for base_index in roles["base"]:
             for rate_index in roles["rate"]:
                 for value_index in roles["value"]:
@@ -1906,8 +1927,8 @@ def discover_client_tax_trios(
                         continue
                     if evidence.get("degenerate"):
                         continue
-                    if best is None or (fit, rows) > (best[0], best[1]):
-                        best = (
+                    found.append(
+                        (
                             fit,
                             rows,
                             {
@@ -1920,13 +1941,35 @@ def discover_client_tax_trios(
                                 "tax_qualifiers": list(scope[1]),
                             },
                         )
-        if best is not None:
-            proven[scope] = best[2]
+                    )
+        if not found:
+            continue
+        found.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        trios = [item[2] for item in found]
+        # Two trios that share a column are the same block described twice -
+        # sap_terumo names every rate twice, as 'ICMS Taxa' and 'Tax rate
+        # ICMS', and both close on the same base and value. Only blocks that
+        # share nothing are rival readings of the model's slots.
+        disjoint = _disjoint_trio_count(trios)
+        for trio in trios:
+            trio["alternatives"] = disjoint
+        proven[scope] = trios
     return proven
 
 
+def _disjoint_trio_count(trios: Sequence[dict[str, object]]) -> int:
+    """How many mutually column-disjoint blocks these trios represent."""
+    blocks: list[set[int]] = []
+    for trio in trios:
+        columns = {int(trio["base"]), int(trio["rate"]), int(trio["value"])}
+        if any(columns & block for block in blocks):
+            continue
+        blocks.append(columns)
+    return len(blocks)
+
+
 def trio_corroboration(
-    trios: dict[tuple[str, tuple[str, ...]], dict[str, object]],
+    trios: dict[tuple[str, tuple[str, ...]], list[dict[str, object]]],
     model_column_name: str,
     client_index: int,
 ) -> dict[str, object] | None:
@@ -1937,10 +1980,10 @@ def trio_corroboration(
     scope = tax_calculation_scope(model_column_name)
     if scope is None:
         return None
-    trio = trios.get(scope)
-    if trio is None or trio[role] != client_index:
-        return None
-    return trio
+    for trio in trios.get(scope, ()):
+        if trio[role] == client_index:
+            return trio
+    return None
 
 
 def client_column_is_vacuous(table: SheetTable, column: ColumnRef) -> bool:
@@ -2061,7 +2104,7 @@ def summarize_unmatched_columns(
     results: dict[int, MappingResult],
     similarities: np.ndarray,
     reference_catalogs: ReferenceCatalogs | None,
-    client_tax_trios: dict[tuple[str, tuple[str, ...]], dict[str, object]],
+    client_tax_trios: dict[tuple[str, tuple[str, ...]], list[dict[str, object]]],
     sample_size: int,
 ) -> list[UnmatchedColumn]:
     """Every client column whose data does not reach the base model.
@@ -2092,9 +2135,10 @@ def summarize_unmatched_columns(
             consumed.add(index)
 
     trio_slots: dict[int, str] = {}
-    for trio in client_tax_trios.values():
-        for slot in ("base", "rate", "value"):
-            trio_slots[int(trio[slot])] = slot
+    for scope_trios in client_tax_trios.values():
+        for trio in scope_trios:
+            for slot in ("base", "rate", "value"):
+                trio_slots[int(trio[slot])] = slot
 
     rows: list[UnmatchedColumn] = []
     for index, column in enumerate(client_table.columns):
