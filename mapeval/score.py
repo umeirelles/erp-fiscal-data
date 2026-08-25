@@ -13,10 +13,6 @@ from mapeval.outcomes import Outcome, classify
 from mapeval.truth import AnswerKey
 
 #: Methods whose acceptance does not depend on reading the client's header.
-#: This is the generalization metric: an acceptance that rests on the header
-#: string is an acceptance that may not survive an ERP whose vocabulary we
-#: have never seen. It is a proxy - `data` covers several channels - so it is
-#: reported as an upper bound on header independence.
 HEADER_INDEPENDENT_METHODS = frozenset({"catalog"})
 
 
@@ -29,6 +25,20 @@ class Row:
     method: str
     final_confidence: float | None
     outcome: Outcome
+    #: A client-side arithmetic identity that places this column here.
+    arithmetic_proof: str | None = None
+
+    @property
+    def header_independent(self) -> bool:
+        """Whether anything other than the header supports this mapping.
+
+        The generalization question. An acceptance resting only on the client's
+        header string is one that may not survive an ERP whose vocabulary we
+        have never seen, and the four sample clients are reference material
+        rather than the deliverable. Arithmetic and official code domains both
+        transfer; a header match does not.
+        """
+        return bool(self.arithmetic_proof) or self.method in HEADER_INDEPENDENT_METHODS
 
 
 @dataclass
@@ -69,8 +79,7 @@ class Score:
         accepts = self.accepted
         if not accepts:
             return None
-        independent = sum(1 for r in accepts if r.method in HEADER_INDEPENDENT_METHODS)
-        return independent / len(accepts)
+        return sum(1 for r in accepts if r.header_independent) / len(accepts)
 
     @property
     def correct_pairs(self) -> set[tuple[int, int]]:
@@ -137,6 +146,12 @@ def score_report(
             status=str(raw_row[column["status"]]),
             method=str(raw_row[column["method"]] or ""),
             final_confidence=float(confidence) if isinstance(confidence, (int, float)) else None,
+            arithmetic_proof=(
+                str(raw_row[column["arithmetic_proof"]])
+                if "arithmetic_proof" in column
+                and raw_row[column["arithmetic_proof"]] not in (None, "")
+                else None
+            ),
             outcome=classify(
                 model_column=position,
                 chosen_client_column=chosen,

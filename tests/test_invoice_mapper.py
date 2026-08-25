@@ -9,6 +9,8 @@ import pandas as pd
 import pytest
 
 from invoice_mapper import (
+    trio_corroboration,
+    discover_client_tax_trios,
     client_column_is_vacuous,
     ColumnRef,
     DataMappingDecision,
@@ -960,3 +962,49 @@ def test_a_column_with_no_data_is_vacuous_but_a_column_of_zeros_is_not() -> None
     assert client_column_is_vacuous(table, table.columns[0])
     assert client_column_is_vacuous(table, table.columns[1])
     assert not client_column_is_vacuous(table, table.columns[2])
+
+
+def test_a_trio_is_discovered_from_the_client_alone() -> None:
+    # No model, no prior acceptance, no vocabulary beyond family and role.
+    # valor = base x aliquota is tax law, so a trio proven here is evidence
+    # that transfers to an ERP nobody has seen.
+    base = [1000.0 + index for index in range(60)]
+    rate = [18.0] * 60
+    sheet = table(
+        ["ICMS Base", "ICMS Taxa", "ICMS Valor", "Ruido"],
+        [
+            [base[i], rate[i], round(base[i] * 0.18, 2), i]
+            for i in range(60)
+        ],
+    )
+    trios = discover_client_tax_trios(sheet)
+    assert ("icms", ()) in trios
+    trio = trios[("icms", ())]
+    assert (trio["base"], trio["rate"], trio["value"]) == (0, 1, 2)
+    assert trio["rows_tested"] >= 30
+    assert trio["fit_score"] >= 0.97
+
+
+def test_a_trio_needs_enough_rows_to_be_proof() -> None:
+    # A perfect fit over a handful of rows proves nothing; the real corpus
+    # contains 12-row degenerate fits indistinguishable from genuine ones.
+    base = [1000.0 + index for index in range(10)]
+    sheet = table(
+        ["IPI Base", "IPI Taxa", "IPI Valor"],
+        [[base[i], 5.0, round(base[i] * 0.05, 2)] for i in range(10)],
+    )
+    assert discover_client_tax_trios(sheet) == {}
+
+
+def test_corroboration_matches_the_slot_not_merely_the_family() -> None:
+    base = [1000.0 + index for index in range(60)]
+    sheet = table(
+        ["ICMS Base", "ICMS Taxa", "ICMS Valor"],
+        [[base[i], 18.0, round(base[i] * 0.18, 2)] for i in range(60)],
+    )
+    trios = discover_client_tax_trios(sheet)
+    assert trio_corroboration(trios, "Base ICMS", 0) is not None
+    # right family, wrong slot
+    assert trio_corroboration(trios, "Base ICMS", 1) is None
+    # a role the identity says nothing about
+    assert trio_corroboration(trios, "Isentas ICMS", 0) is None

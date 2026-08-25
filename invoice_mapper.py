@@ -1158,6 +1158,10 @@ class MappingResult:
     #: what catalog_confidence is now computed from.
     catalog_distinct_coverage: float | None = None
     catalog_confidence: float | None = None
+    #: Set when a client-side arithmetic trio independently places this column
+    #: here. Header-independent, so it is what tells a reviewer - and the eval
+    #: harness - that this mapping would survive an unfamiliar ERP.
+    arithmetic_proof: str | None = None
     llm_data_confidence: float | None = None
     llm_final_confidence: float | None = None
 
@@ -1769,6 +1773,115 @@ def _review_proposal_is_supported(
     )
 
 
+#: A discovered trio must clear these to count as proof. The fit bar is high
+#: because the identity is exact arithmetic, not a correlation, and the row bar
+#: exists because a perfect fit over a handful of rows proves nothing - the
+#: corpus contains 12-row degenerate fits that look identical to real ones.
+TRIO_MIN_FIT = 0.97
+TRIO_MIN_ROWS = 30
+
+
+def _trio_proof_text(trio: dict[str, object] | None) -> str | None:
+    """A reviewer-checkable sentence, or nothing."""
+    if trio is None:
+        return None
+    return (
+        f"valor = base x aliquota holds for {trio['tax_scope']} on "
+        f"{trio['rows_tested']} rows at fit {trio['fit_score']}"
+    )
+
+
+def discover_client_tax_trios(
+    client_table: SheetTable,
+) -> dict[tuple[str, tuple[str, ...]], dict[str, object]]:
+    """Find base/rate/value trios that satisfy valor = base x aliquota.
+
+    Runs over the client's own columns alone - no model, no prior acceptance,
+    no vocabulary beyond the family and role words already needed elsewhere.
+    That is the point: ``valor = base x aliquota`` is Brazilian tax law rather
+    than a property of any one export, so a trio proven here is evidence that
+    transfers to an ERP nobody has seen.
+
+    The existing relationship evidence cannot do this. It asks
+    _accepted_tax_anchors for two already-ACCEPTED roles in the same scope, so
+    it can only confirm what header matching already settled; measured on the
+    four sample clients it unlocks nothing that acceptance had not unlocked
+    first.
+
+    Returns one entry per scope, keyed exactly like tax_calculation_scope, with
+    the winning column indices and the evidence that proved them.
+    """
+    by_scope: dict[tuple[str, tuple[str, ...]], dict[str, list[int]]] = {}
+    for index, column in enumerate(client_table.columns):
+        role = header_semantic_role(column.name)
+        if role not in {"base", "rate", "value"}:
+            continue
+        scope = tax_calculation_scope(column.name)
+        if scope is None:
+            continue
+        by_scope.setdefault(scope, {}).setdefault(role, []).append(index)
+
+    series_cache: dict[int, pd.Series] = {}
+
+    def values(index: int) -> pd.Series:
+        if index not in series_cache:
+            series_cache[index] = client_table.series(client_table.columns[index])
+        return series_cache[index]
+
+    proven: dict[tuple[str, tuple[str, ...]], dict[str, object]] = {}
+    for scope, roles in by_scope.items():
+        if not {"base", "rate", "value"} <= roles.keys():
+            continue
+        best: tuple[float, int, dict[str, object]] | None = None
+        for base_index in roles["base"]:
+            for rate_index in roles["rate"]:
+                for value_index in roles["value"]:
+                    evidence = tax_calculation_evidence(
+                        values(base_index), values(rate_index), values(value_index)
+                    )
+                    fit = float(evidence.get("fit_score", 0.0))
+                    rows = int(evidence.get("rows_tested", 0))
+                    if fit < TRIO_MIN_FIT or rows < TRIO_MIN_ROWS:
+                        continue
+                    if evidence.get("degenerate"):
+                        continue
+                    if best is None or (fit, rows) > (best[0], best[1]):
+                        best = (
+                            fit,
+                            rows,
+                            {
+                                "base": base_index,
+                                "rate": rate_index,
+                                "value": value_index,
+                                "fit_score": round(fit, 4),
+                                "rows_tested": rows,
+                                "tax_scope": scope[0],
+                                "tax_qualifiers": list(scope[1]),
+                            },
+                        )
+        if best is not None:
+            proven[scope] = best[2]
+    return proven
+
+
+def trio_corroboration(
+    trios: dict[tuple[str, tuple[str, ...]], dict[str, object]],
+    model_column_name: str,
+    client_index: int,
+) -> dict[str, object] | None:
+    """Whether a proven trio independently places this client column here."""
+    role = header_semantic_role(model_column_name)
+    if role not in {"base", "rate", "value"}:
+        return None
+    scope = tax_calculation_scope(model_column_name)
+    if scope is None:
+        return None
+    trio = trios.get(scope)
+    if trio is None or trio[role] != client_index:
+        return None
+    return trio
+
+
 def client_column_is_vacuous(table: SheetTable, column: ColumnRef) -> bool:
     """Whether a client column has no populated cell at all.
 
@@ -1803,6 +1916,10 @@ def map_columns(
     expected_shape = (len(model_table.columns), len(client_table.columns))
     if similarities.shape != expected_shape:
         raise ValueError(f"Header scorer returned {similarities.shape}, expected {expected_shape}")
+
+    # Discovered once, from the client's own columns. Independent of the model,
+    # of acceptance order, and of any header vocabulary beyond family and role.
+    client_tax_trios = discover_client_tax_trios(client_table)
 
     available = set(range(len(client_table.columns)))
     results: dict[int, MappingResult] = {}
@@ -1864,6 +1981,9 @@ def map_columns(
                 method="name",
                 status="accepted",
                 reason="Accepted from header similarity with a clear lead over the runner-up.",
+                arithmetic_proof=_trio_proof_text(
+                trio_corroboration(client_tax_trios, model_column.name, client_column.index)
+            ),
             )
             available.remove(client_index)
         else:
@@ -2524,6 +2644,9 @@ def map_columns(
             method=decision_method,
             status="accepted" if accepted else "review",
             reason=reason,
+            arithmetic_proof=_trio_proof_text(
+                trio_corroboration(client_tax_trios, model_column.name, chosen.index)
+            ),
             catalog_name=(
                 str(selected_catalog["catalog"])
                 if selected_catalog is not None
