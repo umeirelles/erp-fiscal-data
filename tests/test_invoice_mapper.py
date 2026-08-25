@@ -17,6 +17,8 @@ from invoice_mapper import (
     trio_corroboration,
     discover_client_tax_trios,
     _trio_proof_text,
+    summarize_adjudication_queue,
+    MappingResult,
     client_column_is_vacuous,
     ColumnRef,
     DataMappingDecision,
@@ -1186,3 +1188,73 @@ def test_the_value_word_is_what_spares_the_bookkeeping_false_friends() -> None:
     for header in ("Conta Contábil", "Lançamento Contábil", "Data Contábil",
                    "Contábil", "Plano de Contas Contábil", "Centro de Custo Contábil"):
         assert semantic_header_signature(header) != target, header
+
+
+def _queue_result(model_number, model_name, client_number, client_name,
+                  final, margin=0.0, status="review", **kw):
+    return MappingResult(
+        model_column_number=model_number, model_column=model_name,
+        client_column_number=client_number, client_column=client_name,
+        name_confidence=final, name_runner_up_confidence=final - margin,
+        name_margin=margin, data_confidence=None, final_confidence=final,
+        method="data", status=status, reason="", **kw)
+
+
+def test_the_queue_holds_only_proposals_the_gate_did_not_deliver() -> None:
+    sheet = table(["A", "B"], [["x", "y"], ["x", "y"]])
+    rows = summarize_adjudication_queue(
+        client_table=sheet,
+        results=[
+            _queue_result(1, "One", 1, "A", 0.95, status="accepted"),
+            _queue_result(2, "Two", 2, "B", 0.88),
+            _queue_result(3, "Three", None, None, 0.0, status="no_match"),
+        ],
+        final_threshold=0.90, sample_size=8,
+    )
+    assert [r.model_column_number for r in rows] == [2]
+    assert rows[0].gate_distance == pytest.approx(0.02)
+
+
+def test_a_proposal_onto_an_empty_column_can_never_be_confirmed() -> None:
+    # Confirming it ships a blank column under a reviewer's signature, so it
+    # cannot hold a top slot however well the header matched. sap_terumo's
+    # 'FCI number' matches 'Nº FCI' at 0.98 and is empty on all 727 rows.
+    sheet = table(["Full", "Empty"], [["x", None], ["y", None]])
+    rows = summarize_adjudication_queue(
+        client_table=sheet,
+        results=[
+            _queue_result(1, "Weak but real", 1, "Full", 0.70),
+            _queue_result(2, "Strong but empty", 2, "Empty", 0.98),
+        ],
+        final_threshold=0.90, sample_size=8,
+    )
+    assert [r.model_column for r in rows] == ["Weak but real", "Strong but empty"]
+    assert rows[-1].rows_with_value == 0
+    assert "no populated rows" in rows[-1].why_held
+
+
+def test_margin_breaks_ties_only_inside_the_clamped_band() -> None:
+    # The clamp pins a whole class of rows to one confidence, so the confidence
+    # column stops ordering them. Outside the band confidence must still win,
+    # because the margin's apparent lead is one client's artefact.
+    sheet = table(["A", "B", "C"], [["x", "y", "z"], ["x", "y", "z"]])
+    rows = summarize_adjudication_queue(
+        client_table=sheet,
+        results=[
+            _queue_result(1, "Clamped, thin margin", 1, "A", 0.8999, margin=0.01),
+            _queue_result(2, "Clamped, wide margin", 2, "B", 0.8999, margin=0.40),
+            _queue_result(3, "Higher confidence", 3, "C", 0.8999 + 0.01, margin=0.0),
+        ],
+        final_threshold=0.90, sample_size=8,
+    )
+    assert [r.model_column_number for r in rows] == [3, 2, 1]
+
+
+def test_the_queue_says_when_the_branch_rather_than_the_evidence_held_a_row() -> None:
+    sheet = table(["A"], [["x"], ["x"]])
+    rows = summarize_adjudication_queue(
+        client_table=sheet,
+        results=[_queue_result(1, "One", 1, "A", 0.8999)],
+        final_threshold=0.90, sample_size=8,
+    )
+    assert "cannot auto-accept" in rows[0].why_held

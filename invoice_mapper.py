@@ -2971,11 +2971,133 @@ def file_sha256(path: str | Path) -> str:
     return digest.hexdigest()
 
 
+@dataclass
+class AdjudicationRow:
+    """A model column that got a real candidate the gate would not deliver.
+
+    The mirror of UnmatchedColumn. That sheet answers "which of the client's
+    columns never reached the model"; this one answers "which of the model's
+    columns had an answer we declined to ship". Together they cover both sides
+    of the gate, which is where the mapper's remaining losses live: measured
+    against the keys, the mapper finds 42 of 56 and delivers 31, and all 11 of
+    the difference are rows that appear here.
+
+    Deliberately a ranked INDEX, not a second write surface. The reviewer rules
+    in the Mappings sheet's existing reviewer_status / correct_client_column
+    columns, which apply_invoice_mapping already honours and which now raise on
+    the two incoherent inputs that used to pass silently. A second vocabulary
+    would mean two places to write, a merge rule between them, and a new way to
+    disagree with yourself.
+    """
+
+    rank: int
+    model_column_number: int
+    model_column: str
+    proposed_client_column_number: int | None
+    proposed_client_column: str
+    final_confidence: float
+    gate_distance: float
+    name_margin: float
+    rows_with_value: int
+    resolver_disagrees: str
+    arithmetic_proof: str
+    client_sample_values: str
+    why_held: str
+
+
+#: Rows this far below the gate share a single clamped confidence, so the
+#: confidence column stops ordering them and something else has to.
+_CLAMPED_BAND = 0.0002
+
+
+def summarize_adjudication_queue(
+    *,
+    client_table: SheetTable,
+    results: Sequence[MappingResult],
+    final_threshold: float,
+    sample_size: int,
+) -> list[AdjudicationRow]:
+    """Rank the undelivered proposals by how close each came to shipping."""
+    rows: list[AdjudicationRow] = []
+    for result in results:
+        if result.status == "accepted" or result.client_column_number is None:
+            continue
+        index = result.client_column_number - 1
+        if index < 0 or index >= len(client_table.columns):
+            continue
+        column = client_table.columns[index]
+        profile = summarize_values(client_table.series(column), sample_size)
+        final = float(result.final_confidence or 0.0)
+        if final <= 0.0:
+            continue
+        # A proposal onto a column with no data can never be confirmed:
+        # confirming it ships a blank column under a reviewer's signature. It
+        # still belongs in the queue - the reviewer should see that the header
+        # matched and the data did not - but it cannot hold a top slot.
+        # sap_terumo's 'FCI number' matches 'No FCI' at 0.98 and is empty on
+        # all 727 rows, which is enough to rank it first without this.
+        vacuous = client_column_is_vacuous(client_table, column)
+        llm_final = result.llm_final_confidence
+        disagrees = (
+            f"resolver scored it {llm_final}"
+            if llm_final is not None and float(llm_final) < final - 0.10
+            else ""
+        )
+        # The clamp at the 'no objective data score' branch pins a row just
+        # under the gate whatever its name evidence, so 'held at 0.8999' is a
+        # statement about the branch taken, not about this row's strength.
+        clamped = abs(final - (final_threshold - 0.0001)) < 1e-9
+        rows.append(
+            AdjudicationRow(
+                rank=0,
+                model_column_number=result.model_column_number,
+                model_column=result.model_column,
+                proposed_client_column_number=result.client_column_number,
+                proposed_client_column=result.client_column or "",
+                final_confidence=round(final, 4),
+                gate_distance=round(final_threshold - final, 4),
+                name_margin=round(float(result.name_margin or 0.0), 4),
+                rows_with_value=int(profile["non_empty_count"]),
+                resolver_disagrees=disagrees,
+                arithmetic_proof=result.arithmetic_proof or "",
+                client_sample_values=" | ".join(
+                    str(value) for value in profile["samples"][:6]
+                ),
+                why_held=(
+                    "the proposed column has no populated rows - confirming "
+                    "this would ship a blank column"
+                    if vacuous
+                    else "name evidence only - this branch cannot auto-accept "
+                    "however well the headers match"
+                    if clamped
+                    else "below the accept threshold"
+                ),
+            )
+        )
+    # Confidence first, then margin - but margin only breaks ties inside the
+    # clamped band. Promoting it generally would be fitting to one client: its
+    # apparent lead is datasul-only and a wash on oracle, and it collapses
+    # toward zero once headers are truncated.
+    rows.sort(
+        key=lambda row: (
+            row.rows_with_value > 0,
+            round(row.final_confidence / _CLAMPED_BAND),
+            row.name_margin,
+            row.rows_with_value,
+        ),
+        reverse=True,
+    )
+    for position, row in enumerate(rows, 1):
+        row.rank = position
+    return rows
+
+
 def write_results(
     results: Sequence[MappingResult],
     output_path: str | Path,
     metadata: dict[str, object] | None = None,
     unmatched: Sequence[UnmatchedColumn] | None = None,
+    queue: Sequence[AdjudicationRow] | None = None,
 ) -> None:
     output = Path(output_path)
     frame = pd.DataFrame([asdict(result) for result in results])
@@ -3006,6 +3128,11 @@ def write_results(
                 ).to_excel(
                     writer, sheet_name="Unmatched Client Columns", index=False
                 )
+            if queue is not None:
+                pd.DataFrame(
+                    [asdict(row) for row in queue]
+                    or [{field: "" for field in AdjudicationRow.__annotations__}]
+                ).to_excel(writer, sheet_name="Adjudication Queue", index=False)
     else:
         raise ValueError("Output must end in .xlsx or .csv")
 
@@ -3175,7 +3302,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         client_tax_trios=discover_client_tax_trios(client_table),
         sample_size=args.sample_size,
     )
-    write_results(results, output_path, metadata=metadata, unmatched=unmatched)
+    queue = summarize_adjudication_queue(
+        client_table=client_table,
+        results=results,
+        final_threshold=args.final_threshold,
+        sample_size=args.sample_size,
+    )
+    write_results(
+        results, output_path, metadata=metadata, unmatched=unmatched, queue=queue
+    )
 
     accepted = sum(result.status == "accepted" for result in results)
     review = sum(result.status == "review" for result in results)

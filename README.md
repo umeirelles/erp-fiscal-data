@@ -63,7 +63,16 @@ python apply_invoice_mapping.py \
 
 The output follows the model's column order. Mapping metadata and scores—including the separately reported LLM audit scores and, where one exists, the arithmetic proof—occupy the first rows; client data begins at Excel row 20 (`FIRST_DATA_EXCEL_ROW`). Confidence values are stored as numbers and displayed as percentages. By default, only `accepted` and reviewer-confirmed mappings are populated. Unconfirmed `review` columns remain blank.
 
-Reviewer values supported in the mapping report are `correct`, `incorrect` with `correct_client_column`, and `no_mapping_exists`.
+Reviewer values supported in the mapping report are `correct`, `incorrect` with `correct_client_column`, and `no_mapping_exists`. Only `incorrect` consumes `correct_client_column`; setting it beside any other status raises rather than discarding the answer, and `correct` on a row with no proposed column raises rather than confirming a blank.
+
+### The two review sheets
+
+A report carries two reviewer surfaces, one for each side of the accept gate:
+
+- **Unmatched Client Columns** — the client's columns that no accepted mapping consumed. Answers "is this column really useless, or did we miss something?"
+- **Adjudication Queue** — the model's columns that received a real candidate the gate would not deliver, ranked by how close each came to shipping, with sample values from the proposed column. Answers "which of these should we have delivered?"
+
+The queue is a ranked index, not a third place to write: rule on a row in the `Mappings` sheet's existing reviewer columns, which `apply_invoice_mapping.py` already honours. Rows sort by confidence, then by name margin *inside the clamped band only* — a whole class of rows shares one confidence, so that column stops ordering them there. Proposals onto a column with no populated rows sort last whatever their header score, because confirming one ships a blank column.
 
 Use `--include-review` only to create an explicitly unsafe workbook containing unconfirmed proposals.
 
