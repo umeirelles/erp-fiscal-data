@@ -61,7 +61,7 @@ python apply_invoice_mapping.py \
   --output sap_terumo_mapped.xlsx
 ```
 
-The output follows the model's column order. Mapping metadata and scores—including the separately reported LLM audit scores and, where one exists, the arithmetic proof—occupy the first rows; client data begins at Excel row 20 (`FIRST_DATA_EXCEL_ROW`). Confidence values are stored as numbers and displayed as percentages. By default, only `accepted` and reviewer-confirmed mappings are populated. Unconfirmed `review` columns remain blank.
+The output carries two sheets. `Mapped Data` follows the model's column order. Mapping metadata and scores—including the separately reported LLM audit scores and, where one exists, the arithmetic proof—occupy the first rows; client data begins at Excel row 20 (`FIRST_DATA_EXCEL_ROW`). Confidence values are stored as numbers and displayed as percentages. By default, only `accepted` and reviewer-confirmed mappings are populated. Unconfirmed `review` columns remain blank.
 
 Reviewer values supported in the mapping report are `correct`, `incorrect` with `correct_client_column`, and `no_mapping_exists`. Only `incorrect` consumes `correct_client_column`; setting it beside any other status raises rather than discarding the answer, and `correct` on a row with no proposed column raises rather than confirming a blank.
 
@@ -75,6 +75,13 @@ A report carries two reviewer surfaces, one for each side of the accept gate:
 The queue is a ranked index, not a third place to write: rule on a row in the `Mappings` sheet's existing reviewer columns, which `apply_invoice_mapping.py` already honours. Rows sort by confidence, then by name margin *inside the clamped band only* — a whole class of rows shares one confidence, so that column stops ordering them there. Proposals onto a column with no populated rows sort last whatever their header score, because confirming one ships a blank column.
 
 Use `--include-review` only to create an explicitly unsafe workbook containing unconfirmed proposals.
+
+A client fills a minority of the model and that is the design — `model.xlsx` is a superset covering every field any client might send, so most columns are legitimately empty. Two conveniences follow from that:
+
+- Columns carrying no data are **hidden**, so the delivered ones sit side by side rather than scattered across 227. Nothing is removed, no value changes, one click unhides, and anything reading the file programmatically is unaffected.
+- The `Coverage` sheet indexes every model column into three states, sorted so the work comes first: **delivered**, **awaiting decision** (a candidate exists and a reviewer has to rule on it — these are the `Adjudication Queue` rows), and **not in this client's export**. That last state is a complete and correct answer, not a gap.
+
+`Mapped Data` cannot answer "what is not here and should be", because every column it fills is accepted or reviewer-confirmed by construction. `Coverage` is the sheet to read first.
 
 ## Fiscal reference data
 

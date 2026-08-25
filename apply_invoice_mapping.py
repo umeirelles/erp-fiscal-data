@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Sequence
 
 import pandas as pd
-from openpyxl.styles import PatternFill
+from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from invoice_mapper import ColumnRef, SheetTable, file_sha256, semantic_header_conflict
@@ -299,6 +299,78 @@ def _effective_columns(
     return selected
 
 
+#: What an empty model column means. Only the middle one is anybody's work:
+#: "not in this client's export" is a complete and correct answer, and a run
+#: that leaves most of the model empty can be entirely right.
+STATE_DELIVERED = "delivered"
+STATE_PENDING = "awaiting decision"
+STATE_ABSENT = "not in this client's export"
+
+
+def _write_coverage_sheet(
+    book,
+    *,
+    model: SheetTable,
+    selected: Sequence[ColumnRef | None],
+    statuses: Sequence[str],
+    mapping: pd.DataFrame,
+) -> None:
+    """An index of where every model column stands, sorted by what needs doing.
+
+    The mapped sheet answers "is the delivered data right". It cannot answer
+    "what is not here and should be", because every column it fills is accepted
+    by construction. This sheet does, and it is the one to read first: a model
+    column is delivered, awaiting a decision, or genuinely not something this
+    client sends.
+    """
+    sheet = book.create_sheet("Coverage")
+    headers = [
+        "state", "model_column_number", "model_column", "excel_column",
+        "client_column_number", "client_column", "final_confidence", "reason",
+    ]
+    sheet.append(headers)
+
+    order = {STATE_DELIVERED: 0, STATE_PENDING: 1, STATE_ABSENT: 2}
+    rows = []
+    for index, (model_column, column) in enumerate(zip(model.columns, selected)):
+        status = statuses[index] if index < len(statuses) else ""
+        if column is not None:
+            state = STATE_DELIVERED
+        elif status == "review":
+            state = STATE_PENDING
+        else:
+            state = STATE_ABSENT
+        proposed = mapping["client_column_number"][index]
+        proposed_name = mapping["client_column"][index]
+        confidence = mapping["final_confidence"][index]
+        rows.append((
+            order[state], index + 1,
+            [
+                state, index + 1, model_column.name,
+                get_column_letter(index + 2),
+                "" if column is not None else ("" if pd.isna(proposed) else proposed),
+                column.display_name if column is not None
+                else ("" if pd.isna(proposed_name) else proposed_name),
+                "" if pd.isna(confidence) else confidence,
+                "" if pd.isna(mapping["reason"][index]) else mapping["reason"][index],
+            ],
+        ))
+    for _, _, values in sorted(rows, key=lambda item: (item[0], item[1])):
+        sheet.append(values)
+
+    sheet.freeze_panes = "A2"
+    sheet.auto_filter.ref = f"A1:H{sheet.max_row}"
+    for letter, width in (("A", 26), ("B", 10), ("C", 34), ("D", 8),
+                          ("E", 10), ("F", 30), ("G", 12), ("H", 78)):
+        sheet.column_dimensions[letter].width = width
+    header_fill = PatternFill(fill_type="solid", fgColor="E8F0FE")
+    for cell in sheet[1]:
+        cell.fill = header_fill
+        cell.font = Font(bold=True)
+    for row in sheet.iter_rows(min_row=2, min_col=7, max_col=7):
+        row[0].number_format = "0.00%"
+
+
 def build_mapped_workbook(
     client_path: str | Path,
     mapping_path: str | Path,
@@ -392,6 +464,30 @@ def build_mapped_workbook(
         worksheet.column_dimensions["A"].width = 34
         for excel_column in range(2, min(len(output_columns), 30) + 1):
             worksheet.column_dimensions[get_column_letter(excel_column)].width = 18
+
+        # A client fills a minority of the model and that is the design, not a
+        # shortfall - the model is a superset covering every field any client
+        # might send. But it leaves the delivered columns scattered across 227:
+        # datasul's 19 run from AI to GW with 101 empty columns between two of
+        # them. Hiding the columns that carry no data puts them side by side.
+        # Nothing is removed, no value changes, one click unhides, and anything
+        # reading the file programmatically is unaffected.
+        statuses = [
+            _clean_text(value).casefold() for value in mapping["status"]
+        ]
+        delivered_fill = PatternFill(fill_type="solid", fgColor="D7E9DC")
+        for model_index, column in enumerate(selected):
+            letter = get_column_letter(model_index + 2)
+            if column is None:
+                worksheet.column_dimensions[letter].hidden = True
+            else:
+                worksheet.column_dimensions[letter].width = 18
+                worksheet.cell(1, model_index + 2).fill = delivered_fill
+
+        _write_coverage_sheet(
+            writer.book, model=model, selected=selected, statuses=statuses,
+            mapping=mapping,
+        )
 
     print(f"Wrote {output}")
     print(

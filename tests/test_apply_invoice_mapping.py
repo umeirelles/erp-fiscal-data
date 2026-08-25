@@ -386,3 +386,70 @@ def test_confirming_a_row_that_names_no_column_is_refused(tmp_path) -> None:
             output_path=tmp_path / "out.xlsx",
             model_path=model_path,
         )
+
+
+def test_columns_with_no_data_are_hidden_not_removed(tmp_path) -> None:
+    # A client fills a minority of the model and that is the design. But it
+    # leaves the delivered columns scattered: datasul's 19 run from AI to GW
+    # with 101 empty columns between two of them. Hiding puts them side by
+    # side without removing anything or changing a value.
+    import openpyxl
+    from openpyxl.utils import get_column_letter
+    model_path = tmp_path / "model.xlsx"
+    client_path = tmp_path / "client.xlsx"
+    mapping_path = tmp_path / "mapping.xlsx"
+    output_path = tmp_path / "mapped.xlsx"
+    write_workbook(model_path, ["CFOP", "Valor COFINS", "Nº do NCM"], [["5102", 10.0, "85167910"]])
+    write_workbook(client_path, ["Other", "CFOP source", "COFI value", "Corrected NCM"],
+                   [["A", "5102", 12.5, "85167910"]])
+    mapping_rows().to_excel(mapping_path, index=False)
+    build_mapped_workbook(client_path=client_path, mapping_path=mapping_path,
+                          output_path=output_path, model_path=model_path)
+    book = openpyxl.load_workbook(output_path)
+    sheet = book["Mapped Data"]
+    hidden = {
+        get_column_letter(c): sheet.column_dimensions[get_column_letter(c)].hidden
+        for c in range(2, 5)
+    }
+    # The fixture delivers two: 'CFOP' accepted, and 'Nº do NCM' via a
+    # reviewer correction - which is the whole point of the review loop, and
+    # is how sap_procosa gets 62 delivered from 45 accepts. Only the
+    # unconfirmed 'Valor COFINS' review row carries no data.
+    assert hidden["B"] is False
+    assert hidden["C"] is True
+    assert hidden["D"] is False
+    # hiding must not remove anything - all three model columns still there
+    header = next(sheet.iter_rows(max_row=1, values_only=True))
+    assert list(header[1:4]) == ["CFOP", "Valor COFINS", "Nº do NCM"]
+
+
+def test_coverage_sheet_separates_absence_from_a_pending_decision(tmp_path) -> None:
+    # The mapped sheet cannot answer "what is not here and should be", because
+    # every column it fills is accepted by construction. An empty column means
+    # either the client has no such concept - a complete answer - or that a
+    # candidate is waiting on a reviewer. Only the second is work.
+    import openpyxl
+    model_path = tmp_path / "model.xlsx"
+    client_path = tmp_path / "client.xlsx"
+    mapping_path = tmp_path / "mapping.xlsx"
+    output_path = tmp_path / "mapped.xlsx"
+    write_workbook(model_path, ["CFOP", "Valor COFINS", "Nº do NCM"], [["5102", 10.0, "85167910"]])
+    write_workbook(client_path, ["Other", "CFOP source", "COFI value", "Corrected NCM"],
+                   [["A", "5102", 12.5, "85167910"]])
+    mapping_rows().to_excel(mapping_path, index=False)
+    build_mapped_workbook(client_path=client_path, mapping_path=mapping_path,
+                          output_path=output_path, model_path=model_path)
+    book = openpyxl.load_workbook(output_path)
+    assert "Coverage" in book.sheetnames
+    rows = list(book["Coverage"].values)
+    header = list(rows[0])
+    data = [dict(zip(header, r)) for r in rows[1:]]
+    states = [r["state"] for r in data]
+    # sorted so the work comes first: delivered, then pending, then absence
+    assert states == ["delivered", "delivered", "awaiting decision"]
+    assert data[0]["model_column"] == "CFOP" and data[0]["excel_column"] == "B"
+    # a reviewer correction counts as delivered and names the column it landed on
+    assert data[1]["model_column"] == "Nº do NCM"
+    assert data[1]["client_column"] == "Corrected NCM"
+    # the pending row must still name the candidate a reviewer has to rule on
+    assert data[2]["client_column"] == "COFI value"
