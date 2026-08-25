@@ -25,20 +25,31 @@ MAPPING_METADATA = [
     ("name_runner_up_confidence", "name_runner_up_confidence"),
     ("name_margin", "name_margin"),
     ("data_confidence", "data_confidence"),
+    ("llm_data_confidence", "llm_data_confidence"),
+    ("llm_final_confidence", "llm_final_confidence"),
     ("catalog_name", "catalog_name"),
     ("catalog_coverage", "catalog_coverage"),
     ("catalog_confidence", "catalog_confidence"),
     ("final_confidence", "final_confidence"),
+    ("arithmetic_proof", "arithmetic_proof"),
     ("reason", "reason"),
     ("reviewer_status", "reviewer_status"),
     ("reviewer_note", "reviewer_note"),
 ]
+
+#: Excel row where client data starts: header, then the metadata banner.
+#: Exported because this offset has already moved twice - 17 to 19 when the
+#: LLM audit scores were added, and again here - and anything downstream that
+#: hardcodes it breaks silently.
+FIRST_DATA_EXCEL_ROW = len(MAPPING_METADATA) + 2
 
 CONFIDENCE_ROWS = {
     "name_confidence",
     "name_runner_up_confidence",
     "name_margin",
     "data_confidence",
+    "llm_data_confidence",
+    "llm_final_confidence",
     "catalog_coverage",
     "catalog_confidence",
     "final_confidence",
@@ -147,9 +158,12 @@ def _ordered_mapping(mapping_path: str | Path, model: SheetTable) -> pd.DataFram
             )
 
     for optional in [
+        "arithmetic_proof",
         "catalog_name",
         "catalog_coverage",
         "catalog_confidence",
+        "llm_data_confidence",
+        "llm_final_confidence",
         "reviewer_status",
         "correct_client_column",
         "reviewer_note",
@@ -318,7 +332,7 @@ def build_mapped_workbook(
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         output_frame.to_excel(writer, sheet_name="Mapped Data", index=False)
         worksheet = writer.book["Mapped Data"]
-        first_data_excel_row = len(MAPPING_METADATA) + 2
+        first_data_excel_row = FIRST_DATA_EXCEL_ROW
         worksheet.freeze_panes = f"B{first_data_excel_row}"
 
         metadata_fill = PatternFill(fill_type="solid", fgColor="E8F0FE")

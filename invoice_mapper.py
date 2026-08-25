@@ -13,7 +13,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Protocol, Sequence
+from typing import Mapping, Protocol, Sequence
 
 import numpy as np
 import pandas as pd
@@ -209,10 +209,31 @@ def header_semantic_role(value: object) -> str | None:
         or re.search(r"\btipo\s+(?:de\s+|do\s+)?imposto\b", normalized)
     ):
         return "tax_status"
+    # A tax-family name can smuggle a rate signal into the signature: DIF_ALIQ
+    # tokenises to include ``aliq``, which the alias table expands to
+    # ``aliquota``, so every column of that block - Base, Valor, Isentas,
+    # Outras, Base Reduzida - reported role ``rate`` before this guard. When
+    # the header also states an explicit slot, the explicit word wins; the
+    # rate reading survives wherever it is the only role evidence, which is
+    # what keeps abbreviations like ``Aliq. PIS`` and ``Alíq. ICMS`` working.
+    explicit_slot = (
+        {"outra", "outras", "outro", "other"} & tokens
+        or {"isenta", "isentas", "isento", "exempt"} & tokens
+        or {"reduzida", "reduzido", "reduced"} & tokens
+        or {"base", "basis"} & tokens
+        or {"valor", "value", "amount"} & tokens
+    )
+    # ...but only when the rate reading rests on the abbreviation alone. A
+    # header that states a full rate word keeps it even beside a slot word,
+    # which is what leaves sap_terumo's "Tax rate (Tax/Base)" a rate.
+    rate_is_abbreviation_only = not (
+        {"aliquota", "rate", "taxa", "tximp"} & raw_tokens
+        or " tx imposto " in padded
+    )
     if (
         {"aliquota", "rate", "taxa", "tximp"} & tokens
         or " tx imposto " in padded
-    ):
+    ) and not (explicit_slot and rate_is_abbreviation_only):
         return "rate"
     if {"outra", "outras", "outro", "other"} & tokens:
         return "other"
@@ -1132,7 +1153,15 @@ class MappingResult:
     reason: str
     catalog_name: str | None = None
     catalog_coverage: float | None = None
+    #: Coverage over distinct codes. catalog_coverage stays row-weighted so the
+    #: reported column keeps its meaning; the gates use this one, because it is
+    #: what catalog_confidence is now computed from.
+    catalog_distinct_coverage: float | None = None
     catalog_confidence: float | None = None
+    #: Set when a client-side arithmetic trio independently places this column
+    #: here. Header-independent, so it is what tells a reviewer - and the eval
+    #: harness - that this mapping would survive an unfamiliar ERP.
+    arithmetic_proof: str | None = None
     llm_data_confidence: float | None = None
     llm_final_confidence: float | None = None
 
@@ -1362,6 +1391,9 @@ def _audit_accepted_catalog_matches(
             continue
         result.catalog_name = str(selected["catalog"])
         result.catalog_coverage = round(float(selected["coverage"]), 4)
+        result.catalog_distinct_coverage = round(
+            float(selected.get("distinct_coverage", selected["coverage"])), 4
+        )
         result.catalog_confidence = round(float(selected["score"]), 4)
         strong_contradiction = (
             float(selected["specificity"]) >= 0.90
@@ -1378,6 +1410,52 @@ def _audit_accepted_catalog_matches(
             low_confidence_targets.append(target_index)
 
 
+#: Floor for catalog evidence from a nationally-unique code domain.
+#:
+#: Measured over 348 scored column-catalog pairs across the four sample
+#: clients: for the specificity-1.0 catalogs (CFOP, NCM, IBGE municipality)
+#: the six true code columns score 0.8824-1.0000 while all 1,301 other pairs
+#: score 0.0000-0.0137 - a 64x empty gap. Any floor inside that gap separates
+#: perfectly and survives leave-one-client-out; 0.90 does not, because it sits
+#: at the top edge of the code cluster rather than in the gap, which is why a
+#: textbook CFOP column with 15 of 17 official codes was rejected.
+#:
+#: The floor is deliberately NOT applied to lower-specificity catalogs. Those
+#: are small closed domains - cst_ipi has 14 codes, cst_pis_cofins 33 - and
+#: any column of small integers matches them: at 0.50 the same corpus admits
+#: 123 pairs instead of 6, including 'Means of Transport' against cst_ipi and
+#: 'Valor Frete' against cst_icms. For those catalogs there is no gap at all,
+#: so the existing threshold stands and they remain LLM evidence rather than
+#: accepting evidence.
+DISTINCTIVE_CATALOG_FLOOR = 0.50
+
+#: A nationally-unique domain still needs enough distinct codes to be evidence:
+#: two matching values prove nothing however official the table.
+DISTINCTIVE_CATALOG_MIN_CODES = 5
+
+
+def catalog_evidence_is_distinctive(
+    evidence: Mapping[str, object] | None,
+    *,
+    final_threshold: float,
+) -> bool:
+    """Whether catalog evidence is strong enough to decide a mapping alone."""
+    if evidence is None:
+        return False
+    specificity = float(evidence["specificity"])
+    score = float(evidence["score"])
+    if bool(evidence["all_zero_only"]):
+        return False
+    if int(evidence["nonempty_count"]) < 5 or float(evidence["format_fraction"]) < 0.90:
+        return False
+    if specificity >= 1.0:
+        return (
+            score >= DISTINCTIVE_CATALOG_FLOOR
+            and int(evidence["unique_valid_count"]) >= DISTINCTIVE_CATALOG_MIN_CODES
+        )
+    return score >= final_threshold
+
+
 def _unique_distinctive_catalog_decision(
     *,
     candidates: Sequence[tuple[ColumnRef, pd.Series, float]],
@@ -1391,17 +1469,11 @@ def _unique_distinctive_catalog_decision(
         best = best_catalog_evidence(catalog_evidence.get(column.index, []))
         if best is None:
             continue
-        if (
-            float(best["specificity"]) < 0.90
-            or int(best["nonempty_count"]) < 5
-            or float(best["format_fraction"]) < 0.90
-            or float(best["coverage"]) < 0.90
-            or bool(best["all_zero_only"])
-        ):
+        if not catalog_evidence_is_distinctive(best, final_threshold=minimum_score):
             continue
         ranked.append((float(best["score"]), name_score, column, best))
     ranked.sort(key=lambda item: (-item[0], -item[1], item[2].index))
-    if not ranked or ranked[0][0] < minimum_score:
+    if not ranked:
         return None
     runner_up = ranked[1][0] if len(ranked) > 1 else 0.0
     catalog_score, name_score, column, evidence = ranked[0]
@@ -1414,7 +1486,9 @@ def _unique_distinctive_catalog_decision(
         final_confidence=round(final_confidence, 4),
         reason=(
             f"Versioned official {evidence['catalog']} codes cover "
-            f"{float(evidence['coverage']):.1%} of nonblank values and uniquely "
+            f"{float(evidence.get('distinct_coverage', evidence['coverage'])):.1%} "
+            f"of the {int(evidence['unique_formatted_count'])} distinct codes used "
+            f"({float(evidence['coverage']):.1%} of rows) and uniquely "
             "identify this candidate among the available columns."
         ),
     )
@@ -1699,6 +1773,131 @@ def _review_proposal_is_supported(
     )
 
 
+#: A discovered trio must clear these to count as proof. The fit bar is high
+#: because the identity is exact arithmetic, not a correlation, and the row bar
+#: exists because a perfect fit over a handful of rows proves nothing - the
+#: corpus contains 12-row degenerate fits that look identical to real ones.
+TRIO_MIN_FIT = 0.97
+TRIO_MIN_ROWS = 30
+
+
+def _trio_proof_text(trio: dict[str, object] | None) -> str | None:
+    """A reviewer-checkable sentence, or nothing."""
+    if trio is None:
+        return None
+    return (
+        f"valor = base x aliquota holds for {trio['tax_scope']} on "
+        f"{trio['rows_tested']} rows at fit {trio['fit_score']}"
+    )
+
+
+def discover_client_tax_trios(
+    client_table: SheetTable,
+) -> dict[tuple[str, tuple[str, ...]], dict[str, object]]:
+    """Find base/rate/value trios that satisfy valor = base x aliquota.
+
+    Runs over the client's own columns alone - no model, no prior acceptance,
+    no vocabulary beyond the family and role words already needed elsewhere.
+    That is the point: ``valor = base x aliquota`` is Brazilian tax law rather
+    than a property of any one export, so a trio proven here is evidence that
+    transfers to an ERP nobody has seen.
+
+    The existing relationship evidence cannot do this. It asks
+    _accepted_tax_anchors for two already-ACCEPTED roles in the same scope, so
+    it can only confirm what header matching already settled; measured on the
+    four sample clients it unlocks nothing that acceptance had not unlocked
+    first.
+
+    Returns one entry per scope, keyed exactly like tax_calculation_scope, with
+    the winning column indices and the evidence that proved them.
+    """
+    by_scope: dict[tuple[str, tuple[str, ...]], dict[str, list[int]]] = {}
+    for index, column in enumerate(client_table.columns):
+        role = header_semantic_role(column.name)
+        if role not in {"base", "rate", "value"}:
+            continue
+        scope = tax_calculation_scope(column.name)
+        if scope is None:
+            continue
+        by_scope.setdefault(scope, {}).setdefault(role, []).append(index)
+
+    series_cache: dict[int, pd.Series] = {}
+
+    def values(index: int) -> pd.Series:
+        if index not in series_cache:
+            series_cache[index] = client_table.series(client_table.columns[index])
+        return series_cache[index]
+
+    proven: dict[tuple[str, tuple[str, ...]], dict[str, object]] = {}
+    for scope, roles in by_scope.items():
+        if not {"base", "rate", "value"} <= roles.keys():
+            continue
+        best: tuple[float, int, dict[str, object]] | None = None
+        for base_index in roles["base"]:
+            for rate_index in roles["rate"]:
+                for value_index in roles["value"]:
+                    evidence = tax_calculation_evidence(
+                        values(base_index), values(rate_index), values(value_index)
+                    )
+                    fit = float(evidence.get("fit_score", 0.0))
+                    rows = int(evidence.get("rows_tested", 0))
+                    if fit < TRIO_MIN_FIT or rows < TRIO_MIN_ROWS:
+                        continue
+                    if evidence.get("degenerate"):
+                        continue
+                    if best is None or (fit, rows) > (best[0], best[1]):
+                        best = (
+                            fit,
+                            rows,
+                            {
+                                "base": base_index,
+                                "rate": rate_index,
+                                "value": value_index,
+                                "fit_score": round(fit, 4),
+                                "rows_tested": rows,
+                                "tax_scope": scope[0],
+                                "tax_qualifiers": list(scope[1]),
+                            },
+                        )
+        if best is not None:
+            proven[scope] = best[2]
+    return proven
+
+
+def trio_corroboration(
+    trios: dict[tuple[str, tuple[str, ...]], dict[str, object]],
+    model_column_name: str,
+    client_index: int,
+) -> dict[str, object] | None:
+    """Whether a proven trio independently places this client column here."""
+    role = header_semantic_role(model_column_name)
+    if role not in {"base", "rate", "value"}:
+        return None
+    scope = tax_calculation_scope(model_column_name)
+    if scope is None:
+        return None
+    trio = trios.get(scope)
+    if trio is None or trio[role] != client_index:
+        return None
+    return trio
+
+
+def client_column_is_vacuous(table: SheetTable, column: ColumnRef) -> bool:
+    """Whether a client column has no populated cell at all.
+
+    Deliberately narrower than ``evidence_quality == "all_zero"``. A column of
+    zeros is ordinary fiscal data - an exempt operation has a zero base, and
+    six of oracle's all-zero columns are client-authored ground truth - while a
+    column with nothing in it cannot be any model column's counterpart. An
+    accepted mapping onto one reaches the customer looking mapped and silently
+    blank, which is the one failure that costs more than a missing column.
+    """
+    series = table.series(column)
+    return int(series.notna().sum()) == 0 or not any(
+        str(value).strip() for value in series.dropna()
+    )
+
+
 def map_columns(
     model_table: SheetTable,
     client_table: SheetTable,
@@ -1717,6 +1916,10 @@ def map_columns(
     expected_shape = (len(model_table.columns), len(client_table.columns))
     if similarities.shape != expected_shape:
         raise ValueError(f"Header scorer returned {similarities.shape}, expected {expected_shape}")
+
+    # Discovered once, from the client's own columns. Independent of the model,
+    # of acceptance order, and of any header vocabulary beyond family and role.
+    client_tax_trios = discover_client_tax_trios(client_table)
 
     available = set(range(len(client_table.columns)))
     results: dict[int, MappingResult] = {}
@@ -1763,6 +1966,7 @@ def map_columns(
             and not underspecified_header_match(
                 model_column.name, client_column.name
             )
+            and not client_column_is_vacuous(client_table, client_column)
         ):
             results[target_index] = MappingResult(
                 model_column_number=model_column.index + 1,
@@ -1777,6 +1981,9 @@ def map_columns(
                 method="name",
                 status="accepted",
                 reason="Accepted from header similarity with a clear lead over the runner-up.",
+                arithmetic_proof=_trio_proof_text(
+                trio_corroboration(client_tax_trios, model_column.name, client_column.index)
+            ),
             )
             available.remove(client_index)
         else:
@@ -2268,6 +2475,14 @@ def map_columns(
             if selected_catalog is not None
             else 0.0
         )
+        # The gates read distinct coverage - the statistic catalog_confidence
+        # is computed from - while the reported catalog_coverage column keeps
+        # its original row-weighted meaning so existing reports stay readable.
+        selected_catalog_distinct_coverage = (
+            float(selected_catalog.get("distinct_coverage", selected_catalog["coverage"]))
+            if selected_catalog is not None
+            else 0.0
+        )
         header_conflict = semantic_header_conflict(
             model_column.name, chosen.name
         )
@@ -2292,7 +2507,11 @@ def map_columns(
             target_profile, selected_profile
         )
         catalog_objective_score = (
-            selected_catalog_score if selected_catalog_coverage >= 0.90 else 0.0
+            selected_catalog_score
+            if catalog_evidence_is_distinctive(
+                selected_catalog, final_threshold=config.final_threshold
+            )
+            else 0.0
         )
         objective_data_score = max(
             selected_relationship_score,
@@ -2344,6 +2563,7 @@ def map_columns(
             and (name_is_decisive or data_is_decisive)
             and header_conflict is None
             and not relationship_contradiction
+            and not client_column_is_vacuous(client_table, chosen)
         )
         reason = decision.reason
         review_is_supported = _review_proposal_is_supported(
@@ -2355,7 +2575,7 @@ def map_columns(
             selected_profile=selected_profile,
             relationship_score=selected_relationship_score,
             catalog_score=selected_catalog_score,
-            catalog_coverage=selected_catalog_coverage,
+            catalog_coverage=selected_catalog_distinct_coverage,
             same_explicit_role=same_explicit_role,
             config=config,
         )
@@ -2395,6 +2615,22 @@ def map_columns(
                 "The header match is ambiguous and the row samples are empty or all-zero; "
                 "keep this mapping for review."
             )
+        accepted_but_for_vacuity = (
+            not accepted
+            and final_confidence >= config.final_threshold
+            and (name_is_decisive or data_is_decisive)
+            and header_conflict is None
+            and not relationship_contradiction
+        )
+        if accepted_but_for_vacuity:
+            # Say so plainly. Everything else about this proposal may look
+            # strong, and a reviewer told only that the header score was
+            # insufficient would go looking for the wrong problem.
+            reason = (
+                f"{chosen.display_name!r} has no populated rows, so it cannot be "
+                "this column's source however well the headers match. "
+                "Not accepted."
+            )
         results[target_index] = MappingResult(
             model_column_number=model_column.index + 1,
             model_column=model_column.name,
@@ -2408,6 +2644,9 @@ def map_columns(
             method=decision_method,
             status="accepted" if accepted else "review",
             reason=reason,
+            arithmetic_proof=_trio_proof_text(
+                trio_corroboration(client_tax_trios, model_column.name, chosen.index)
+            ),
             catalog_name=(
                 str(selected_catalog["catalog"])
                 if selected_catalog is not None

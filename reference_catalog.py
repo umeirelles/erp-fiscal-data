@@ -165,12 +165,27 @@ class ReferenceCatalogs:
         nonempty_count = len(nonempty)
         format_fraction = len(formatted) / nonempty_count if nonempty_count else 0.0
         coverage = len(valid) / nonempty_count if nonempty_count else 0.0
+        unique_formatted = {code for code in formatted if code is not None}
         unique_valid = set(valid)
+        # Coverage weighted by how often each code happens to be used answers
+        # "what share of rows did we recognise", which is not the question.
+        # A CFOP column is a CFOP column even when two frequent ERP-generic
+        # codes are absent from the official table: oracle's CFO uses 17
+        # distinct codes, 15 of them official, but the two unofficial ones
+        # cover a third of its rows, so row coverage reads 0.667 while the
+        # column is unmistakably CFOP. Coverage over DISTINCT codes reads
+        # 0.882 and does not care how often a code repeats.
+        distinct_coverage = (
+            len(unique_valid) / len(unique_formatted) if unique_formatted else 0.0
+        )
         all_zero_only = bool(unique_valid) and all(
             not code.strip("0") for code in unique_valid
         )
         sample_factor = min(1.0, math.sqrt(nonempty_count / 5.0))
-        score = coverage * catalog.spec.specificity * sample_factor
+        # Scored on distinct codes rather than rows: how often a client
+        # happens to repeat one code says nothing about whether the column
+        # belongs to this code domain.
+        score = distinct_coverage * catalog.spec.specificity * sample_factor
         if all_zero_only:
             score = 0.0
         invalid_examples: list[str] = []
@@ -191,7 +206,9 @@ class ReferenceCatalogs:
             "format_fraction": round(format_fraction, 4),
             "valid_count": len(valid),
             "coverage": round(coverage, 4),
+            "distinct_coverage": round(distinct_coverage, 4),
             "unique_valid_count": len(unique_valid),
+            "unique_formatted_count": len(unique_formatted),
             "all_zero_only": all_zero_only,
             "score": round(score, 4),
             "invalid_examples": invalid_examples,

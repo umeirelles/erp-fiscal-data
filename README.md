@@ -54,7 +54,7 @@ python apply_invoice_mapping.py \
   --output sap_terumo_mapped.xlsx
 ```
 
-The output follows the model's column order. Mapping metadata and scores occupy the first rows; client data begins at Excel row 17. By default, only `accepted` and reviewer-confirmed mappings are populated. Unconfirmed `review` columns remain blank.
+The output follows the model's column order. Mapping metadata and scores—including the separately reported LLM audit scores and, where one exists, the arithmetic proof—occupy the first rows; client data begins at Excel row 20 (`FIRST_DATA_EXCEL_ROW`). Confidence values are stored as numbers and displayed as percentages. By default, only `accepted` and reviewer-confirmed mappings are populated. Unconfirmed `review` columns remain blank.
 
 Reviewer values supported in the mapping report are `correct`, `incorrect` with `correct_client_column`, and `no_mapping_exists`.
 

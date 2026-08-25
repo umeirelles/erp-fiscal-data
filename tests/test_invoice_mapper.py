@@ -6,7 +6,12 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 
+import pytest
+
 from invoice_mapper import (
+    trio_corroboration,
+    discover_client_tax_trios,
+    client_column_is_vacuous,
     ColumnRef,
     DataMappingDecision,
     MapperConfig,
@@ -906,3 +911,100 @@ def test_data_resolver_preserves_name_confidence_when_rows_are_all_zero() -> Non
     )
 
     assert decision.final_confidence == 0.88
+
+
+@pytest.mark.parametrize(
+    ("header", "role"),
+    [
+        ("Tipo de Imposto DIF_ALIQ", "tax_status"),
+        ("Base DIF_ALIQ", "base"),
+        ("Aliquota DIF_ALIQ", "rate"),
+        ("Valor DIF_ALIQ", "value"),
+        ("Isentas DIF_ALIQ", "exempt"),
+        ("Outras DIF_ALIQ", "other"),
+        ("Base Reduzida DIF_ALIQ", "reduced_base"),
+    ],
+)
+def test_a_family_name_does_not_smuggle_a_rate_role(header: str, role: str) -> None:
+    # DIF_ALIQ tokenises to include "aliq", which the alias table expands to
+    # "aliquota". Five of these seven model columns reported role "rate", so
+    # semantic_header_conflict misfired across the whole block.
+    assert header_semantic_role(header) == role
+
+
+@pytest.mark.parametrize(
+    "header",
+    ["Aliq. PIS", "Alíq. ICMS", "ICMS Taxa", "Tx.imposto 4 c.decs.", "Tax rate (Tax/Base)"],
+)
+def test_real_rate_headers_keep_the_rate_role(header: str) -> None:
+    # The guard above must stay narrow. "Aliq." really is the rate word in the
+    # Datasul exports, and "Tax rate (Tax/Base)" is a rate despite naming a
+    # base - a broader guard demoted it, which is why the rule keys on whether
+    # the rate signal rests on the abbreviation alone.
+    assert header_semantic_role(header) == "rate"
+
+
+def test_a_column_with_no_data_is_vacuous_but_a_column_of_zeros_is_not() -> None:
+    # The distinction is load-bearing. datasul carries 200 all-zero columns and
+    # six of oracle's are client-authored ground truth, so a guard keyed on
+    # all-zero would destroy verified-correct mappings; a guard keyed on
+    # emptiness removes only mappings that ship a silently blank column.
+    table = SheetTable(
+        columns=[
+            ColumnRef(id="column_001", index=0, name="Empty", occurrence=1),
+            ColumnRef(id="column_002", index=1, name="Blanks", occurrence=1),
+            ColumnRef(id="column_003", index=2, name="Zeros", occurrence=1),
+        ],
+        data=pd.DataFrame(
+            {"Empty": [None, None, None], "Blanks": ["", "  ", None], "Zeros": [0, 0, 0]}
+        ),
+    )
+    assert client_column_is_vacuous(table, table.columns[0])
+    assert client_column_is_vacuous(table, table.columns[1])
+    assert not client_column_is_vacuous(table, table.columns[2])
+
+
+def test_a_trio_is_discovered_from_the_client_alone() -> None:
+    # No model, no prior acceptance, no vocabulary beyond family and role.
+    # valor = base x aliquota is tax law, so a trio proven here is evidence
+    # that transfers to an ERP nobody has seen.
+    base = [1000.0 + index for index in range(60)]
+    rate = [18.0] * 60
+    sheet = table(
+        ["ICMS Base", "ICMS Taxa", "ICMS Valor", "Ruido"],
+        [
+            [base[i], rate[i], round(base[i] * 0.18, 2), i]
+            for i in range(60)
+        ],
+    )
+    trios = discover_client_tax_trios(sheet)
+    assert ("icms", ()) in trios
+    trio = trios[("icms", ())]
+    assert (trio["base"], trio["rate"], trio["value"]) == (0, 1, 2)
+    assert trio["rows_tested"] >= 30
+    assert trio["fit_score"] >= 0.97
+
+
+def test_a_trio_needs_enough_rows_to_be_proof() -> None:
+    # A perfect fit over a handful of rows proves nothing; the real corpus
+    # contains 12-row degenerate fits indistinguishable from genuine ones.
+    base = [1000.0 + index for index in range(10)]
+    sheet = table(
+        ["IPI Base", "IPI Taxa", "IPI Valor"],
+        [[base[i], 5.0, round(base[i] * 0.05, 2)] for i in range(10)],
+    )
+    assert discover_client_tax_trios(sheet) == {}
+
+
+def test_corroboration_matches_the_slot_not_merely_the_family() -> None:
+    base = [1000.0 + index for index in range(60)]
+    sheet = table(
+        ["ICMS Base", "ICMS Taxa", "ICMS Valor"],
+        [[base[i], 18.0, round(base[i] * 0.18, 2)] for i in range(60)],
+    )
+    trios = discover_client_tax_trios(sheet)
+    assert trio_corroboration(trios, "Base ICMS", 0) is not None
+    # right family, wrong slot
+    assert trio_corroboration(trios, "Base ICMS", 1) is None
+    # a role the identity says nothing about
+    assert trio_corroboration(trios, "Isentas ICMS", 0) is None

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from invoice_mapper import (
     ColumnRef,
@@ -172,3 +173,13 @@ def test_short_overlapping_cst_domain_does_not_bypass_resolver() -> None:
 
     assert resolver.calls == ["CST PIS"]
     assert result.status == "no_match"
+
+
+def test_distinct_coverage_ignores_how_often_a_code_repeats() -> None:
+    # Two codes, one official and one not, but the unofficial one dominates
+    # the rows. Row coverage collapses; distinct coverage does not.
+    catalogs = ReferenceCatalogs.from_directory(REFERENCE_DATA)
+    series = pd.Series(["5102"] * 2 + ["9999"] * 98)
+    analysis = catalogs.analyze(series, "cfop")
+    assert analysis["coverage"] == pytest.approx(0.02)
+    assert analysis["distinct_coverage"] == pytest.approx(0.5)
