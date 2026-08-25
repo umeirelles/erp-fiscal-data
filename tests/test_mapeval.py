@@ -113,7 +113,7 @@ def test_harness_reproduces_the_corrected_baseline() -> None:
         key = load_answer_key(ROOT / key_file, client)
         score = score_report(ROOT / report_file, ROOT / client_file, key)
         total += score.count(Outcome.CORRECT)
-    assert total == 38
+    assert total == 42
 
 
 @requires_workbooks
@@ -129,7 +129,7 @@ def test_the_four_key_corrections_are_worth_exactly_four_columns() -> None:
                 strict += score.count(Outcome.CORRECT)
             else:
                 corrected += score.count(Outcome.CORRECT)
-    assert (strict, corrected) == (34, 38)
+    assert (strict, corrected) == (38, 42)
     assert sum(len(v) for v in KEY_CORRECTIONS.values()) == 4
 
 
