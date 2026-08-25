@@ -6,3 +6,7 @@ __pycache__/
 
 # Temporary audit reruns; published mapping workbooks remain tracked explicitly.
 mapping_*_review_v*.xlsx
+
+# Tool caches and coverage output; regenerated on demand.
+.coverage
+.ruff_cache/

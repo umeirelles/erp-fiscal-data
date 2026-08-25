@@ -25,6 +25,8 @@ def mapping_rows() -> pd.DataFrame:
                 "name_runner_up_confidence": 0.70,
                 "name_margin": 0.28,
                 "data_confidence": None,
+                "llm_data_confidence": None,
+                "llm_final_confidence": None,
                 "final_confidence": 0.98,
                 "method": "name",
                 "status": "accepted",
@@ -42,6 +44,8 @@ def mapping_rows() -> pd.DataFrame:
                 "name_runner_up_confidence": 0.80,
                 "name_margin": 0.02,
                 "data_confidence": 0.91,
+                "llm_data_confidence": 0.93,
+                "llm_final_confidence": 0.89,
                 "final_confidence": 0.88,
                 "method": "data",
                 "status": "review",
@@ -59,6 +63,8 @@ def mapping_rows() -> pd.DataFrame:
                 "name_runner_up_confidence": 0.38,
                 "name_margin": 0.02,
                 "data_confidence": 0.10,
+                "llm_data_confidence": 0.12,
+                "llm_final_confidence": 0.08,
                 "final_confidence": 0.0,
                 "method": "data",
                 "status": "no_match",
@@ -129,6 +135,11 @@ def test_build_mapped_workbook_defaults_to_confirmed_mappings(tmp_path) -> None:
         "name_confidence"
     )
     assert worksheet.cell(confidence_excel_row, 2).number_format == "0.00%"
+    llm_confidence_excel_row = 2 + [
+        label for label, _ in MAPPING_METADATA
+    ].index("llm_final_confidence")
+    assert worksheet.cell(llm_confidence_excel_row, 3).value == 0.89
+    assert worksheet.cell(llm_confidence_excel_row, 3).number_format == "0.00%"
 
 
 def test_include_review_populates_unconfirmed_proposal(tmp_path) -> None:
