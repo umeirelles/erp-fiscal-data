@@ -1769,6 +1769,22 @@ def _review_proposal_is_supported(
     )
 
 
+def client_column_is_vacuous(table: SheetTable, column: ColumnRef) -> bool:
+    """Whether a client column has no populated cell at all.
+
+    Deliberately narrower than ``evidence_quality == "all_zero"``. A column of
+    zeros is ordinary fiscal data - an exempt operation has a zero base, and
+    six of oracle's all-zero columns are client-authored ground truth - while a
+    column with nothing in it cannot be any model column's counterpart. An
+    accepted mapping onto one reaches the customer looking mapped and silently
+    blank, which is the one failure that costs more than a missing column.
+    """
+    series = table.series(column)
+    return int(series.notna().sum()) == 0 or not any(
+        str(value).strip() for value in series.dropna()
+    )
+
+
 def map_columns(
     model_table: SheetTable,
     client_table: SheetTable,
@@ -1833,6 +1849,7 @@ def map_columns(
             and not underspecified_header_match(
                 model_column.name, client_column.name
             )
+            and not client_column_is_vacuous(client_table, client_column)
         ):
             results[target_index] = MappingResult(
                 model_column_number=model_column.index + 1,
@@ -2426,6 +2443,7 @@ def map_columns(
             and (name_is_decisive or data_is_decisive)
             and header_conflict is None
             and not relationship_contradiction
+            and not client_column_is_vacuous(client_table, chosen)
         )
         reason = decision.reason
         review_is_supported = _review_proposal_is_supported(
@@ -2476,6 +2494,22 @@ def map_columns(
             reason = (
                 "The header match is ambiguous and the row samples are empty or all-zero; "
                 "keep this mapping for review."
+            )
+        accepted_but_for_vacuity = (
+            not accepted
+            and final_confidence >= config.final_threshold
+            and (name_is_decisive or data_is_decisive)
+            and header_conflict is None
+            and not relationship_contradiction
+        )
+        if accepted_but_for_vacuity:
+            # Say so plainly. Everything else about this proposal may look
+            # strong, and a reviewer told only that the header score was
+            # insufficient would go looking for the wrong problem.
+            reason = (
+                f"{chosen.display_name!r} has no populated rows, so it cannot be "
+                "this column's source however well the headers match. "
+                "Not accepted."
             )
         results[target_index] = MappingResult(
             model_column_number=model_column.index + 1,

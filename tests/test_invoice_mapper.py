@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 from invoice_mapper import (
+    client_column_is_vacuous,
     ColumnRef,
     DataMappingDecision,
     MapperConfig,
@@ -939,3 +940,23 @@ def test_real_rate_headers_keep_the_rate_role(header: str) -> None:
     # base - a broader guard demoted it, which is why the rule keys on whether
     # the rate signal rests on the abbreviation alone.
     assert header_semantic_role(header) == "rate"
+
+
+def test_a_column_with_no_data_is_vacuous_but_a_column_of_zeros_is_not() -> None:
+    # The distinction is load-bearing. datasul carries 200 all-zero columns and
+    # six of oracle's are client-authored ground truth, so a guard keyed on
+    # all-zero would destroy verified-correct mappings; a guard keyed on
+    # emptiness removes only mappings that ship a silently blank column.
+    table = SheetTable(
+        columns=[
+            ColumnRef(id="column_001", index=0, name="Empty", occurrence=1),
+            ColumnRef(id="column_002", index=1, name="Blanks", occurrence=1),
+            ColumnRef(id="column_003", index=2, name="Zeros", occurrence=1),
+        ],
+        data=pd.DataFrame(
+            {"Empty": [None, None, None], "Blanks": ["", "  ", None], "Zeros": [0, 0, 0]}
+        ),
+    )
+    assert client_column_is_vacuous(table, table.columns[0])
+    assert client_column_is_vacuous(table, table.columns[1])
+    assert not client_column_is_vacuous(table, table.columns[2])
