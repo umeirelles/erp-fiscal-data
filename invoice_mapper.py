@@ -187,12 +187,73 @@ def header_tax_families(value: object) -> frozenset[str]:
     return frozenset(families & _TAX_FAMILIES)
 
 
+#: Role words grouped by the concept they name. Every ERP truncates headers -
+#: SAP to about 20 characters, Datasul to 12 - so the role word arrives cut
+#: short far more often than not: "Vlr Isen ICM", "Vlr Outr IPI".
+#:
+#: These groups are prefix-unambiguous: measured over lengths 2 to 6, no prefix
+#: of any word here reaches two different concepts. That is what makes
+#: expansion safe by construction rather than by tuning, and it is asserted by
+#: a test so a future addition cannot quietly break it.
+_ROLE_CONCEPT_WORDS: dict[str, frozenset[str]] = {
+    "other": frozenset({"outra", "outras", "outro", "outros", "other"}),
+    "exempt": frozenset({"isenta", "isentas", "isento", "isentos", "exempt"}),
+    "reduced": frozenset({"reduzida", "reduzido", "reduced"}),
+}
+
+#: Shorter than this and a token is noise rather than a truncation.
+_MIN_ROLE_PREFIX = 3
+
+
+def _role_prefix_index() -> dict[str, str]:
+    index: dict[str, list[str]] = {}
+    for concept, words in _ROLE_CONCEPT_WORDS.items():
+        for word in words:
+            for size in range(_MIN_ROLE_PREFIX, len(word)):
+                index.setdefault(word[:size], []).append(concept)
+    return {
+        prefix: concepts[0]
+        for prefix, concepts in index.items()
+        if len(set(concepts)) == 1
+    }
+
+
+_ROLE_PREFIXES = _role_prefix_index()
+_ROLE_CANONICAL = {
+    "other": "outras",
+    "exempt": "isentas",
+    "reduced": "reduzida",
+}
+
+
+def expand_truncated_role_words(tokens: set[str]) -> set[str]:
+    """Add the full role word for tokens that are truncations of one.
+
+    A prefix only expands when it reaches exactly one concept, so this cannot
+    turn an "outbound" into an "outras" by reaching two meanings at once - it
+    can only be wrong if a token that is not a truncation happens to prefix a
+    role word and nothing else. Expansion is additive: the original token stays,
+    so nothing that already worked stops working.
+    """
+    known = {word for words in _ROLE_CONCEPT_WORDS.values() for word in words}
+    expanded = set(tokens)
+    for token in tokens:
+        if token in known or len(token) < _MIN_ROLE_PREFIX:
+            continue
+        concept = _ROLE_PREFIXES.get(token)
+        if concept is not None:
+            expanded.add(_ROLE_CANONICAL[concept])
+    return expanded
+
+
 def header_semantic_role(value: object) -> str | None:
     """Return an explicit tax-value role without guessing from row values."""
     normalized = normalize_header(value)
     padded = f" {normalized} "
     raw_tokens = set(normalized.split())
-    tokens = set(semantic_header_signature(value)) | raw_tokens
+    tokens = expand_truncated_role_words(
+        set(semantic_header_signature(value)) | raw_tokens
+    )
 
     if (
         {"classification", "classificacao"} & tokens

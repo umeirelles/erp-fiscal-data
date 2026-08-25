@@ -9,6 +9,9 @@ import pandas as pd
 import pytest
 
 from invoice_mapper import (
+    _MIN_ROLE_PREFIX,
+    _ROLE_CONCEPT_WORDS,
+    expand_truncated_role_words,
     trio_corroboration,
     discover_client_tax_trios,
     client_column_is_vacuous,
@@ -1008,3 +1011,43 @@ def test_corroboration_matches_the_slot_not_merely_the_family() -> None:
     assert trio_corroboration(trios, "Base ICMS", 1) is None
     # a role the identity says nothing about
     assert trio_corroboration(trios, "Isentas ICMS", 0) is None
+
+
+def test_the_role_vocabulary_is_prefix_unambiguous() -> None:
+    # This is the property that makes truncation expansion safe by
+    # construction rather than by tuning: no prefix of any role word reaches
+    # two different concepts, so a truncation cannot resolve two ways. A
+    # future addition that breaks this must fail here rather than silently
+    # start mis-labelling roles.
+    seen: dict[str, str] = {}
+    for concept, words in _ROLE_CONCEPT_WORDS.items():
+        for word in words:
+            for size in range(_MIN_ROLE_PREFIX, len(word)):
+                prefix = word[:size]
+                assert seen.setdefault(prefix, concept) == concept, (
+                    f"prefix {prefix!r} reaches both {seen[prefix]} and {concept}"
+                )
+
+
+@pytest.mark.parametrize(
+    ("header", "role"),
+    [
+        ("Vlr Isen ICM", "exempt"),
+        ("Vlr Out ICMS", "other"),
+        ("Vlr Isen IPI", "exempt"),
+        ("Vlr Outr IPI", "other"),
+    ],
+)
+def test_truncated_role_words_still_name_their_role(header: str, role: str) -> None:
+    # Datasul truncates headers to 12 characters, so the role word arrives cut
+    # short. These four read as "value", which made semantic_header_conflict
+    # veto the CORRECT pair and put them beyond acceptance at any confidence.
+    assert header_semantic_role(header) == role
+
+
+def test_expansion_leaves_full_words_and_short_tokens_alone() -> None:
+    assert expand_truncated_role_words({"outras"}) == {"outras"}
+    assert expand_truncated_role_words({"ou"}) == {"ou"}          # too short
+    assert expand_truncated_role_words({"icms"}) == {"icms"}      # not a role word
+    # additive: the original token survives alongside the expansion
+    assert expand_truncated_role_words({"isen"}) == {"isen", "isentas"}
