@@ -12,11 +12,27 @@ from mapeval.truth import load_answer_key
 
 #: client -> (client export, mapping report, de-para key or None)
 CLIENTS: dict[str, tuple[str, str, str | None]] = {
-    "datasul": ("datasul_maio.xlsx", "mapping_datasul_full.xlsx", "de_para_datasul.xlsx"),
-    "oracle": ("oracle.xlsx", "mapping_oracle_full.xlsx", "de_para_oracle.xlsx"),
+    "datasul": (
+        "data/clients/datasul_maio.xlsx",
+        "data/reports/mapping_datasul_full.xlsx",
+        "data/keys/de_para_datasul.xlsx",
+    ),
+    "oracle": (
+        "data/clients/oracle.xlsx",
+        "data/reports/mapping_oracle_full.xlsx",
+        "data/keys/de_para_oracle.xlsx",
+    ),
     # de_para_procosa.xlsx is a record-granularity spec, not a column key.
-    "sap_procosa": ("sap_procosa.XLSX", "mapping_sap_procosa_full.xlsx", None),
-    "sap_terumo": ("sap_terumo.XLSX", "mapping_sap_terumo_full.xlsx", None),
+    "sap_procosa": (
+        "data/clients/sap_procosa.XLSX",
+        "data/reports/mapping_sap_procosa_full.xlsx",
+        None,
+    ),
+    "sap_terumo": (
+        "data/clients/sap_terumo.XLSX",
+        "data/reports/mapping_sap_terumo_full.xlsx",
+        None,
+    ),
 }
 
 

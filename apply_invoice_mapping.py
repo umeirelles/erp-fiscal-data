@@ -382,7 +382,7 @@ def build_mapped_workbook(
     client_path: str | Path,
     mapping_path: str | Path,
     output_path: str | Path,
-    model_path: str | Path = "model.xlsx",
+    model_path: str | Path = "data/model.xlsx",
     model_sheet: str | int = 0,
     client_sheet: str | int = 0,
     model_header_row: int = 0,
@@ -509,7 +509,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("client", help="Client .xlsx export")
     parser.add_argument("mapping", help="Mapping report produced by invoice_mapper.py")
-    parser.add_argument("--model", default="model.xlsx", help="Canonical model workbook")
+    parser.add_argument("--model", default="data/model.xlsx", help="Canonical model workbook")
     parser.add_argument("--output", required=True, help="Output .xlsx workbook")
     parser.add_argument("--model-sheet", default="0", help="Model sheet index or name")
     parser.add_argument("--client-sheet", default="0", help="Client sheet index or name")
