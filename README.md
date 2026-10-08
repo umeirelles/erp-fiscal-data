@@ -1,133 +1,140 @@
-# Brazilian invoice column mapper
+# cbs-base-fiscal: invoice column mapper
 
-Maps client invoice exports to the canonical columns in `model.xlsx`. The included SAP, Datasul, and Oracle files are examples; the mapper does not contain layout-specific column mappings.
+An internal tool for a Brazilian tax advisory firm. Clients send invoice spreadsheets exported from their ERP (SAP, Datasul, Oracle, ...), and every ERP and every client lays them out differently. The tool maps a client's columns onto the firm's fixed base model, `data/model.xlsx`. It never changes a value. A downstream application reads only the base model.
 
-## How it works
+The base model is a deliberately oversized superset. It has 227 columns covering every field any client might send, and it starts with the new reform taxes CBS and IBS (the federal and subnational consumption taxes that replace PIS/COFINS and ICMS/ISS). A client fills only part of it, so an empty model column is often the correct answer.
 
-For each model column, from left to right:
+## Pipeline at a glance
 
-1. Compare column names using normalization and OpenAI embeddings.
-2. Accept clear matches with a sufficient lead over the runner-up.
-3. For uncertain matches, evaluate the names together with representative values, data shape, fiscal-code catalogs, and relevant arithmetic relationships.
-4. Return `accepted`, `review`, or `no_match` with confidence scores and a reason.
+```text
+data/clients/<export>.xlsx
+      │  python invoice_mapper.py
+      ▼
+data/reports/mapping_<client>.xlsx     one row per model column: accepted / review / no_match
+      │  human review: reviewer columns in the Mappings sheet
+      │  python apply_invoice_mapping.py
+      ▼
+data/mapped/<client>_mapped.xlsx       sheets: Mapped Data, Coverage
 
-Accepted source columns are not reused. Empty and all-zero values are weak evidence. A bogus header can still produce a viable mapping when its content is distinctive, but uncertain cases remain `review`.
+python -m mapeval                      scores the archived reports against the answer keys (read-only)
+```
 
-Confidence values are decision signals, not calibrated probabilities. Review low-confidence mappings before using them in tax calculations.
+1. **Map** (`invoice_mapper.py` `map_columns`). Pass 1 accepts a client column on its header alone. It does this when the header similarity (OpenAI embeddings online, lexical matching offline) is at least 0.90, leads the runner-up by at least 0.05, and no guard objects. Pass 2 takes the remaining model columns and weighs the values: tax arithmetic (base × rate = value), official code catalogs, overlap with the model's sample values, and check digits on identifiers. An LLM (`gpt-4o-mini`) usually proposes the column, then local code recomputes the confidence and applies the 0.90 accept gate. Each model column ends up `accepted`, `review` or `no_match`, with a reason. The `supported_by` / `decided_by` / `vetoed_by` columns name the analysis steps behind the result; `mapping_steps.py` defines those steps. Confidences are decision signals, not calibrated probabilities.
+2. **Review.** A reviewer rules on rows in the report's `Mappings` sheet (`correct`, `incorrect` + `correct_client_column`, or `no_mapping_exists`). The `Adjudication Queue` sheet ranks the proposals the gate withheld. `Unmatched Client Columns` lists client columns whose data reached no model column. The archived procosa report predates both of these sheets and has only `Mappings` and `Run Metadata`.
+3. **Apply** (`apply_invoice_mapping.py`). Copies client values unchanged into model column order. It fills only accepted and reviewer-confirmed columns. Its `Coverage` sheet marks each model column as delivered, awaiting decision, or not in this client's export.
+4. **Measure** (`mapeval/`). Read-only scoring of the archived reports against the client-written answer keys. It exits 1 on any fabrication.
+
+## Repository layout
+
+```text
+invoice_mapper.py          mapper CLI and algorithm: header scoring, evidence, accept gate, report writer
+mapping_steps.py           registry of the named evidence steps and guards used in supported_by/decided_by/vetoed_by
+reference_catalog.py       loads reference_data/, verifies checksums, scores a column against each code catalog
+apply_invoice_mapping.py   apply CLI: client export + mapping report -> mapped workbook
+backfill_mapping_steps.py  one-off: added the step columns in place to reports written before they existed
+update_reference_data.py   rebuilds reference_data/ from official sources (network)
+mapeval/                   evaluation harness, run as `python -m mapeval`
+docs/                      the four detailed docs listed under "Where to read next"
+tests/                     pytest suite; runs offline
+reference_data/            10 fiscal-code catalogs (CSV) + manifest.json with their checksums
+data/model.xlsx            the base model: 227 headers and 209 sample rows (immutable for now)
+data/clients/              four real client exports: datasul_maio, oracle, sap_procosa, sap_terumo
+data/keys/                 de-para files: datasul and oracle are column answer keys; procosa's is a record-level spec, not a key
+data/reports/              archived mapper reports, mapping_<client>_full.xlsx (procosa's holds 26 reviewer verdicts)
+data/mapped/               apply outputs, <client>_mapped.xlsx
+requirements.txt           dependency ranges, no lockfile (pyproject.toml holds only pytest settings)
+```
+
+A *de-para* ("from-to") is a correspondence table. Here it is a spreadsheet in which the client marked model columns with the letter of its own column that supplies them.
 
 ## Setup
 
+Developed and tested on Python 3.13.1 (pandas 2.3.3, openpyxl 3.1.5, openai 2.30.0).
+
 ```bash
-python3 -m venv .venv
+python3.13 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-export OPENAI_API_KEY='your-key'
+export OPENAI_API_KEY='...'      # online mode only
 ```
 
-The default low-cost LLM is `gpt-4o-mini`. Never commit the API key; `.env` is ignored by Git.
+No code loads `.env`, so the key must be exported in the shell. `.env` and `.venv/` are git-ignored; never commit a key. The models default to `gpt-4o-mini` and `text-embedding-3-large`. Override them with `--llm-model` / `--embedding-model`, or with `OPENAI_MODEL` / `OPENAI_EMBEDDING_MODEL`.
 
-## Generate a mapping report
+Run every command from the repo root. The `--model` default (`data/model.xlsx`), mapeval's workbook paths and the reference-data refresh all resolve against the current directory.
+
+## Everyday commands
+
+**Mapping report, online** (calls OpenAI, costs money, sends client data out; see [Confidential data](#confidential-data)):
 
 ```bash
-python invoice_mapper.py oracle.xlsx --model model.xlsx
+python invoice_mapper.py data/clients/oracle.xlsx --output data/reports/mapping_oracle.xlsx
 ```
 
-The default output is `mapping_<client-file>.xlsx`. Its `Unmatched Client Columns` sheet lists every client column whose data did
-not reach the base model, so a reviewer can judge whether each is genuinely
-irrelevant or a real miss and feed the answer back. Nothing is omitted; a
-shortlist is marked, and everything else carries a sentence explaining why it
-was set aside. A long list is expected — the base model is a superset and a
-client supplies only part of it.
+Without `--output`, the report lands in the current directory as `mapping_<client file stem>.xlsx`. The writer overwrites existing files without asking and always starts the reviewer columns blank. Never point `--output` at a report that holds verdicts, such as `data/reports/mapping_sap_procosa_full.xlsx`. If the headers are not on row 1, pass `--client-header-row N` / `--model-header-row N` (1-based), and pass the same flags to apply. `python invoice_mapper.py --help` lists every option.
 
-Its `Mappings` sheet records the selected source column, locally computed name/data/final scores, LLM scores for audit, catalog evidence, status, and reason.
-
-Three columns answer *which step of the analysis produced this mapping*: `supported_by` lists every named step that found evidence for the chosen column, `decided_by` names the strongest of them, and `vetoed_by` names any guard that refused an otherwise viable match. The steps are defined in `mapping_steps.py`, which is the single place they are named — seven evidence steps (`resolver`, `lexical`, `semantic`, `profile`, `identifier`, `catalog`, `arithmetic`) and four guards (`vacuity`, `family_conflict`, `underspecified`, `exclusivity`).
-
-Each evidence step declares whether it **transfers** — whether its reasoning survives an ERP whose vocabulary nobody has seen. `lexical` and `semantic` read the words this client chose and do not; `catalog`, `arithmetic`, `identifier` and `profile` rest on tax law, official code tables and check digits, and do. `resolver` is ranked weakest and marked non-transferring on purpose: it is an adjudicator, not evidence, so `decided_by = resolver` keeps its honest meaning — nothing objective supported this and the model's judgment carried it. The share of accepts whose `decided_by` transfers is the generalization metric for the tool. `Run Metadata` records file hashes and run settings so stale reports can be rejected when applied.
-
-If headers are not on the first row, pass their 1-based positions with `--client-header-row` or `--model-header-row`.
-
-For a no-cost header-only run:
+**Mapping report, offline** (no network, no cost):
 
 ```bash
-python invoice_mapper.py oracle.xlsx --offline
+python invoice_mapper.py data/clients/oracle.xlsx --offline --output /tmp/mapping_oracle_offline.xlsx
 ```
 
-Only representative values from uncertain columns are sent to OpenAI. Confirm that the client permits this before using online mode. Run `python invoice_mapper.py --help` for all options.
+Offline mode scores headers lexically and skips the LLM. Pass 1 still accepts on headers, but pass 2 never accepts or rejects: every model column left for it becomes `review` on its best header match. Use it for smoke tests and for work on header logic. Treat its reports as scratch output: don't commit them or quote their counts as a product figure.
 
-## Create the mapped workbook
+**Mapped workbook:**
 
 ```bash
-python apply_invoice_mapping.py \
-  sap_terumo.XLSX \
-  mapping_sap_terumo_full.xlsx \
-  --model model.xlsx \
-  --output sap_terumo_mapped.xlsx
+python apply_invoice_mapping.py data/clients/sap_terumo.XLSX data/reports/mapping_sap_terumo_full.xlsx \
+  --output data/mapped/sap_terumo_mapped.xlsx
 ```
 
-The output carries two sheets. `Mapped Data` follows the model's column order. Mapping metadata and scores—including the separately reported LLM audit scores and, where one exists, the arithmetic proof—occupy the first rows; client data begins at Excel row 20 (`FIRST_DATA_EXCEL_ROW`). Confidence values are stored as numbers and displayed as percentages. By default, only `accepted` and reviewer-confirmed mappings are populated. Unconfirmed `review` columns remain blank.
+Apply refuses a report whose recorded SHA-256 of the client or model file differs from the files you pass. `--include-review` also fills unconfirmed proposals. That produces an explicitly unsafe workbook for review, never a deliverable.
 
-Reviewer values supported in the mapping report are `correct`, `incorrect` with `correct_client_column`, and `no_mapping_exists`. Only `incorrect` consumes `correct_client_column`; setting it beside any other status raises rather than discarding the answer, and `correct` on a row with no proposed column raises rather than confirming a blank.
+**Evaluation and tests:**
 
-### The two review sheets
+```bash
+python -m mapeval                     # all four clients
+python -m mapeval --show-losses       # list every withheld, missed and wrong-column row
+python -m mapeval --client datasul    # one client (repeatable)
+python -m pytest -q                   # 137 tests, offline, about 7 s
+```
 
-A report carries two reviewer surfaces, one for each side of the accept gate:
+mapeval scores the archived `data/reports/mapping_<client>_full.xlsx` files listed in `mapeval/cli.py` `CLIENTS`; it never runs the mapper. Some tests pin those archived figures, so a regenerated `_full` report fails them by design until someone updates the pins on purpose.
 
-- **Unmatched Client Columns** — the client's columns that no accepted mapping consumed. Answers "is this column really useless, or did we miss something?"
-- **Adjudication Queue** — the model's columns that received a real candidate the gate would not deliver, ranked by how close each came to shipping, with sample values from the proposed column. Answers "which of these should we have delivered?"
-
-The queue is a ranked index, not a third place to write: rule on a row in the `Mappings` sheet's existing reviewer columns, which `apply_invoice_mapping.py` already honours. Rows sort by confidence, then by name margin *inside the clamped band only* — a whole class of rows shares one confidence, so that column stops ordering them there. Proposals onto a column with no populated rows sort last whatever their header score, because confirming one ships a blank column.
-
-Use `--include-review` only to create an explicitly unsafe workbook containing unconfirmed proposals.
-
-A client fills a minority of the model and that is the design — `model.xlsx` is a superset covering every field any client might send, so most columns are legitimately empty. Two conveniences follow from that:
-
-- Columns carrying no data are **hidden**, so the delivered ones sit side by side rather than scattered across 227. Nothing is removed, no value changes, one click unhides, and anything reading the file programmatically is unaffected.
-- The `Coverage` sheet indexes every model column into three states, sorted so the work comes first: **delivered**, **awaiting decision** (a candidate exists and a reviewer has to rule on it — these are the `Adjudication Queue` rows), and **not in this client's export**. That last state is a complete and correct answer, not a gap.
-
-`Mapped Data` cannot answer "what is not here and should be", because every column it fills is accepted or reviewer-confirmed by construction. `Coverage` is the sheet to read first.
-
-## Fiscal reference data
-
-`reference_data/` contains checksummed snapshots for CFOP, NCM, municipality, CST, CSOSN, and IBS/CBS codes. Refresh them separately with:
+**Refreshing reference data** (network; downloads from Brazilian government portals):
 
 ```bash
 python update_reference_data.py
 ```
 
-Review and commit the updated CSV files and `manifest.json` together.
+This rewrites `reference_data/` in place: CFOP (4-digit code for the type of operation), NCM (8-digit product classification), IBGE municipality codes, IBS/CBS tax-situation and classification codes, and the hard-coded CST/CSOSN tables (CST is the tax-situation code each tax line carries; CSOSN is its variant for small companies in the Simples Nacional regime). Review the diff, then commit the CSVs and `manifest.json` together. The mapper refuses to start if a catalog does not match its manifest checksum.
 
-## Scoring a run
+## Ground rules
 
-`mapeval` scores the archived reports against the `de_para_*.xlsx` answer keys:
+These come from the project owner and hold for every change.
 
-```bash
-python -m mapeval                 # all clients
-python -m mapeval --show-losses   # list every miss, wrong column and withheld row
-```
+1. **Scope is the matching algorithm**: header interpretation, evidence fusion and column assignment. A UI, reusing a client's mapping across deliveries, and scale/cost are out of scope for now.
+2. **The four sample clients are reference examples, not the product.** Production will see ERPs and layouts nobody here has seen. No code may branch on a client name, and nothing gets hand-tuned to these four. Validate a change leave-one-client-out. The keys are a regression test, never a training set.
+3. **Prefer evidence that transfers to an unseen ERP.** Tax arithmetic, official code catalogs, and check digits on CNPJ/CPF (company/individual taxpayer IDs) and NF-e (electronic invoice) access keys beat learned header vocabulary. The generalization metric to push up is the share of accepts that rest on header-independent evidence.
+4. **Fabrication is the failure that matters**, meaning a model column filled from data the client does not have. A fabricated `Base CBS` is far worse than an empty one, so accept precision outranks recall. The 0.90 gate stays. Reviewer adjudication, not a lower threshold, is how more of the withheld band gets delivered.
+5. **Partial coverage is the design.** `no_match` is often correct. Never use 227 as a denominator and never report "N of 227 filled". Describe a model column as *delivered*, *awaiting decision* or *not in this client's export*, never as "missing", a "gap" or "incomplete".
+6. **Quote delivered recall** when describing the product. Quote found recall only when discussing retrieval, and never present offline-mode numbers as the product figure.
+7. **`data/model.xlsx` is immutable for now.** Do not propose trimming or restructuring it.
 
-It reports two recall figures and they are not interchangeable:
+## Confidential data
 
-- **found** — the mapper picked the client column the key names. Measures retrieval.
-- **delivered** — that pick also cleared the accept gate, so `apply_invoice_mapping.py`
-  populates it. Measures what the customer actually receives.
+The repo contains real client data: CNPJs, CPFs, NF-e access keys and invoice values. It is shared with internal developers on purpose. Keep it on approved machines and never push it to a public remote. Online mode sends every model and client header to the OpenAI embeddings API. For each pass-2 model column it asks the chat model about, it also sends up to 8 sample values (`--sample-size`) and summary statistics (counts, min, quartiles, max) from each candidate client column and from the model, with no redaction. Confirm that the client permits this before an online run, and use `--offline` otherwise.
 
-Delivered is currently 32/56 against found 43/56: eleven correct mappings are
-located and then withheld, every one of them in the confidence band just under
-the 0.90 accept threshold. Lowering the threshold is not the fix — on the keyed
-clients, moving the gate from 0.90 to 0.83 recovers those eleven and admits 116
-proposals the keys cannot adjudicate. Closing this gap needs reviewer
-adjudication of the sub-gate band, not a looser constant.
+## Current status
 
-The harness exits non-zero on any fabrication — a mapping delivered onto a
-client column with zero populated rows.
+*Found* means the mapper picked the client column the answer key names. *Delivered* means that pick also cleared the accept gate, so apply fills it.
 
-`sap_procosa` and `sap_terumo` have no column-level key, so no precision or
-recall figure is printed for them; only the accept count and the adjudication
-backlog.
+- On the two clients with answer keys (datasul and oracle, 56 keyed model columns): **delivered 32/56 (57.1%)**, found 43/56 (76.8%), 0 fabrications. All 11 found-but-withheld columns are `review` rows below the 0.90 gate (final confidence 0.83 to 0.8999).
+- sap_procosa shows what adjudication unlocks: 26 reviewer verdicts took it from 45 accepted columns to 62 delivered (15 confirmed proposals + 2 corrections).
+- 137 tests pass, offline.
 
-## Tests
+## Where to read next
 
-```bash
-pytest -q
-```
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): how the mapper decides (passes, evidence steps, guards, the accept gate) and how apply builds the workbook.
+- [docs/DATA.md](docs/DATA.md): every workbook (model, client exports, keys, report sheets and columns, the mapped workbook) and the reference catalogs.
+- [docs/EVALUATION.md](docs/EVALUATION.md): mapeval outcomes, found versus delivered, key corrections, and how to validate a change.
+- [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md): known bugs and places where comments and code disagree.

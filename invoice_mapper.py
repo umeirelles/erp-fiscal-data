@@ -3215,7 +3215,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Map client spreadsheet columns to model.xlsx in two passes."
     )
     parser.add_argument("client", help="Client .xlsx file")
-    parser.add_argument("--model", default="model.xlsx", help="Canonical model workbook")
+    parser.add_argument("--model", default="data/model.xlsx", help="Canonical model workbook")
     parser.add_argument("--output", help="Mapping report (.xlsx or .csv)")
     parser.add_argument("--model-sheet", default="0", help="Model sheet index or name")
     parser.add_argument("--client-sheet", default="0", help="Client sheet index or name")

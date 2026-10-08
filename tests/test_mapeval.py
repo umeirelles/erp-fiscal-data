@@ -21,11 +21,19 @@ from mapeval.truth import KEY_CORRECTIONS, load_answer_key
 
 ROOT = Path(__file__).resolve().parent.parent
 KEYED = {
-    "datasul": ("datasul_maio.xlsx", "mapping_datasul_full.xlsx", "de_para_datasul.xlsx"),
-    "oracle": ("oracle.xlsx", "mapping_oracle_full.xlsx", "de_para_oracle.xlsx"),
+    "datasul": (
+        "data/clients/datasul_maio.xlsx",
+        "data/reports/mapping_datasul_full.xlsx",
+        "data/keys/de_para_datasul.xlsx",
+    ),
+    "oracle": (
+        "data/clients/oracle.xlsx",
+        "data/reports/mapping_oracle_full.xlsx",
+        "data/keys/de_para_oracle.xlsx",
+    ),
 }
 requires_workbooks = pytest.mark.skipif(
-    not (ROOT / "de_para_oracle.xlsx").exists(),
+    not (ROOT / "data/keys/de_para_oracle.xlsx").exists(),
     reason="client workbooks not present",
 )
 
@@ -138,8 +146,8 @@ def test_the_four_key_corrections_are_worth_exactly_four_columns() -> None:
 
 @requires_workbooks
 @pytest.mark.parametrize(("client", "report"), [
-    ("datasul", "mapping_datasul_full.xlsx"),
-    ("oracle", "mapping_oracle_full.xlsx"),
+    ("datasul", "data/reports/mapping_datasul_full.xlsx"),
+    ("oracle", "data/reports/mapping_oracle_full.xlsx"),
 ])
 def test_no_report_delivers_a_column_with_no_data(client: str, report: str) -> None:
     # datasul shipped two of these - m32 <- c280 and m188 <- c326, both
