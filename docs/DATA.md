@@ -9,7 +9,7 @@ Documentos relacionados:
 - [EVALUATION.md](EVALUATION.md): como os relatórios são pontuados contra os gabaritos.
 - [KNOWN_ISSUES.md](KNOWN_ISSUES.md): defeitos que afetam os arquivos descritos aqui.
 
-Todas as contagens abaixo foram medidas em 2026-10-09 nos arquivos do branch `traducao-pt-br`, depois da migração dos relatórios arquivados para o esquema em português.
+Todas as contagens abaixo foram medidas em 2026-10-09 nos arquivos do branch `traducao-pt-br`, depois da migração dos relatórios arquivados para o esquema em português. O branch `simplificacao` não mudou nenhum arquivo de `data/` nem de `reference_data/`, e as contagens conferidas de novo nele são as mesmas.
 
 Os nomes de aba, coluna, chave e valor aparecem entre crases exatamente como `report_schema.py` os grava. Nomes de arquivo e de pasta, flags da CLI e identificadores do código continuam em inglês.
 
@@ -474,7 +474,7 @@ Por padrão, uma coluna do modelo só é preenchida a partir de uma linha `aceit
 | 2-22 | Um banner de metadados com 21 linhas. A coluna A traz o rótulo, e cada coluna do modelo traz o valor daquela linha no relatório. |
 | 23 em diante | Dados do cliente, uma linha por linha de dados da exportação, na ordem da exportação. A coluna A fica vazia. |
 
-**Os dados do cliente começam na linha 23 do Excel.** Notas antigas dizem linha 20; isso está desatualizado. A constante é `FIRST_DATA_EXCEL_ROW = len(MAPPING_METADATA) + 2` (apply_invoice_mapping.py:75). Ela já mudou antes, então importe-a em vez de fixar um número. Os painéis estão congelados em `B23`.
+**Os dados do cliente começam na linha 23 do Excel.** Notas antigas dizem linha 20; isso está desatualizado. A constante é `FIRST_DATA_EXCEL_ROW = len(MAPPING_METADATA) + 2`, em `apply_invoice_mapping.py`. Ela já mudou antes, então importe-a em vez de fixar um número. Os painéis estão congelados em `B23`.
 
 As linhas do banner, na ordem de `MAPPING_METADATA`:
 
@@ -615,7 +615,7 @@ Para converter um relatório antigo que você tenha, use o `migrate_reports.py` 
 
 ### Nomes legados em inglês
 
-Referência histórica, para quem lê uma cópia antiga de um relatório ou de uma planilha mapeada, ou mantém código que procura os nomes antigos. Nada no repositório lê esses nomes; um relatório com eles é recusado (ver [acima](#esquema-em-português-e-esquema-legado)). A fonte é `report_schema.py` (`SHEETS` e `LEGACY_SHEETS`, `COLUMNS`, `METADATA_KEYS`, `METADATA_SENTINELS`, `STEP_IDS`, `GUARD_IDS`, `LEGACY_STEP_IDS`, `ENUMS` e as constantes `AGREES_SUFFIX_*`, `OCCURRENCE_SUFFIX_*` e `UNNAMED_COLUMN_*`); se esta tabela e o código divergirem, vale o código. Os nomes antigos das abas da planilha mapeada (`Mapped Data` e `Coverage`) só constam desta tabela. Os nomes de coluna, as chaves e os valores enumerados que o código usa em memória são os próprios nomes legados; as exceções são `motivo_retencao` e `situacao_cobertura`, cujas frases já são escritas em português na origem.
+Referência histórica, para quem lê uma cópia antiga de um relatório ou de uma planilha mapeada, ou mantém código que procura os nomes antigos. Nada no repositório lê esses nomes; um relatório com eles é recusado (ver [acima](#esquema-em-português-e-esquema-legado)). A fonte é `report_schema.py` (`SHEETS` e `LEGACY_SHEETS`, `COLUMNS`, `METADATA_KEYS`, `METADATA_SENTINELS`, `STEP_IDS`, `GUARD_IDS`, `LEGACY_STEP_IDS`, `ENUMS` e as constantes `AGREES_SUFFIX_*`, `OCCURRENCE_SUFFIX_*` e `UNNAMED_COLUMN_*`); se esta tabela e o código divergirem, vale o código. Duas partes só constam desta tabela, e não do código: os nomes antigos das abas da planilha mapeada (`Mapped Data` e `Coverage`) e as frases antigas, em inglês, de `motivo_retencao` e `situacao_cobertura`, que o mapeador e o apply escrevem em português na origem (`report_schema` não guarda mais a versão em inglês delas). Os demais nomes de coluna, chaves e valores enumerados que o código usa em memória são os próprios nomes legados.
 
 **Abas e célula A1**
 
@@ -744,7 +744,7 @@ Esta pasta guarda um retrato das tabelas oficiais de códigos. O mapeador as usa
 
 Os ids de catálogo, os nomes dos arquivos e o `manifest.json` continuam em inglês; só o valor gravado em `nome_catalogo` muda, e só nos ids com palavras em inglês.
 
-Todo CSV tem as colunas `code,description,valid_from,valid_to`. Só `code` é lida (`reference_catalog.py`, `ReferenceCatalogs.from_directory`). Antes da consulta, a célula é normalizada para a largura do catálogo:
+Todo CSV tem as colunas `code,description,valid_from,valid_to`. Só `code` é lida (`reference_catalog.py`: `ReferenceCatalogs.from_directory` carrega cada CSV com `_load_catalog`). Antes da consulta, a célula é normalizada para a largura do catálogo:
 
 - Os zeros à esquerda que o Excel tirou são restaurados.
 - `cfop` também aceita a forma `5102/XX`.

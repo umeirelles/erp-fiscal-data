@@ -7,11 +7,11 @@ Todos os números desta página foram medidos em 2026-10-09 nos arquivos de `dat
 O código usa o vocabulário interno em inglês (`status == "accepted"`, `Outcome.CORRECT`). Relatórios, planilhas e a saída das CLIs estão em português. Os nomes de aba, coluna e valor citados aqui são os que `report_schema.py` grava. O mapeval só lê o esquema em português (versão 3); um relatório no formato antigo, em inglês (versão 2), é recusado com a indicação de como convertê-lo. Nomes de arquivo e de pasta, flags das CLIs e identificadores continuam em inglês.
 
 ```bash
-python -m mapeval                                   # pontua os quatro relatórios arquivados (cerca de 11 s)
+python -m mapeval                                   # pontua os quatro relatórios arquivados (cerca de 10 s)
 python -m mapeval --show-losses                     # lista também cada linha retida, perdida ou com coluna errada
 python -m mapeval --client oracle                   # um cliente; repita --client para mais
 python -m mapeval --strict-key-only                 # pontua contra o gabarito exatamente como o cliente o escreveu
-python -m pytest -q                                 # 344 testes, offline, cerca de 8 s
+python -m pytest -q                                 # 343 testes, offline, cerca de 8 s
 ```
 
 ## O gabarito e seus limites
@@ -56,27 +56,26 @@ Um revisor pode dar parecer sobre uma linha da aba `Mapeamentos` de um relatóri
 
 `python -m mapeval` só lê. Nunca roda o mapeador e não grava arquivos. Para cada cliente de `CLIENTS`, em `mapeval/cli.py`, ele lê três planilhas sob `--root`: a exportação do cliente em `data/clients/`, o relatório de mapeamento arquivado `data/reports/mapping_<cliente>_full.xlsx` e, para datasul e oracle, o gabarito em `data/keys/`.
 
-`read_mappings`, em `mapeval/score.py`, localiza a aba `Mapeamentos` com `report_schema.find_sheet`, confere o cabeçalho com `report_schema.internal_header_index` e devolve as linhas cruas com um índice pelos nomes internos dos campos. `score_report` converte `situacao` e `metodo` para o vocabulário interno (`aceito` → `accepted`, `catalogo` → `catalog`) com `report_schema.internal_value` antes de qualquer comparação. Um relatório no formato antigo, em inglês (a aba `Mappings`, o cabeçalho `model_column_number`), é recusado com `ValueError` e a indicação de como convertê-lo; um relatório meio traduzido, por exemplo com um cabeçalho em inglês numa aba em português, também é recusado, em vez de ser lido pela metade.
+`read_mappings`, em `mapeval/score.py`, localiza a aba `Mapeamentos` com `report_schema.find_sheet`, confere o cabeçalho com `report_schema.internal_header_index` e devolve as linhas cruas com um índice pelos nomes internos dos campos. `score_report` lê cada linha com `_score_row`, que converte `situacao` e `metodo` para o vocabulário interno (`aceito` → `accepted`, `catalogo` → `catalog`) com `report_schema.internal_value` antes de qualquer comparação. Um relatório no formato antigo, em inglês (a aba `Mappings`, o cabeçalho `model_column_number`), é recusado com `ValueError` e a indicação de como convertê-lo; um relatório meio traduzido, por exemplo com um cabeçalho em inglês numa aba em português, também é recusado, em vez de ser lido pela metade.
 
-`score_report` lê a aba pela **posição da linha**: a linha de dados *n* é a coluna do modelo *n*. A célula `numero_coluna_modelo` não é lida, então uma aba que alguém ordenou ou filtrou à mão é pontuada errado, sem nenhum erro ([KNOWN_ISSUES.md, item 2.8](KNOWN_ISSUES.md#28-o-mapeval-casa-as-colunas-do-modelo-pela-posição-nunca-pelo-nome)). De cada linha ela tira `coluna_modelo` (o nome, só para imprimir), `numero_coluna_cliente`, `situacao`, `metodo`, `confianca_final` e `prova_aritmetica`.
+`score_report` lê a aba pela **posição da linha**: a linha de dados *n* é a coluna do modelo *n*. A célula `numero_coluna_modelo` não é lida, então uma aba que alguém ordenou ou filtrou à mão é pontuada errado, sem nenhum erro ([KNOWN_ISSUES.md, item 2.8](KNOWN_ISSUES.md#28-o-mapeval-casa-as-colunas-do-modelo-pela-posição-nunca-pelo-nome)). De cada linha, `_score_row` tira `coluna_modelo` (o nome, só para imprimir), `numero_coluna_cliente`, `situacao`, `metodo`, `confianca_final` e `prova_aritmetica`.
 
 ### Classes de resultado
 
-`classify`, em `mapeval/outcomes.py`, atribui um resultado a cada coluna do modelo. As checagens rodam nesta ordem, e vale a primeira que casar. Os valores de `Outcome` continuam em inglês no código; o rótulo em português vem de `report_schema.ENUMS["outcome"]`.
+`classify`, em `mapeval/outcomes.py`, atribui um resultado a cada coluna do modelo. `score_report` passa a ela, para cada linha, a coluna do cliente proposta, a coluna que o gabarito indica (`expected_client_column`, `None` quando a coluna do modelo está fora do gabarito), se a coluna proposta está vazia e se a linha é entregue (`delivered`, verdadeiro quando a `situacao` é `aceito`). As checagens rodam nesta ordem, e vale a primeira que casar. Os valores de `Outcome` continuam em inglês no código; o rótulo em português vem de `report_schema.ENUMS["outcome"]`.
 
 | # | Resultado (`Outcome`) | Rótulo | Condição |
 |---|---|---|---|
 | 1 | `FABRICATED` | `fabricado` | A `situacao` da linha é `aceito` e a coluna do cliente não tem nenhuma célula preenchida. É checado primeiro, então vale mesmo quando o gabarito concorda. |
 | 2 | `UNDETERMINED` | `indeterminado` | A coluna do modelo não está no gabarito, faça o mapeador o que fizer. |
-| 3 | `MISSED` / `CORRECTLY_ABSENT` | `perdido` / `ausente_com_acerto` | O mapeador não propôs coluna. É `MISSED` se o gabarito indica uma, senão `CORRECTLY_ABSENT`. |
-| 4 | `FABRICATED` | `fabricado` | Houve proposta, mas o gabarito não indica coluna. |
-| 5 | `CORRECT` / `WRONG_COLUMN` | `correto` / `coluna_errada` | A proposta é igual à coluna do gabarito, ou não é. |
+| 3 | `MISSED` | `perdido` | O gabarito indica uma coluna e o mapeador não propôs nenhuma. |
+| 4 | `CORRECT` / `WRONG_COLUMN` | `correto` / `coluna_errada` | A proposta é igual à coluna do gabarito, ou não é. |
 
-O resumo de cada cliente imprime `CORRETO`, `COLUNA_ERRADA`, `PERDIDO` e `FABRICADO` em maiúsculas; `--show-losses` usa `perdido` e `coluna_errada`. `indeterminado` e `ausente_com_acerto` não aparecem na saída: os aceites indeterminados são contados na linha `sem_veredito`.
+O resumo de cada cliente imprime `CORRETO`, `COLUNA_ERRADA`, `PERDIDO` e `FABRICADO` em maiúsculas; `--show-losses` usa `perdido` e `coluna_errada`. `indeterminado` não aparece na saída: os aceites indeterminados são contados na linha `sem_veredito`.
 
 "Nenhuma célula preenchida" (coluna vazia) é calculado por `_vacuous_client_columns`, em `mapeval/score.py`: nenhum valor não vazio sob o cabeçalho, na primeira aba da exportação. Uma coluna toda zerada *não* é vazia, porque uma operação isenta tem base de cálculo zero legitimamente.
 
-Quando `classify` é chamado por `score_report`, uma coluna do gabarito sempre tem uma coluna do cliente esperada. Por isso `CORRECTLY_ABSENT` e a checagem 4 só são alcançáveis nos testes unitários. Na prática, toda coluna fora do gabarito é `UNDETERMINED`: 197 no datasul e 201 no oracle.
+Não existe resultado de "ausência correta": o gabarito só anota as colunas que o cliente tem, então nunca afirma que uma coluna do modelo falta na exportação, e um `sem_correspondencia` fora dele não pode ser confirmado (ver [os limites do gabarito](#1-gabaritos-arquivos-de-para)). Uma coluna fora do gabarito só deixa de ser `UNDETERMINED` quando é um aceite em coluna vazia (checagem 1); hoje todas são `UNDETERMINED`: 197 no datasul e 201 no oracle.
 
 As linhas em `revisao` também são classificadas. Uma proposta em `revisao` sobre uma coluna vazia não é `FABRICATED`, porque o apply não a entrega (a não ser com `--include-review`). Ela segue para as checagens normais. `Score.vacuous_proposals` conta essas propostas (datasul 6, oracle 0), mas a CLI não as imprime.
 
@@ -147,7 +146,7 @@ sap_procosa  SEM GABARITO — nenhum número de precisão ou recall seria honest
 
 Quando o arquivo de relatório não existe, um cliente sem gabarito é pulado em silêncio, mas um cliente com gabarito para com `FileNotFoundError`. Quando você aponta `--root` para uma pasta com só alguns relatórios, nomeie esses clientes com `--client`.
 
-Uma execução completa leva cerca de 11 s. Quase tudo é a varredura de colunas vazias das duas exportações grandes, datasul (8,9 MB) e sap_procosa (9,8 MB), cerca de 5 s cada. Cada varredura fica em cache dentro do processo.
+Uma execução completa leva cerca de 10 s. Quase tudo é a varredura de colunas vazias das duas exportações grandes, datasul (8,9 MB) e sap_procosa (9,8 MB), cerca de 5 s cada. Cada varredura fica em cache dentro do processo.
 
 ## Linha de base (medida em 2026-10-09)
 
@@ -167,7 +166,7 @@ Nenhum dos 37 aceites com gabarito é `COLUNA_ERRADA`, então a precisão nos ac
 
 ### As 11 linhas corretas retidas
 
-Todas são linhas em `revisao` abaixo de 0,90. Cinco estão exatamente em 0,8999. Esse valor não é hesitação do modelo. Na segunda passagem, quando nem o cabeçalho nem a evidência objetiva dos dados são decisivos, `map_columns`, em `invoice_mapper.py`, limita a `confianca_final` a `final_threshold - 0.0001` (linha 3166), então o limiar nunca aceita uma linha desse caminho.
+Todas são linhas em `revisao` abaixo de 0,90. Cinco estão exatamente em 0,8999. Esse valor não é hesitação do modelo. Na segunda passagem, quando nem o cabeçalho nem a evidência objetiva dos dados são decisivos, `_local_final_confidence`, em `invoice_mapper.py`, limita a `confianca_final` ao teto `MapperConfig.clamp_ceiling` (`final_threshold - CEILING_GAP`, ou seja, `final_threshold - 0.0001`), então o limiar nunca aceita uma linha desse caminho.
 
 | Cliente | Coluna do modelo | Proposta | `confianca_final` |
 |---|---|---|---|
@@ -390,7 +389,7 @@ Uma mudança só é melhoria se todas estas condições forem atendidas:
 
 Para cada mudança, anote quais linhas de qual cliente a motivaram. Depois julgue a mudança só nos outros três. Uma regra encontrada olhando o datasul precisa mostrar seu valor no gabarito do oracle, ou ao menos não fazer mal no oracle, no sap_procosa e no sap_terumo. Se ela só ajuda o cliente que a inspirou, é um ajuste àquela amostra: descarte. Justifique uma regra por algo fora das amostras: a legislação tributária, uma tabela oficial de códigos, um padrão nacional como a definição de um campo do SPED. Não abra um arquivo de-para para desenhar uma regra.
 
-Nenhum código executável pode citar um cliente. Hoje toda ocorrência desta busca é um comentário ou uma docstring que explica uma regra:
+Nenhum código executável pode citar um cliente. Hoje esta busca não encontra nada, nem em comentários (o `mapeval/` fica de fora, porque `CLIENTS` nomeia os clientes de propósito):
 
 ```bash
 grep -nEi 'datasul|oracle|procosa|terumo' invoice_mapper.py reference_catalog.py mapping_steps.py apply_invoice_mapping.py \
@@ -406,7 +405,7 @@ grep -nEi 'datasul|oracle|procosa|terumo' invoice_mapper.py reference_catalog.py
 | Língua das justificativas | português: todas as frases são escritas pelo mapeador | as frases do mapeador em português; as justificativas do resolvedor de IA em inglês, porque o prompt é em inglês (502 nos quatro relatórios arquivados) |
 | Reprodutível | sim. Três execuções dos quatro clientes em 2026-10-09 gravaram abas `Mapeamentos`, `Colunas do Cliente sem Uso` e `Fila de Revisão` idênticas | não é garantido: o resolvedor pode mudar linhas em `revisao` de uma execução para outra |
 | Custo e exposição de dados | nenhum | chamadas pagas de API. Todo cabeçalho do modelo e do cliente vai para embeddings. Cada coluna do modelo que chega ao resolvedor manda valores de amostra do modelo e até 8 de cada coluna candidata do cliente (`--sample-size`). As execuções arquivadas registram de 167 a 211 respostas do resolvedor por cliente. Ver [dados confidenciais](../README.md#dados-confidenciais) |
-| Tempo (medido em 2026-10-09 no Mac de desenvolvimento) | datasul 40 s, oracle 17 s, sap_procosa 88 s, sap_terumo 13 s | não medido |
+| Tempo (medido em 2026-10-09 no Mac de desenvolvimento) | datasul 36 s, oracle 17 s, sap_procosa 82 s, sap_terumo 13 s | não medido |
 
 O A/B offline só vale para mudanças na primeira passagem (ver [KNOWN_ISSUES.md, item 2.15](KNOWN_ISSUES.md#215-o-modo-offline-é-outro-pipeline)): normalização dos cabeçalhos e pontuação léxica, as travas da primeira passagem, e a auditoria por catálogo e o rebaixamento pelo trio fiscal que vêm depois dela. Uma mudança na segunda passagem precisa de execuções online de `BASE` e de `CAND`. Como as execuções online não são reprodutíveis, inspecione as linhas que mudaram em vez de confiar numa diferença de uma coluna.
 
@@ -422,36 +421,36 @@ Quando uma mudança é aceita, regenerar `data/reports/` tem estas consequência
 
 **Os testes fixados falham por desenho.** `tests/test_mapeval.py` afirma os totais absolutos de hoje nos relatórios arquivados:
 
-| Linha | Asserção |
+| Teste | Asserção |
 |---|---|
-| 141 | `total == 43` (encontrados) |
-| 159–160 | as correções valem exatamente 4, e `(strict, corrected) == (39, 43)` |
-| 209–210 | `found - delivered == 11`, e `(found, delivered) == (43, 32)` |
-| 222 | toda linha correta retida tem `final_confidence < 0.90` |
+| `test_harness_reproduces_the_corrected_baseline` | `total == 43` (encontrados) |
+| `test_the_four_key_corrections_are_worth_exactly_four_columns` | `corrected - strict == 4` (as correções valem exatamente 4), e `(strict, corrected) == (39, 43)` |
+| `test_the_accept_gate_withholds_eleven_correct_mappings` | `found - delivered == 11`, e `(found, delivered) == (43, 32)` |
+| `test_every_withheld_correct_mapping_sits_below_the_accept_threshold` | toda linha correta retida tem `final_confidence < 0.90` |
 
-Uma melhoria legítima precisa atualizar esses números de propósito, no mesmo commit dos relatórios regenerados, com os números de antes e de depois e os pares que mudaram na mensagem do commit. Atualize também a linha de base desta página e a situação no README. Duas invariantes devem sobreviver a qualquer melhoria e pedem investigação, não edição, se falharem: as correções valem exatamente 4 (linha 159; a 160 é uma fixação absoluta, que você atualiza) e nada entregue aponta para coluna vazia (`test_no_report_delivers_a_column_with_no_data`). O teste das retidas abaixo de 0,90 (linha 222) falha se uma trava, e não o limiar, passar a segurar uma linha correta. Esse caso também pede investigação. Alguns comentários trazem números antigos (`tests/test_mapeval.py:197` diz 42/56 e 31; `mapeval/truth.py:22` diz 33/56 e 37/56). Valem as asserções.
+Uma melhoria legítima precisa atualizar esses números de propósito, no mesmo commit dos relatórios regenerados, com os números de antes e de depois e os pares que mudaram na mensagem do commit. Atualize também a linha de base desta página e a situação no README. Duas invariantes devem sobreviver a qualquer melhoria e pedem investigação, não edição, se falharem: as correções valem exatamente 4 (`corrected - strict == 4`; o `(39, 43)` ao lado é uma fixação absoluta, que você atualiza) e nada entregue aponta para coluna vazia (`test_no_report_delivers_a_column_with_no_data`). O teste das retidas abaixo de 0,90 (`test_every_withheld_correct_mapping_sits_below_the_accept_threshold`) falha se uma trava, e não o limiar, passar a segurar uma linha correta. Esse caso também pede investigação. Os comentários não citam esses números (só o nome de `test_the_accept_gate_withholds_eleven_correct_mappings` diz onze); valem as asserções e `python -m mapeval`.
 
 **A prova da tradução também fixa o comportamento.** `tests/test_model_input_golden.py` existe para provar que a tradução não mudou o que os modelos de IA recebem e por isso pode falhar com uma mudança deliberada de comportamento. Ele compara o que os modelos de IA recebem (prompt, esquema `DataMappingDecision`, entradas de embedding, payloads do resolvedor) e as decisões de uma execução pequena com `tests/fixtures/model_input_golden.json`. Só regenere esse arquivo (`python tests/test_model_input_golden.py --write`) quando o que os modelos recebem, ou as decisões dessa execução, mudarem de propósito, no mesmo commit e com a explicação; se o prompt mudar, mude junto o `PROMPT_VERSION`. Nunca regenere só para fazer o teste passar.
 
 ## Suíte de testes
 
 ```bash
-python -m pytest -q                              # os 344 testes, cerca de 8 s
+python -m pytest -q                              # os 343 testes, cerca de 8 s
 python -m pytest -q tests/test_mapeval.py        # um arquivo
 python -m pytest -q -k vacuous                   # pelo nome (os nomes dos testes estão em inglês)
 ```
 
-`pyproject.toml` define `pythonpath = ["."]` e `testpaths = ["tests"]`. A suíte rodou em 8,0 s em 2026-10-09 (Python 3.13.1, pytest 8.4.1). Cerca de 5,5 s disso é a primeira varredura de colunas vazias do datasul, em `test_harness_reproduces_the_corrected_baseline`. Nenhum teste usa a rede: os testes do pontuador e do resolvedor da OpenAI injetam clientes falsos, e a suíte passa com `OPENAI_API_KEY` ausente.
+`pyproject.toml` define `pythonpath = ["."]` e `testpaths = ["tests"]`. A suíte rodou em 7,8 s em 2026-10-09 (Python 3.13.1, pytest 8.4.1). Cerca de 5,4 s disso é a primeira varredura de colunas vazias do datasul, em `test_harness_reproduces_the_corrected_baseline`. Nenhum teste usa a rede: os testes do pontuador e do resolvedor da OpenAI injetam clientes falsos, e a suíte passa com `OPENAI_API_KEY` ausente.
 
 | Arquivo | Testes | Cobre |
 |---|---|---|
 | `tests/test_report_schema.py` | 118 | O esquema em português e a CLI em português (`cli_ptbr`): nomes de aba válidos no Excel, cabeçalhos em snake_case ASCII, nenhum nome em português igual a um interno (que é também o do formato antigo), valores distintos em cada enum; cobertura por introspecção (todo campo que o código grava tem nome em português); ida e volta interno → português → interno; recusa do formato antigo pelo apply e pelo mapeval, com o caminho da conversão, e de nomes dele num relatório em português; parecer do revisor só em português, nome de exibição, etapas, marcador da prova e vírgula decimal. 4 deles leem os relatórios arquivados e são pulados se eles não existem. |
-| `tests/test_invoice_mapper.py` | 110 | O mapeador em tabelas sintéticas: aceite e margens da primeira passagem, exclusividade de coluna, normalização de cabeçalho e detecção de conflito e de papel, aritmética fiscal e descoberta do trio fiscal, a trava de coluna vazia, dígitos verificadores da chave de acesso e perfis de valores, o pontuador e o resolvedor da OpenAI com clientes falsos, as colunas do revisor e os `Metadados da Execução`, as abas `Colunas do Cliente sem Uso` e `Fila de Revisão`, as colunas de etapas (inclusive que uma execução offline nunca alega `semantico`), as frases em português com vírgula decimal, a gravação no esquema em português (`.xlsx` e `.csv`) com ida e volta pelo `report_schema`, e a CLI em português. |
+| `tests/test_invoice_mapper.py` | 109 | O mapeador em tabelas sintéticas: aceite e margens da primeira passagem, exclusividade de coluna, normalização de cabeçalho e detecção de conflito e de papel, aritmética fiscal e descoberta do trio fiscal, a trava de coluna vazia, dígitos verificadores da chave de acesso e perfis de valores, o pontuador e o resolvedor da OpenAI com clientes falsos, as colunas do revisor e os `Metadados da Execução`, as abas `Colunas do Cliente sem Uso` e `Fila de Revisão`, as colunas de etapas (inclusive que uma execução offline nunca alega `semantico`), as frases em português com vírgula decimal, a gravação no esquema em português (`.xlsx` e `.csv`) com ida e volta pelo `report_schema`, e a CLI em português. |
 | `tests/test_apply_invoice_mapping.py` | 38 | O apply sobre planilhas temporárias, com relatórios gravados em português: só as linhas aceitas e confirmadas são preenchidas, `--include-review`, validação do parecer do revisor (tolerante a caixa, acentos e espaços, e recusando os pareceres em inglês), a verificação de hash contra entradas alteradas (inclusive a recusa de metadados com nomes do formato antigo), valores de hora preservados, colunas vazias ocultas, os estados da `Cobertura`, o banner em português e a CLI em português. |
 | `tests/test_mapeval.py` | 33 | Leitura das letras de coluna, a precedência de resultados em `classify`, a regra da prova não decisiva (sintética e nos aceites reais de datasul), recusa de relatório meio traduzido, a saída da CLI com vírgula decimal e os rótulos em português. 12 deles pontuam os relatórios arquivados reais e fixam a linha de base; são pulados se `data/keys/de_para_oracle.xlsx` não existe. |
 | `tests/test_mapping_steps.py` | 28 | O registro de etapas: ids únicos, ordem da etapa decisiva, o resolvedor como a mais fraca e não transferível, toda etapa documentada, e células de etapas lidas de um relatório em português dando a mesma decisão. |
 | `tests/test_model_input_golden.py` | 10 | A entrada dos modelos de IA, byte a byte, contra `tests/fixtures/model_input_golden.json`: o prompt do resolvedor e o esquema `DataMappingDecision`, as entradas de embedding (com cabeçalho em branco e repetido), os payloads do resolvedor (conflitos de cabeçalho, `Unnamed column N`, `(occurrence N)`, evidência de catálogo e aritmética) e as decisões de uma execução pequena de `map_columns`. |
 | `tests/test_reference_catalog.py` | 7 | Carga dos catálogos de referência de `reference_data/`, normalização dos códigos (zeros à esquerda, sufixos de CFOP de ERP), cobertura distinta, um catálogo distintivo resgatando um cabeçalho enganoso como linha `revisao`, e a regra de que domínios curtos de CST não decidem sozinhos. |
-| **total** | **344** | |
+| **total** | **343** | |
 
 `update_reference_data.py` não tem testes.

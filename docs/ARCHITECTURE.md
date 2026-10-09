@@ -60,7 +60,7 @@ O código continua em inglês (ver [Língua e esquema dos arquivos](#língua-e-e
 | situação: aceito, revisão, sem correspondência | `status`: `accepted`, `review`, `no_match` | `situacao`: `aceito`, `revisao`, `sem_correspondencia` |
 | limiar de aceite | `MapperConfig.final_threshold` | `limiar_final` (`Metadados da Execução`) |
 | margem | `name_margin` (medida na linha), `name_margin_threshold` (mínimo exigido) | `margem_nome`, `margem_minima_nome` (`Metadados da Execução`) |
-| primeira e segunda passagem | as duas fases de `map_columns` | |
+| primeira e segunda passagem | `_first_pass` e `_second_pass`, chamadas por `map_columns` | |
 | etapa de evidência, trava | `mapping_steps.EVIDENCE_STEPS`, `mapping_steps.GUARDS` | `apoiado_por`, `decidido_por`, `vetado_por` |
 | resolvedor de IA | `OpenAIDataResolver`, etapa `resolver` | etapa `resolvedor_ia` |
 | parecer do revisor | `reviewer_status`: `correct`, `incorrect`, `no_mapping_exists` | `parecer_revisor`: `correto`, `incorreto`, `inexistente` |
@@ -80,14 +80,36 @@ Um relatório gravado antes da tradução, no formato antigo em inglês, não é
 
 | Arquivo | Papel | Símbolos principais |
 |---|---|---|
-| [`invoice_mapper.py`](../invoice_mapper.py) | CLI e o algoritmo inteiro: pontuação de cabeçalhos, evidências, as duas passagens, o relatório e as frases em português que ele grava | `map_columns`, `main`, `write_results` |
+| [`invoice_mapper.py`](../invoice_mapper.py) | CLI e o algoritmo inteiro: pontuação de cabeçalhos, evidências, as duas passagens, o relatório e as frases em português que ele grava; no topo, o bloco com todos os limiares e pesos e o bloco com as frases | `map_columns`, `MapperConfig`, `main`, `write_results` |
 | [`reference_catalog.py`](../reference_catalog.py) | Carrega as tabelas oficiais de códigos, conferidas por checksum, e pontua uma coluna contra uma delas | `ReferenceCatalogs`, `expected_catalogs`, `best_catalog_evidence` |
 | [`mapping_steps.py`](../mapping_steps.py) | Nomeia as etapas de evidência e as travas que o relatório cita | `EVIDENCE_STEPS`, `GUARDS`, `deciding_step`, `format_steps` |
 | [`report_schema.py`](../report_schema.py) | Fronteira entre o vocabulário interno e o esquema em português dos arquivos: nomes de aba, cabeçalhos, valores, chaves de metadados, recusa do formato antigo e vírgula decimal | `COLUMNS`, `ENUMS`, `to_external_frame`, `to_internal_frame`, `check_header`, `find_sheet` |
 | [`cli_ptbr.py`](../cli_ptbr.py) | `ArgumentParser` com a ajuda e os erros do argparse em português, usado por todas as CLIs | `PortugueseArgumentParser` |
-| [`apply_invoice_mapping.py`](../apply_invoice_mapping.py) | Monta a planilha no layout do modelo a partir de uma exportação, de um relatório e dos pareceres do revisor | `build_mapped_workbook`, `_effective_columns` |
+| [`apply_invoice_mapping.py`](../apply_invoice_mapping.py) | Monta a planilha no layout do modelo a partir de uma exportação, de um relatório e dos pareceres do revisor | `build_mapped_workbook`, `_effective_columns`, `_coverage_row` |
 | [`update_reference_data.py`](../update_reference_data.py) | Reconstrói `reference_data/`; baixa de sites do governo | `official_frames`, `static_frames`, `write_snapshot` |
 | [`mapeval/`](../mapeval) | Pontua os relatórios arquivados contra os gabaritos | ver [EVALUATION.md](EVALUATION.md) |
+
+### O roteiro de `map_columns`
+
+`map_columns` é um roteiro curto que chama uma função por etapa do algoritmo, na ordem em que as seções seguintes as descrevem. O estado da execução fica num dataclass, `_MappingRun` (as tabelas, a configuração, a matriz de pontuação de nome, os trios do cliente, os perfis, o conjunto `available` de colunas do cliente ainda livres e as decisões já tomadas), que as etapas recebem e atualizam.
+
+```text
+map_columns
+├─ _start_run                                pontua os cabeçalhos, descobre os trios fiscais e monta os perfis (online) -> _MappingRun
+├─ _first_pass                               aceites só pelo nome; devolve a fila da segunda passagem
+├─ _audit_accepted_catalog_matches           reabre os aceites que o catálogo contradiz
+├─ _demote_inconsistent_tax_header_matches   reabre uma posição de cada trio aceito que não fecha
+└─ _second_pass, uma coluna da fila por vez  um aceite tira a origem de available
+   ├─ _candidate_pool                        candidatos e evidência de relação e de catálogo -> _CandidatePool
+   ├─ _unique_distinctive_catalog_decision   decisão local por catálogo, ou, sem ela,
+   │  ou _ask_resolver                       a chamada ao resolvedor de IA -> DataMappingDecision
+   ├─ _apply_local_overrides                 as cinco substituições locais, uma função cada -> _Choice
+   └─ _judge_proposal                        _local_evidence e _local_final_confidence -> _LocalEvidence;
+                                             _accept_gate, _review_proposal_is_supported, _proposal_reason;
+                                             _evidence_attribution e _mapping_row -> MappingResult
+```
+
+Toda linha do relatório sai de `_mapping_row`, que também arredonda as pontuações de nome. As etapas da segunda passagem trocam três dataclasses pequenos: `_CandidatePool` (os candidatos de uma coluna do modelo, com a pontuação de nome e a evidência de cada um), `_Choice` (a coluna proposta até aqui, a decisão que a sustenta e o `method`) e `_LocalEvidence` (a evidência da coluna escolhida, recalculada localmente).
 
 ## Língua e esquema dos arquivos
 
@@ -117,7 +139,7 @@ Como o mesmo dado aparece em cada lado:
 
 ### `report_schema`: a única fronteira
 
-`report_schema.py` guarda as tabelas de nomes e as conversões, mais os auxiliares descritos abaixo: `SHEETS` (e `LEGACY_SHEETS`, os nomes de aba do formato antigo, só para recusá-los), `COLUMNS` (cabeçalhos por tabela, na ordem gravada), `METADATA_KEYS` e `METADATA_SENTINELS`, `STEP_IDS`, `GUARD_IDS` e `LEGACY_STEP_IDS`, `ENUMS`, `TEXT_LABELS` (rótulos usados dentro de frases) e `FIELD_KIND`, que diz como cada célula é tratada (enum, frase fixa, etapas, sinais, nome de exibição ou texto livre). Ele não tem modelos de frase e não importa `invoice_mapper` nem `apply_invoice_mapping`, para que os dois possam importá-lo sem ciclo (`test_the_boundary_modules_import_nothing_from_the_mapper`).
+`report_schema.py` guarda as tabelas de nomes e as conversões, mais os auxiliares descritos abaixo: `SHEETS` (e `LEGACY_SHEETS`, os nomes de aba do formato antigo, só para recusá-los), `COLUMNS` (cabeçalhos por tabela, na ordem gravada), `METADATA_KEYS` e `METADATA_SENTINELS`, `STEP_IDS`, `GUARD_IDS` e `LEGACY_STEP_IDS`, `ENUMS`, `TEXT_LABELS` (rótulos usados dentro de frases) e `FIELD_KIND`, que tem a mesma forma de `COLUMNS` (tabela → {campo: tratamento}) e diz como cada célula é tratada: enum, etapas, sinais, nome de exibição ou texto livre. Um campo fora de `FIELD_KIND` (números, hashes, cabeçalhos do modelo) passa intacto. Ele não tem modelos de frase e não importa `invoice_mapper` nem `apply_invoice_mapping`, para que os dois possam importá-lo sem ciclo (`test_the_boundary_modules_import_nothing_from_the_mapper`).
 
 **Quem grava** mantém tudo interno em memória e converte na gravação. `invoice_mapper.write_results` passa cada aba por `to_external_frame` e os metadados por `to_external_metadata`; o `apply` monta o entregável com `sheet_name`, `header_label` e `external_value`. O texto livre passa intacto pela fronteira, porque já chega escrito na língua certa.
 
@@ -139,11 +161,11 @@ Os leitores são o `apply` (`_read_mapping_report`, `_run_metadata`) e o mapeval
 
 ### Frases escritas em português na origem
 
-As frases para pessoas não são traduzidas na gravação: elas são escritas em português no lugar em que são montadas. As frases fixas do relatório são constantes de módulo em `invoice_mapper.py`:
+As frases para pessoas não são traduzidas na gravação: elas são escritas em português na origem. As frases fixas do relatório são constantes de módulo, reunidas num bloco só em `invoice_mapper.py` (o comentário "Frases para pessoas, escritas em português na origem", logo depois do bloco de limiares e pesos):
 
 | Constantes | Coluna |
 |---|---|
-| `REASON_NO_UNUSED`, `REASON_PASS_ONE_ACCEPTED`, `REASON_OFFLINE`, `REASON_DATA_ERROR`, `REASON_CATALOG_DECISION`, `REASON_UNIQUE_RELATIONSHIP`, `REASON_OVERLAP`, `REASON_JOINT`, `REASON_NULL_FALLBACK`, `REASON_PRESERVE_BEST`, `REASON_UNSUPPORTED_NO_MATCH`, `REASON_CONFLICT_REVIEW`, `REASON_CONTRADICTION`, `REASON_AMBIGUOUS_EMPTY`, `REASON_VACUITY` | `justificativa` |
+| `REASON_NO_UNUSED`, `REASON_PASS_ONE_ACCEPTED`, `REASON_OFFLINE`, `REASON_DATA_ERROR`, `REASON_CATALOG_DECISION`, `REASON_UNIQUE_RELATIONSHIP`, `REASON_OVERLAP`, `REASON_JOINT`, `REASON_NULL_FALLBACK`, `REASON_PRESERVE_BEST`, `REASON_UNSUPPORTED_NO_MATCH`, `REASON_CONFLICT_REVIEW`, `REASON_CONTRADICTION`, `REASON_VACUITY` | `justificativa` |
 | `PROOF_TEXT`, `PROOF_NOT_DECISIVE_SUFFIX` | `prova_aritmetica` |
 | `SIGNAL_TRIO`, `SIGNAL_CATALOG`, `SIGNAL_CHECKDIGIT`, `SIGNAL_DATES`, `SIGNAL_EMPTY`, `SIGNAL_ALL_ZERO`, `SIGNAL_NO_SIGNAL` | `detalhe_sinais` |
 | `WHY_HELD_BELOW_THRESHOLD`, `WHY_HELD_NAME_ONLY`, `WHY_HELD_VACUOUS` | `motivo_retencao` |
@@ -214,7 +236,7 @@ Dois cabeçalhos com assinaturas iguais e não vazias são semanticamente equiva
 
 ### A pontuação de nome
 
-Os dois avaliadores devolvem uma matriz modelo × cliente com valores entre 0 e 1. `map_columns` a calcula uma vez por execução.
+Os dois avaliadores devolvem uma matriz modelo × cliente com valores entre 0 e 1. `_start_run` a calcula uma vez por execução e a guarda em `_MappingRun.similarities`.
 
 | | `LexicalHeaderScorer` (offline) | `OpenAIEmbeddingHeaderScorer` (online) |
 |---|---|---|
@@ -223,7 +245,7 @@ Os dois avaliadores devolvem uma matriz modelo × cliente com valores entre 0 e 
 | Assinaturas iguais | no mínimo `SEMANTIC_EQUIVALENCE_SCORE` = 0,98 | no mínimo 0,98 |
 | Etapa no relatório | `lexico` (interno `lexical`) | `semantico` (interno `semantic`) |
 
-Assinaturas iguais passam, portanto, do limiar de nome de 0,90, e o 1,0 fica reservado para texto idêntico. Medido com o avaliador léxico: `Valor Total NF` contra `Vlr Contabil` dá 0,98; contra `Conta Contabil`, 0,20. `map_columns` registra a etapa de cabeçalho como `lexical` quando o avaliador é um `LexicalHeaderScorer` e como `semantic` para qualquer outro, inclusive os dublês dos testes.
+Assinaturas iguais passam, portanto, do limiar de nome de 0,90, e o 1,0 fica reservado para texto idêntico. Medido com o avaliador léxico: `Valor Total NF` contra `Vlr Contabil` dá 0,98; contra `Conta Contabil`, 0,20. `_start_run` registra a etapa de cabeçalho (`_MappingRun.header_step`) como `lexical` quando o avaliador é um `LexicalHeaderScorer` e como `semantic` para qualquer outro, inclusive os dublês dos testes. Os pesos e os pisos desta tabela são constantes nomeadas: `LEXICAL_SEQUENCE_WEIGHT`, `LEXICAL_JACCARD_WEIGHT`, `IDENTICAL_HEADER_SCORE` e `SEMANTIC_EQUIVALENCE_SCORE` (ver [Constantes](#constantes)).
 
 ### Famílias de tributo, papéis e palavras de papel truncadas
 
@@ -243,11 +265,11 @@ Uma trava é um motivo para recusar um aceite. A primeira passagem recusa diante
 | `family_conflict` | `conflito_tributario` | `semantic_header_conflict` | Os dois cabeçalhos nomeiam famílias de tributo e elas são disjuntas (ICMS × ICSP); ou têm uma família em comum, mas só um diz `ST`; ou os dois têm papel e os papéis diferem (base × valor). Um cabeçalho sem família ou sem papel nunca conflita. |
 | `underspecified` | `cabecalho_generico` | `underspecified_header_match` | A assinatura do cliente é um único token e um subconjunto estrito de uma assinatura do modelo com vários tokens (`Centro` para `Centro custo`). |
 | `vacuity` | `coluna_vazia` | `client_column_is_vacuous` | A coluna do cliente não tem nenhuma célula preenchida. Uma coluna de zeros não é vazia: zero é dado fiscal comum. |
-| `exclusivity` | `coluna_ja_consumida` | o conjunto `available` em `map_columns` | A coluna do cliente já foi consumida por um aceite. |
+| `exclusivity` | `coluna_ja_consumida` | o conjunto `_MappingRun.available` | A coluna do cliente já foi consumida por um aceite. |
 
 ## Primeira passagem: aceites só pelo nome
 
-`map_columns` percorre as colunas do modelo da esquerda para a direita. Para cada uma, `_rank_header_compatible` ordena pela pontuação de nome as colunas do cliente ainda em `available`, descarta as que têm conflito de cabeçalho (a menos que todas tenham) e fica com as duas primeiras. O par é **aceito** quando tudo isto vale:
+`_first_pass` percorre as colunas do modelo da esquerda para a direita. Para cada uma, `_rank_header_compatible` ordena pela pontuação de nome as colunas do cliente ainda em `available`, descarta as que têm conflito de cabeçalho (a menos que todas tenham) e fica com as duas primeiras. O par é **aceito** quando tudo isto vale:
 
 - pontuação de nome ≥ `name_threshold` (0,90);
 - vantagem sobre a segunda coluna compatível ≥ `name_margin_threshold` (0,05);
@@ -255,20 +277,20 @@ Uma trava é um motivo para recusar um aceite. A primeira passagem recusa diante
 - não é `underspecified_header_match`;
 - a coluna do cliente não é vazia.
 
-Um aceite recebe `method="name"` (gravado `metodo` = `nome`) e `final_confidence` igual à pontuação de nome. Se um trio fiscal descoberto puser esta coluna do cliente nesta posição, ele recebe também uma `prova_aritmetica` (ver a descoberta de trios em [Evidência](#evidência)). A coluna do cliente sai de `available`. Toda outra coluna do modelo entra na fila da segunda passagem. Se não sobrar nenhuma coluna do cliente, a linha fica `sem_correspondencia` na hora.
+Um aceite recebe `method="name"` (gravado `metodo` = `nome`) e `final_confidence` igual à pontuação de nome. Se um trio fiscal descoberto puser esta coluna do cliente nesta posição, ele recebe também uma `prova_aritmetica` (ver a descoberta de trios em [Evidência](#evidência)); a prova e as colunas de etapas saem de `_evidence_attribution`, a mesma função que a segunda passagem usa. A coluna do cliente sai de `available`. Toda outra coluna do modelo entra na fila da segunda passagem, que `_first_pass` devolve. Se não sobrar nenhuma coluna do cliente, a linha fica `sem_correspondencia` na hora.
 
 A ordem importa. Uma origem aceita sai do conjunto, então uma coluna do modelo mais à esquerda tem prioridade sobre um cabeçalho, e a margem de uma coluna posterior é medida só contra o que sobrou. Um segundo colocado em conflito não bloqueia o aceite, porque as colunas em conflito são retiradas da ordenação antes.
 
 ### Auditorias que reabrem aceites da primeira passagem
 
-Duas verificações rodam entre as passagens. Cada uma pode desfazer um aceite, devolver a coluna do cliente a `available` e pôr a coluna do modelo na fila da segunda passagem.
+Duas verificações rodam entre as passagens. Cada uma pode desfazer um aceite com `_reopen`, que devolve a coluna do cliente a `available` e põe a coluna do modelo na fila da segunda passagem.
 
-1. **`_audit_accepted_catalog_matches`.** Para cada aceite cujo cabeçalho do modelo aponta para um catálogo (ver [Catálogos de referência](#catálogos-de-referência)), pontua a coluna do cliente e grava na linha `nome_catalogo`, `cobertura_catalogo`, `cobertura_distinta_catalogo` e `confianca_catalogo`. Reabre o aceite diante de uma contradição clara: o catálogo tem especificidade ≥ 0,90 (CFOP, NCM, IBGE), a coluna tem pelo menos 5 valores, pelo menos 90% deles são códigos bem formados, mas menos de 10% das linhas têm um código válido, e os códigos válidos não são todos zeros.
-2. **`_demote_inconsistent_tax_header_matches`.** Para cada escopo de tributo cujas base, alíquota e valor foram todos aceitos, testa valor = base × alíquota nessas colunas. Se a pontuação não chegar a 0,90, tenta, posição por posição, cada coluna informativa disponível que pontuaria pelo menos 0,90 naquela posição. Se essas colunas existirem e a melhor troca melhorar a pontuação da posição em pelo menos 0,50, a posição é reaberta; se existirem mas nenhuma melhorar tanto, nada é reaberto. Se nenhuma existir e o trio atual for uma contradição forte (pelo menos 20 linhas testadas, cobertura de pelo menos 0,80, aderência de no máximo 0,20), reabre-se a posição com a pontuação de nome mais fraca. No máximo uma posição por escopo é reaberta.
+1. **`_audit_accepted_catalog_matches`.** Para cada aceite cujo cabeçalho do modelo aponta para um catálogo (ver [Catálogos de referência](#catálogos-de-referência)), pontua a coluna do cliente e grava na linha `nome_catalogo`, `cobertura_catalogo`, `cobertura_distinta_catalogo` e `confianca_catalogo`. Reabre o aceite diante de uma contradição clara (`_catalog_contradicts_accept`): o catálogo tem especificidade ≥ 0,90 (CFOP, NCM, IBGE), a coluna tem pelo menos 5 valores, pelo menos 90% deles são códigos bem formados, mas menos de 10% das linhas têm um código válido, e os códigos válidos não são todos zeros.
+2. **`_demote_inconsistent_tax_header_matches`.** Para cada escopo de tributo cujas base, alíquota e valor foram todos aceitos, `_inconsistent_trio_position` testa valor = base × alíquota nessas colunas. Se a pontuação não chegar a 0,90, `_trio_swap_alternatives` tenta, posição por posição, cada coluna informativa disponível que pontuaria pelo menos 0,90 naquela posição. Se essas colunas existirem e a melhor troca melhorar a pontuação da posição em pelo menos 0,50, a posição é reaberta; se existirem mas nenhuma melhorar tanto, nada é reaberto. Se nenhuma existir e o trio atual for uma contradição forte (pelo menos 20 linhas testadas, cobertura de pelo menos 0,80, aderência de no máximo 0,20), reabre-se a posição com a pontuação de nome mais fraca. No máximo uma posição por escopo é reaberta.
 
 ## Segunda passagem: evidência e decisão
 
-A segunda passagem visita as colunas do modelo da fila em ordem crescente de número. Um aceite da segunda passagem também consome a origem e também vira âncora para a aritmética das colunas seguintes.
+`map_columns` chama `_second_pass` para cada coluna do modelo da fila, em ordem crescente de número. Um aceite da segunda passagem também consome a origem (`map_columns` a tira de `available`) e também vira âncora para a aritmética das colunas seguintes. Para cada coluna, `_second_pass` segue as subseções abaixo, na ordem: monta o conjunto de candidatos (`_candidate_pool`), escolhe uma coluna pela decisão local por catálogo ou pelo resolvedor de IA (`_ask_resolver`), aplica as substituições locais (`_apply_local_overrides`) e julga a proposta (`_judge_proposal`).
 
 ### Perfis e o conjunto de candidatos
 
@@ -276,10 +298,12 @@ A segunda passagem visita as colunas do modelo da fila em ordem crescente de nú
 
 O **perfil da coluna-alvo é montado com as próprias linhas de amostra da coluna em `data/model.xlsx`**, não com dados de um cliente. No modelo atual, 93 colunas têm amostras informativas, 87 só têm zeros e 47 estão vazias. Nos dois últimos grupos, as evidências de perfil, de sobreposição e de identificador descritas abaixo não podem disparar; as evidências de catálogo e aritmética leem só dados do cliente e continuam podendo.
 
-O conjunto de candidatos de um alvo:
+O conjunto de candidatos de um alvo sai de `_candidate_pool`, que calcula a evidência de relação (só online) e de catálogo de cada coluna disponível e devolve um `_CandidatePool`:
 
 - **Online** (`_rank_name_and_profile_candidates`): a união das `candidate_count` (10) melhores colunas disponíveis por pontuação de nome, por `profile_similarity` (só pontuações > 0), por pontuação de relação (> 0) e por pontuação de catálogo (> 0). No máximo 40 colunas, ordenadas pela pontuação de nome.
 - **Offline** (`_rank_available`): as 10 melhores por pontuação de nome.
+
+O `_CandidatePool` também guarda os candidatos sem conflito de cabeçalho (`compatible`) e o melhor cabeçalho entre eles (`best_column`, ou o melhor de todos quando todos conflitam), que o modo offline, o erro do resolvedor e as substituições 4 e 5 usam.
 
 ### Evidência
 
@@ -305,32 +329,34 @@ score = fit × √coverage × min(1, √(rows / 20)) × (0.75 se base ou valor t
 
 ### Escolha de uma coluna
 
-1. **Decisão local por catálogo.** `_unique_distinctive_catalog_decision` olha os candidatos cuja melhor evidência de catálogo passa em `catalog_evidence_is_distinctive`. Se o primeiro tiver vantagem de pelo menos 0,10 sobre o seguinte, ele é escolhido com `method="catalog"` (gravado `catalogo`) e a IA não é chamada.
-2. **Resolvedor de IA.** Caso contrário, `OpenAIDataResolver.resolve` faz uma chamada à Responses API da OpenAI (`client.responses.parse`, modelo `gpt-4o-mini` por padrão, `temperature=0`, `store=False`). A saída estruturada é `DataMappingDecision`: o `client_column_id` de um candidato ou null, uma `data_confidence`, uma `final_confidence` e uma `reason` de uma frase.
+1. **Decisão local por catálogo.** `_unique_distinctive_catalog_decision` olha os candidatos cuja melhor evidência de catálogo passa em `catalog_evidence_is_distinctive`. Se o primeiro tiver vantagem de pelo menos 0,10 sobre o seguinte, ele é escolhido com `method="catalog"` (gravado `catalogo`) e a IA não é chamada. A decisão leva a confiança max(0,80; 0,35 × nome + 0,65 × catálogo), que, como toda confiança de uma decisão, só importa nos dois pontos descritos logo abaixo, em "A IA escolhe; ela não decide".
+2. **Resolvedor de IA.** Caso contrário, `_ask_resolver` passa ao resolvedor os candidatos com a evidência de relação e de catálogo de cada um, e `OpenAIDataResolver.resolve` faz uma chamada à Responses API da OpenAI (`client.responses.parse`, modelo `gpt-4o-mini` por padrão, `temperature=0`, `store=False`). A saída estruturada é `DataMappingDecision`: o `client_column_id` de um candidato ou null, uma `data_confidence`, uma `final_confidence` e uma `reason` de uma frase.
    - **Entrada**: o nome e o perfil da coluna do modelo (de `data/model.xlsx`) e, para cada candidato, id, nome, número da coluna, pontuação de nome, texto do conflito de cabeçalho, `profile_similarity`, `distinctive_sample_overlap`, evidência de relação, evidência de catálogo e o perfil completo com até 8 valores de amostra. Tudo em inglês (ver [Entrada dos modelos](#entrada-dos-modelos-inglês-byte-a-byte)).
    - **Instruções** (versionadas por `PROMPT_VERSION`, hoje `2026-08-04.2`): os nomes continuam sendo a evidência principal; semelhança numérica genérica não é evidência; a maioria dos campos do modelo legitimamente não está numa exportação do cliente, então null é uma resposta normal; como ler cada campo de evidência.
    - Dentro de `resolve`, quando as linhas de um dos lados estão vazias ou só têm zeros, a confiança final devolvida sobe para no mínimo a pontuação de nome da coluna escolhida.
-   - Qualquer exceção vira uma linha `revisao` no melhor cabeçalho, com `metodo` = `erro_dados` e a justificativa `REASON_DATA_ERROR`, e a execução continua (ver o item [3.1 de KNOWN_ISSUES.md](KNOWN_ISSUES.md#31-falhas-da-api-viram-linhas-em-revisão-e-a-execução-sai-com-0)).
+   - Qualquer exceção vira, em `_second_pass`, uma linha `revisao` no melhor cabeçalho, com `metodo` = `erro_dados` e a justificativa `REASON_DATA_ERROR`, e a execução continua (ver o item [3.1 de KNOWN_ISSUES.md](KNOWN_ISSUES.md#31-falhas-da-api-viram-linhas-em-revisão-e-a-execução-sai-com-0)).
 
-**A IA escolhe; ela não decide.** A `data_confidence` e a `final_confidence` dela são gravadas como `confianca_dados_ia` e `confianca_final_ia` para auditoria e nunca entram na `confianca_final` nem na regra de aceite. Fora essa cópia de auditoria, as confianças do objeto de decisão importam em exatamente dois pontos: uma decisão com `final_confidence` 0 vira `sem_correspondencia`, e a `data_confidence` dela é uma das condições do fallback do nulo, abaixo. Todo o resto é decidido localmente. Quando a linha usa a `reason` da IA como justificativa, ela é gravada em inglês, como veio.
+**A IA escolhe; ela não decide.** A `data_confidence` e a `final_confidence` dela são gravadas como `confianca_dados_ia` e `confianca_final_ia` para auditoria e nunca entram na `confianca_final` nem na regra de aceite. Fora essa cópia de auditoria, as confianças do objeto de decisão importam em exatamente dois pontos: uma decisão com `final_confidence` 0 vira `sem_correspondencia`, e a `data_confidence` dela é uma das condições do fallback do nulo, abaixo. Todo o resto é decidido localmente, em `_judge_proposal`. Quando a linha usa a `reason` da IA como justificativa, ela é gravada em inglês, como veio.
 
 **Confidencialidade.** O repositório contém dados reais de clientes (CNPJ/CPF, chaves de acesso). Uma execução online envia todos os cabeçalhos do modelo e do cliente para o endpoint de embeddings e, para cada alvo da segunda passagem que o catálogo não resolve, valores de amostra da coluna do modelo e de até 40 colunas do cliente, sem anonimizar. `store=False` pede à OpenAI que não guarde as respostas. Confirme que o cliente permite isso antes de rodar online; `--offline` não envia nada. A chave é lida de `OPENAI_API_KEY` no ambiente; nenhum código carrega `.env`.
 
 ### Substituições locais, em ordem
 
-Rodam sobre a coluna escolhida pela decisão por catálogo ou pela IA:
+Rodam sobre a coluna escolhida pela decisão por catálogo ou pela IA. Cada uma é uma função que recebe a escolha atual (um `_Choice`: a coluna, a decisão e o `method`) e devolve uma escolha nova quando se aplica ou `None` quando não; `_apply_local_overrides` as chama nesta ordem:
 
-1. **Relação única.** Entre os candidatos sem conflito, se a melhor pontuação de relação for de pelo menos `final_threshold` (0,90) e tiver vantagem de pelo menos 0,10 sobre a seguinte, essa coluna é escolhida (`metodo` = `dados`).
-2. **Sobreposição distintiva**, só se a 1 não disparou. O candidato que compartilha mais amostras distintivas é escolhido quando compartilha pelo menos 2, supera o segundo colocado em quantidade ou em sobreposição, tem sobreposição maior que a da escolha atual e sua pontuação de nome não fica mais de 0,10 abaixo da escolha atual (ou sua sobreposição é de pelo menos 0,50). Aqui os conflitos de cabeçalho não são filtrados.
-3. **Nome e relação juntos.** Se a relação da coluna escolhida for de pelo menos 0,90 e 0,4 × nome + 0,6 × relação for de pelo menos 0,90, com vantagem de pelo menos `name_margin_threshold` (0,05) sobre os demais candidatos sem conflito, a confiança da decisão sobe. A escolha não muda.
-4. **Fallback do nulo.** Se nada foi escolhido, o melhor cabeçalho (sem conflito, quando possível) é mantido quando a confiança de dados da decisão é de pelo menos `final_threshold − 2 × margem` (0,80) e sua pontuação de nome de pelo menos `name_threshold − margem` (0,85), ou quando ele tem o mesmo papel explícito da coluna do modelo e pontuação de nome de pelo menos 0,80.
-5. **Preserva o melhor nome.** Se o melhor cabeçalho tiver pontuação de nome de pelo menos 0,85, margem de pelo menos 0,05 e as linhas de um dos lados estiverem vazias ou só com zeros, ele preenche uma escolha vazia ou substitui uma diferente, a menos que essa escolha tenha pontuação de relação ou pontuação bruta de catálogo de pelo menos 0,90.
+1. **Relação única** (`_unique_relationship_override`). Entre os candidatos sem conflito, se a melhor pontuação de relação for de pelo menos `final_threshold` (0,90) e tiver vantagem de pelo menos 0,10 sobre a seguinte, essa coluna é escolhida (`metodo` = `dados`).
+2. **Sobreposição distintiva** (`_distinctive_overlap_override`), só se a 1 não disparou. O candidato que compartilha mais amostras distintivas é escolhido quando compartilha pelo menos 2, supera o segundo colocado em quantidade ou em sobreposição, tem sobreposição maior que a da escolha atual e sua pontuação de nome não fica mais de 0,10 abaixo da escolha atual (ou sua sobreposição é de pelo menos 0,50). Aqui os conflitos de cabeçalho não são filtrados. Grava `metodo` = `dados`.
+3. **Nome e relação juntos** (`_joint_name_and_relationship_override`). Se a relação da coluna escolhida for de pelo menos 0,90 e 0,4 × nome + 0,6 × relação for de pelo menos 0,90, com vantagem de pelo menos `name_margin_threshold` (0,05) sobre os demais candidatos sem conflito, a confiança da decisão sobe. A escolha não muda.
+4. **Fallback do nulo** (`_null_fallback_override`). Se nada foi escolhido, o melhor cabeçalho (sem conflito, quando possível) é mantido quando a confiança de dados da decisão é de pelo menos `final_threshold − 2 × margem` (0,80) e sua pontuação de nome de pelo menos `name_threshold − margem` (0,85), ou quando ele tem o mesmo papel explícito da coluna do modelo e pontuação de nome de pelo menos 0,80.
+5. **Preserva o melhor nome** (`_preserve_best_name_override`). Se o melhor cabeçalho tiver pontuação de nome de pelo menos 0,85, margem de pelo menos 0,05 e as linhas de um dos lados estiverem vazias ou só com zeros, ele preenche uma escolha vazia ou substitui uma diferente, a menos que essa escolha tenha pontuação de relação ou pontuação bruta de catálogo de pelo menos 0,90.
 
-Se depois disso nenhuma coluna estiver escolhida, ou se a confiança final da decisão for 0, a linha fica `sem_correspondencia`, sem coluna do cliente.
+As substituições 3, 4 e 5 mantêm o `method` da escolha que receberam. Se depois disso nenhuma coluna estiver escolhida, ou se a confiança final da decisão for 0, `_second_pass` grava a linha como `sem_correspondencia`, sem coluna do cliente. Senão, a escolha vai para `_judge_proposal`.
 
 ### A confiança final local
 
-A pontuação de nome e a margem são recalculadas para a coluna escolhida, contra o candidato mais forte entre os demais do conjunto (os demais sem conflito, quando a coluna escolhida não conflita). A margem fica negativa quando a IA ou uma substituição escolheu uma coluna que não é o melhor cabeçalho.
+`_judge_proposal` começa por `_local_evidence`, que recalcula toda a evidência da coluna escolhida num `_LocalEvidence`; nada do que a IA respondeu entra aqui. A pontuação de nome e a margem são recalculadas para a coluna escolhida, contra o candidato mais forte entre os demais do conjunto (os demais sem conflito, quando a coluna escolhida não conflita). A margem fica negativa quando a IA ou uma substituição escolheu uma coluna que não é o melhor cabeçalho.
+
+`_local_evidence` calcula `name_is_decisive`, `objective` (o campo `objective_data_score`) e `data`; `_local_final_confidence` aplica os três ramos:
 
 ```text
 name_is_decisive = name >= name_threshold and margin >= name_margin_threshold
@@ -350,7 +376,7 @@ else:
     final = min(final_threshold - 0.0001, max(name, 0.70*name + 0.30*data))   # o teto de 0.8999
 ```
 
-**O ramo do teto.** Uma linha no terceiro ramo não tem evidência de nome decisiva nem evidência objetiva decisiva, então a regra abaixo não pode aceitá-la, qualquer que seja a pontuação. O teto limita a confiança exibida a `final_threshold − 0.0001` (0,8999 com o padrão) para que o número não sugira o contrário. Isso inclui cabeçalhos que pontuaram 0,90 ou mais mas não tiveram a margem de 0,05 ou eram genéricos, então 0,8999 diz qual ramo a linha seguiu, não quão forte ela é. Os relatórios arquivados têm 11 (datasul), 2 (oracle), 14 (sap_procosa) e 33 (sap_terumo) linhas com exatamente 0,8999.
+**O ramo do teto.** Uma linha no terceiro ramo não tem evidência de nome decisiva nem evidência objetiva decisiva, então a regra abaixo não pode aceitá-la, qualquer que seja a pontuação. O teto limita a confiança exibida a `MapperConfig.clamp_ceiling`, ou seja, `final_threshold − CEILING_GAP` (0,8999 com o padrão), para que o número não sugira o contrário. Isso inclui cabeçalhos que pontuaram 0,90 ou mais mas não tiveram a margem de 0,05 ou eram genéricos, então 0,8999 diz qual ramo a linha seguiu, não quão forte ela é. Os relatórios arquivados têm 11 (datasul), 2 (oracle), 14 (sap_procosa) e 33 (sap_terumo) linhas com exatamente 0,8999.
 
 Dois exemplos dos relatórios arquivados, ambos de CFOP:
 
@@ -358,6 +384,8 @@ Dois exemplos dos relatórios arquivados, ambos de CFOP:
 - oracle, `CFO`: nome 0,8429 e pontuação de catálogo CFOP 0,8824. Isso passa do piso do catálogo (0,50), então o catálogo escolheu a coluna, mas fica abaixo de 0,90, então a linha vai para o ramo do teto: max(0,8429; 0,7 × 0,8429 + 0,3 × 0,8824) = 0,8547. Revisão.
 
 ### O limiar de aceite
+
+`_accept_gate` aplica a regra de aceite da segunda passagem e diz também se a linha só foi recusada porque a coluna do cliente está vazia, o que decide a justificativa e o `vetado_por` abaixo:
 
 ```text
 accepted = final >= final_threshold
@@ -373,9 +401,9 @@ O limiar fica em 0,90 porque a precisão vale mais do que o recall. Nos clientes
 
 ### Revisão ou sem correspondência
 
-Uma linha da segunda passagem que não foi aceita só mantém a proposta como `revisao` se `_review_proposal_is_supported` permitir; senão vira `sem_correspondencia`, sem coluna do cliente e com confiança final 0. Com os padrões, o limiar próximo = `name_threshold − margem` = 0,85 e o fraco = `name_threshold − 2 × margem` = 0,80, e `data` é a confiança de dados local:
+Uma linha da segunda passagem que não foi aceita só mantém a proposta como `revisao` se `_review_proposal_is_supported` permitir; senão `_judge_proposal` a grava como `sem_correspondencia`, sem coluna do cliente, com confiança final 0 e a justificativa `REASON_UNSUPPORTED_NO_MATCH`. Com os padrões, o limiar próximo (`MapperConfig.near_name_threshold` = `name_threshold − margem`) é 0,85 e o fraco (`weak_name_threshold` = `name_threshold − 2 × margem`) é 0,80, e `data` é a confiança de dados local:
 
-- **Com conflito de cabeçalho**, a revisão exige (linhas distintivas ou pontuação de relação ≥ 0,90) com data ≥ 0,90 e final ≥ 0,90, ou um catálogo distintivo (pontuação bruta ≥ 0,90 e cobertura distinta ≥ 0,90) com data ≥ 0,90 e final ≥ 0,80. "Linhas distintivas" quer dizer que os dois perfis são informativos e compartilham pelo menos 2 amostras distintivas ou têm pontuação de identificador de pelo menos 0,90.
+- **Com conflito de cabeçalho**, a revisão exige (linhas distintivas ou pontuação de relação ≥ 0,90) com data ≥ 0,90 e final ≥ 0,90, ou um catálogo distintivo (pontuação bruta ≥ 0,90 e cobertura distinta ≥ 0,90) com data ≥ 0,90 e final ≥ 0,80 (`weak_final_threshold` = `final_threshold − 2 × margem`). "Linhas distintivas" quer dizer que os dois perfis são informativos e compartilham pelo menos 2 amostras distintivas ou têm pontuação de identificador de pelo menos 0,90.
 - **Sem conflito**, fica em revisão se qualquer uma destas valer:
   - nome ≥ 0,85;
   - mesmo papel explícito, nome ≥ 0,80 e final ≥ 0,80;
@@ -384,31 +412,31 @@ Uma linha da segunda passagem que não foi aceita só mantém a proposta como `r
 
 `sem_correspondencia` é um resultado normal: a exportação do cliente não traz aquele campo do modelo. Propostas em revisão não consomem a origem, então várias linhas em revisão podem apontar para a mesma coluna do cliente, e uma linha em revisão pode apontar para uma coluna que uma coluna do modelo posterior aceita (ver o item [2.12 de KNOWN_ISSUES.md](KNOWN_ISSUES.md#212-várias-linhas-em-revisão-podem-propor-a-mesma-coluna-do-cliente)).
 
-A `justificativa` é reescrita quando uma linha em revisão tem conflito de cabeçalho (`REASON_CONFLICT_REVIEW`, com a descrição em português do conflito) ou uma contradição aritmética forte (`REASON_CONTRADICTION`), e quando o único obstáculo ao aceite era uma coluna do cliente vazia (`REASON_VACUITY`: "'...' não tem linhas preenchidas, portanto não pode ser a origem desta coluna, ..."). Esse último caso também grava `vetado_por` = `coluna_vazia`.
+A `justificativa` de uma proposta é a da decisão (a frase da substituição que disparou, a do catálogo ou a `reason` da IA), mas `_proposal_reason` a reescreve quando uma linha em revisão tem conflito de cabeçalho (`REASON_CONFLICT_REVIEW`, com a descrição em português do conflito) ou uma contradição aritmética forte (`REASON_CONTRADICTION`), e quando o único obstáculo ao aceite era uma coluna do cliente vazia (`REASON_VACUITY`: "'...' não tem linhas preenchidas, portanto não pode ser a origem desta coluna, ..."). Esse último caso também grava `vetado_por` = `coluna_vazia`.
 
 ### As duas passagens em fluxograma
 
 ```mermaid
 flowchart TD
-    L["Lê o model.xlsx e a exportação do cliente"] --> S["Matriz de pontuação de cabeçalhos, léxica ou por embedding"]
-    L --> T["Descobre os trios fiscais do cliente (só para o relatório)"]
-    S --> P1{"Primeira passagem, colunas do modelo da esquerda para a direita: as duas melhores colunas disponíveis compatíveis pelo cabeçalho"}
+    L["Lê o model.xlsx e a exportação do cliente"] --> S["_start_run: matriz de pontuação de cabeçalhos, léxica ou por embedding"]
+    L --> T["_start_run: descobre os trios fiscais do cliente (só para o relatório)"]
+    S --> P1{"_first_pass: colunas do modelo da esquerda para a direita: as duas melhores colunas disponíveis compatíveis pelo cabeçalho"}
     P1 -->|"nome ≥ 0,90; margem ≥ 0,05; sem conflito; não genérico; coluna não vazia"| A1["aceito, metodo=nome; a origem sai do conjunto"]
-    P1 -->|"caso contrário"| Q["Fila da segunda passagem"]
-    A1 --> AU{"Auditorias: contradição de catálogo, trio fiscal inconsistente"}
+    P1 -->|"caso contrário"| Q["Fila da segunda passagem: _second_pass, uma coluna por vez"]
+    A1 --> AU{"Auditorias: contradição de catálogo, trio fiscal inconsistente (_audit_accepted_catalog_matches, _demote_inconsistent_tax_header_matches)"}
     AU -->|"sem contradição"| K["continua aceito"]
     AU -->|"reabre"| Q
     Q --> OFF{"--offline?"}
     OFF -->|"sim"| RO["revisao, metodo=somente_nome, melhor cabeçalho"]
-    OFF -->|"não"| POOL["Conjunto de candidatos: 10 melhores por nome, perfil, relação e catálogo"]
-    POOL --> CAT{"Vencedor de catálogo único e distintivo?"}
+    OFF -->|"não"| POOL["_candidate_pool: 10 melhores por nome, perfil, relação e catálogo"]
+    POOL --> CAT{"_unique_distinctive_catalog_decision: vencedor de catálogo único e distintivo?"}
     CAT -->|"sim"| CH["metodo=catalogo, sem chamar a IA"]
-    CAT -->|"não"| LLM["O resolvedor de IA escolhe um candidato ou nenhum"]
-    CH --> OV["Substituições locais: relação única, sobreposição distintiva, nome e relação juntos, fallback do nulo, preserva o melhor nome"]
+    CAT -->|"não"| LLM["_ask_resolver: o resolvedor de IA escolhe um candidato ou nenhum"]
+    CH --> OV["_apply_local_overrides: relação única, sobreposição distintiva, nome e relação juntos, fallback do nulo, preserva o melhor nome"]
     LLM --> OV
     OV -->|"nenhuma coluna, ou confiança final da decisão = 0"| NM["sem_correspondencia"]
-    OV --> FC["Confiança final local"]
-    FC --> G{"Regra de aceite"}
+    OV --> FC["_judge_proposal: _local_evidence e _local_final_confidence"]
+    FC --> G{"_accept_gate: regra de aceite"}
     G -->|"passa"| A2["aceito; a origem sai do conjunto"]
     G -->|"não passa"| RS{"_review_proposal_is_supported"}
     RS -->|"sim"| RV["revisao"]
@@ -459,7 +487,7 @@ Gravar um relatório sempre começa com as colunas do revisor em branco. Uma sa�
 
 ## Atribuição de etapas
 
-`mapping_steps.py` dá nome aos motivos para acreditar num mapeamento (etapas de evidência) ou recusá-lo (travas). Os ids são internos, em inglês; o relatório os grava em português (`report_schema.STEP_IDS` e `GUARD_IDS`) em três colunas: `apoiado_por` (cada etapa de evidência com sinal positivo para a coluna escolhida, da mais fraca para a mais forte, unidas por ` + `), `decidido_por` (a de maior posição entre elas, `deciding_step`) e `vetado_por` (uma trava).
+`mapping_steps.py` dá nome aos motivos para acreditar num mapeamento (etapas de evidência) ou recusá-lo (travas). Os ids são internos, em inglês; o relatório os grava em português (`report_schema.STEP_IDS` e `GUARD_IDS`) em três colunas: `apoiado_por` (cada etapa de evidência com sinal positivo para a coluna escolhida, da mais fraca para a mais forte, unidas por ` + `), `decidido_por` (a de maior posição entre elas, `deciding_step`) e `vetado_por` (uma trava). Nas linhas que propõem uma coluna, `_evidence_attribution` chama `_supporting_step_ids` com as pontuações da linha e a prova aritmética e formata o resultado com `format_steps` e `deciding_step`; `vetado_por` é gravado por `_judge_proposal`.
 
 | Posição | Etapa (interno) | No relatório | `transfers` | Acrescentada por `_supporting_step_ids` quando |
 |---|---|---|---|---|
@@ -487,7 +515,7 @@ Os quatro relatórios de `data/reports/` foram gravados antes de `mapping_steps.
 
 `reference_catalog.py` confere os valores do cliente contra as tabelas oficiais brasileiras de códigos.
 
-**Carga.** `ReferenceCatalogs.from_directory` lê `reference_data/manifest.json`. Cada entrada vira um `CatalogSpec` (`file`, `width`, `normalizer`, `specificity`, `source_version`, `source_url`, `sha256`). O SHA-256 do CSV precisa ser igual ao do manifesto, senão a carga levanta `ValueError` (mensagem em português), que a CLI transforma numa saída que cita o diretório. Só a coluna `code` de cada CSV é usada; códigos em branco são descartados. `--reference-data` tem como padrão a pasta `reference_data/` ao lado de `invoice_mapper.py`, e `--no-reference-data` desliga os catálogos. O hash do próprio manifesto vai para `Metadados da Execução` como `sha256_manifesto_referencia` (`desativado` quando os catálogos estão desligados).
+**Carga.** `ReferenceCatalogs.from_directory` lê `reference_data/manifest.json`. Cada entrada vira um `CatalogSpec` (`file`, `width`, `normalizer`, `specificity`, `source_version`, `source_url`, `sha256`), e `_load_catalog` carrega o CSV dela. O SHA-256 do CSV precisa ser igual ao do manifesto, senão `_load_catalog` levanta `ValueError` (mensagem em português), que a CLI transforma numa saída que cita o diretório. Só a coluna `code` de cada CSV é usada; códigos em branco são descartados. `--reference-data` tem como padrão a pasta `reference_data/` ao lado de `invoice_mapper.py`, e `--no-reference-data` desliga os catálogos. O hash do próprio manifesto vai para `Metadados da Execução` como `sha256_manifesto_referencia` (`desativado` quando os catálogos estão desligados).
 
 **Roteamento pelo cabeçalho do modelo.** `expected_catalogs` lê o cabeçalho da coluna do *modelo*, nunca o do cliente, e devolve os catálogos que essa coluna pode conter. As regras, verificadas em ordem: token `cfop`; token `ncm`; `municipio`, ou `domicilio` com `fiscal`; uma palavra de classificação com `tributaria`/`tributario`/`tax` mais `ibs`/`cbs`/`ibd`; depois um cabeçalho de situação tributária (`cst`, `situacao tributaria`, `taxsituation`, a expressão `tipo imposto` ou `codigo de sit tributaria`) combinado com `ibs`/`cbs`/`ibd`, `ipi`, `pis`/`cofins` ou `icms`. Quinze colunas do modelo apontam para um catálogo; as outras nunca recebem evidência de catálogo.
 
@@ -545,9 +573,9 @@ python apply_invoice_mapping.py data/clients/sap_procosa.XLSX data/reports/mappi
 
 - *Esquema*: `_read_mapping_report` lê a primeira aba pela posição e a converte para o vocabulário interno com `report_schema.to_internal_frame`, que confere o cabeçalho. `_run_metadata` procura a aba de metadados com `find_sheet`. Um relatório no formato antigo, ou com nomes dele, é recusado.
 - *Relatório desatualizado*: `_validate_input_hashes` compara `sha256_cliente` e `sha256_modelo` de `Metadados da Execução` com os arquivos dados e levanta `<arquivo> difere do arquivo usado para gerar o relatório de mapeamento`. Um relatório sem a aba de metadados, ou sem uma das chaves, pula essa comparação. Um relatório fica, portanto, preso aos bytes exatos de uma exportação.
-- *Formato do relatório*: `_ordered_mapping` exige as 12 colunas essenciais (`REQUIRED_MAPPING_COLUMNS`), exige cada número de coluna do modelo exatamente uma vez e exige que cada `coluna_modelo` seja igual ao cabeçalho do modelo naquela posição. As colunas acrescentadas em versões posteriores do esquema (`decidido_por`, `prova_aritmetica`, `confianca_dados_ia`, as colunas do revisor, ...) entram em branco quando o relatório não as tem, para que relatórios antigos continuem aplicáveis. Em seguida normaliza o parecer do revisor e recusa um valor desconhecido, citando o que foi digitado e a coluna do modelo.
+- *Formato do relatório*: `_ordered_mapping` exige as 12 colunas essenciais (`REQUIRED_MAPPING_COLUMNS`), exige cada número de coluna do modelo exatamente uma vez e exige que cada `coluna_modelo` seja igual ao cabeçalho do modelo naquela posição. As colunas acrescentadas em versões posteriores do esquema (`decidido_por`, `prova_aritmetica`, `confianca_dados_ia`, as colunas do revisor, ...) entram em branco quando o relatório não as tem, para que relatórios antigos continuem aplicáveis. As colunas opcionais estão em `OPTIONAL_MAPPING_COLUMNS`. Em seguida `_reviewer_status` normaliza o parecer do revisor e recusa um valor desconhecido, citando o que foi digitado e a coluna do modelo.
 
-**Quais linhas são preenchidas** (`_effective_columns`, uma linha por coluna do modelo):
+**Quais linhas são preenchidas** (`_effective_columns`, uma linha por coluna do modelo). Para cada linha, `_effective_columns` chama um passo por regra, sempre na mesma ordem, para que um relatório com dois problemas seja recusado sempre pelo mesmo erro: `_refuse_unused_correction` (correção ao lado de um parecer que não é `incorreto`), `_reviewed_column` (a coluna que a linha entrega, pelo parecer), `_refuse_header_conflict` (só nas linhas aceitas sem parecer) e `_refuse_proposal_from_another_export`; no fim, confere que as colunas aceitas ou confirmadas não se repetem.
 
 | `parecer_revisor` | `coluna_cliente_correta` | Resultado | Recusa quando |
 |---|---|---|---|
@@ -561,45 +589,74 @@ O parecer passa por `report_schema.normalize_reviewer_status`, que ignora espaç
 
 **Os valores são copiados como estão.** A exportação é lida com `dtype=object` e cada coluna selecionada é copiada sem mudança. A única alteração é que valores `datetime.time` voltam a ser gravados como células de hora do Excel.
 
-**Saída.** Na aba `Dados Mapeados`, a linha 1 tem `__info_mapeamento__` seguido dos cabeçalhos do modelo, na ordem do modelo; as linhas 2 a 22 são um banner de 21 linhas de metadados do mapeamento (`MAPPING_METADATA`, com os rótulos em português de `report_schema.COLUMNS["banner"]`, os valores de máquina em português e `numero_coluna_cliente` e `coluna_cliente` mostrando a escolha depois da revisão); os dados do cliente começam na linha 23 do Excel (`FIRST_DATA_EXCEL_ROW`). Colunas do modelo que não recebem coluna do cliente são ocultadas, não apagadas. A aba `Cobertura` põe cada coluna do modelo num de três estados: **`entregue`**, **`aguardando decisão`** (o mapeador deixou uma proposta em revisão e nada foi entregue) ou **`não consta na exportação do cliente`**. O estado segue a situação dada pelo mapeador, não o parecer do revisor (ver o item [1.2 de KNOWN_ISSUES.md](KNOWN_ISSUES.md#12-a-cobertura-mostra-como-aguardando-decisão-linhas-que-o-revisor-marcou-inexistente)). O texto livre (`justificativa`, `prova_aritmetica`, `observacao_revisor`) é copiado do relatório como está. Esses nomes de aba e de A1 são uma mudança incompatível para quem lia os nomes antigos (ver [Planilhas mapeadas](DATA.md#planilhas-mapeadas-datamapped) em DATA.md).
+**Saída.** `build_mapped_workbook` lê e confere o relatório, escolhe as colunas e grava a planilha: `_banner_rows` monta o banner, `_client_data` os dados, e `_format_banner`, `_restore_time_cells` e `_arrange_columns` formatam a aba; `_write_coverage_sheet` grava a `Cobertura`, uma linha por `_coverage_row`. Na aba `Dados Mapeados`, a linha 1 tem `__info_mapeamento__` seguido dos cabeçalhos do modelo, na ordem do modelo; as linhas 2 a 22 são um banner de 21 linhas de metadados do mapeamento (`MAPPING_METADATA`, com os rótulos em português de `report_schema.COLUMNS["banner"]`, os valores de máquina em português e `numero_coluna_cliente` e `coluna_cliente` mostrando a escolha depois da revisão); os dados do cliente começam na linha 23 do Excel (`FIRST_DATA_EXCEL_ROW`). Colunas do modelo que não recebem coluna do cliente são ocultadas, não apagadas. A aba `Cobertura` põe cada coluna do modelo num de três estados: **`entregue`**, **`aguardando decisão`** (o mapeador deixou uma proposta em revisão e nada foi entregue) ou **`não consta na exportação do cliente`**. O estado, calculado em `_coverage_row`, segue a situação dada pelo mapeador, não o parecer do revisor (ver o item [1.2 de KNOWN_ISSUES.md](KNOWN_ISSUES.md#12-a-cobertura-mostra-como-aguardando-decisão-linhas-que-o-revisor-marcou-inexistente)). O texto livre (`justificativa`, `prova_aritmetica`, `observacao_revisor`) é copiado do relatório como está. Esses nomes de aba e de A1 são uma mudança incompatível para quem lia os nomes antigos (ver [Planilhas mapeadas](DATA.md#planilhas-mapeadas-datamapped) em DATA.md).
 
 ## Constantes
 
-Os números de linha valem para o código atual; o nome do símbolo é a referência estável.
+Todos os limiares e pesos do mapeador ficam num bloco só, no topo de `invoice_mapper.py` (o comentário "Limiares e pesos"): primeiro `MapperConfig`, com os cinco valores que a linha de comando expõe e os limiares derivados deles como propriedades, depois as constantes de módulo, agrupadas por assunto com os mesmos títulos desta tabela. Fora do bloco não sobra nenhum limiar ou peso decimal, só os quartis 0,25 e 0,75 de `summarize_values`. A referência é o nome da constante; esta tabela não traz números de linha. Os poucos valores de outros módulos estão no fim da tabela.
 
-| Constante | Valor | Local | Usada para |
-|---|---|---|---|
-| `MapperConfig.name_threshold` (`--name-threshold`) | 0,90 | `invoice_mapper.py:1415` | Aceite da primeira passagem, `name_is_decisive`; deriva os limiares próximo e fraco |
-| `MapperConfig.name_margin_threshold` (`--name-margin`) | 0,05 | `invoice_mapper.py:1416` | Vantagem na primeira passagem, `name_is_decisive`, vantagem de "nome e relação juntos"; deriva próximo e fraco |
-| `MapperConfig.final_threshold` (`--final-threshold`) | 0,90 | `invoice_mapper.py:1417` | Regra de aceite, evidência objetiva decisiva, relação única, regras de revisão, teto |
-| `MapperConfig.candidate_count` (`--candidates`) | 10 | `invoice_mapper.py:1418` | Tamanho de cada lista dos melhores no conjunto da segunda passagem |
-| `MapperConfig.sample_size` (`--sample-size`) | 8 | `invoice_mapper.py:1419` | Valores de amostra por perfil e, portanto, por candidato enviado à IA |
-| Limiar de nome próximo / fraco (derivados) | 0,85 / 0,80 | `_review_proposal_is_supported`, `map_columns` | Sustentação da revisão, fallback do nulo, preserva o melhor nome, piso objetivo |
-| `SEMANTIC_EQUIVALENCE_SCORE` | 0,98 | `invoice_mapper.py:45` | Piso para assinaturas de cabeçalho iguais |
-| `DEFAULT_EMBEDDING_MODEL` (`--embedding-model`, `OPENAI_EMBEDDING_MODEL`) | `text-embedding-3-large` | `invoice_mapper.py:43` | Pontuação de cabeçalho online |
-| `DEFAULT_LLM_MODEL` (`--llm-model`, `OPENAI_MODEL`) | `gpt-4o-mini` | `invoice_mapper.py:44` | Resolvedor de IA |
-| `MAPPING_SCHEMA_VERSION`, `PROMPT_VERSION` | 3, `2026-08-04.2` | `invoice_mapper.py:48-49` | Gravadas em `Metadados da Execução`; 3 é o esquema em português |
-| `_MIN_ROLE_PREFIX` | 3 | `invoice_mapper.py:236` | Menor truncamento que é expandido |
-| `DISTINCTIVE_CATALOG_FLOOR` | 0,50 | `invoice_mapper.py:1675` | Distintividade dos catálogos de especificidade 1,0 |
-| `DISTINCTIVE_CATALOG_MIN_CODES` | 5 | `invoice_mapper.py:1680` | Códigos válidos distintos exigidos por esse piso |
-| Pré-requisitos de catálogo | ≥ 5 valores, formato ≥ 0,90 | `catalog_evidence_is_distinctive` | Todo catálogo distintivo |
-| Decisão única por catálogo | `minimum_score` 0,90, `minimum_lead` 0,10 | `invoice_mapper.py:1724-1725` | Padrões literais; `--final-threshold` não os altera |
-| Contradição na auditoria de catálogo | especificidade ≥ 0,90, ≥ 5 valores, formato ≥ 0,90, cobertura < 0,10 | `invoice_mapper.py:1642-1648` | Reabrir um aceite da primeira passagem |
-| Contradição forte de relação | ≥ 20 linhas, cobertura ≥ 0,80, aderência ≤ 0,20 | `invoice_mapper.py:1557-1559` | Regra de aceite, rebaixamento de trio |
-| Rebaixamento de trio | relação ≥ 0,90, melhora ≥ 0,50 | `invoice_mapper.py:1771`, `:1846` | Reabrir uma posição de trio da primeira passagem |
-| `TRIO_MIN_FIT`, `TRIO_MIN_ROWS` | 0,97; 30 | `invoice_mapper.py:2047-2048` | Descoberta de trios fiscais |
-| Tolerância aritmética | 0,02 absoluto ou 2% (3% na identidade do item); ≥ 5 linhas; √(linhas/20); × 0,75 se degenerado | `tax_calculation_evidence`, `line_calculation_evidence` | Pontuação de relação |
-| Vantagem da relação única | 0,10 | `invoice_mapper.py:2833` | Substituição 1 |
-| Substituição por sobreposição | ≥ 2 compartilhadas; nome ≥ escolha atual − 0,10, ou sobreposição ≥ 0,50 | `invoice_mapper.py:2893-2904` | Substituição 2 |
-| Pontuação de sobreposição | min(0,99; 0,90 + 0,09 × sobreposição) | `invoice_mapper.py:3122` | Evidência objetiva |
-| Barra de identificador | ≥ 0,80 de válidos nos dois lados | `identifier_match_score` | Evidência objetiva |
-| Teto do perfil genérico | 0,84 | `invoice_mapper.py:3141` | Impede que a semelhança de formato aceite |
-| Pesos da confiança final | 0,40/0,60 com evidência objetiva, 0,70/0,30 no ramo do teto, piso 0,80 | `invoice_mapper.py:3146-3174` | `final_confidence` local |
-| Teto | `final_threshold - 0.0001` | `invoice_mapper.py:3166` | Terceiro ramo |
-| `_CLAMPED_BAND` | 0,0002 | `invoice_mapper.py:3348` | Ordem da `Fila de Revisão` |
-| Fator de amostra do catálogo | min(1, √(não vazios / 5)) | `ReferenceCatalogs.analyze` | Pontuação de catálogo |
-| Especificidades dos catálogos | de 0,50 a 1,0 | `reference_data/manifest.json` | Pontuação de catálogo |
-| `FIRST_DATA_EXCEL_ROW` | 23 | `apply_invoice_mapping.py:75` | Primeira linha do cliente em `Dados Mapeados` |
+| Constante | Valor | Onde atua |
+|---|---|---|
+| **`MapperConfig`** | | |
+| `name_threshold` (`--name-threshold`) | 0,90 | Aceite da primeira passagem e `name_is_decisive`; deriva os limiares próximo e fraco |
+| `name_margin_threshold` (`--name-margin`) | 0,05 | Vantagem na primeira passagem, `name_is_decisive`, vantagem de "nome e relação juntos" e de "preserva o melhor nome"; deriva os limiares próximo e fraco |
+| `final_threshold` (`--final-threshold`) | 0,90 | Regra de aceite (`_accept_gate`), evidência objetiva decisiva, substituições 1, 3 e 5, distintividade dos catálogos de especificidade menor que 1,0, regras de revisão, teto |
+| `candidate_count` (`--candidates`) | 10 | Tamanho de cada lista dos melhores no conjunto da segunda passagem |
+| `sample_size` (`--sample-size`) | 8 | Valores de amostra por perfil e, portanto, por candidato enviado à IA |
+| `near_name_threshold` (propriedade: `name_threshold − name_margin_threshold`) | 0,85 | Sustentação da revisão, fallback do nulo, preserva o melhor nome |
+| `weak_name_threshold` (propriedade: `name_threshold − 2 × name_margin_threshold`) | 0,80 | Sustentação da revisão, fallback do nulo pelo mesmo papel, piso objetivo da confiança final local |
+| `weak_final_threshold` (propriedade: `final_threshold − 2 × name_margin_threshold`) | 0,80 | Fallback do nulo (confiança de dados da decisão), revisão de uma linha em conflito com catálogo distintivo |
+| `clamp_ceiling` (propriedade: `final_threshold − CEILING_GAP`) | 0,8999 | O teto do terceiro ramo da confiança final local |
+| **Cabeçalhos** | | |
+| `IDENTICAL_HEADER_SCORE`, `SEMANTIC_EQUIVALENCE_SCORE` | 1,0; 0,98 | Texto normalizado idêntico; piso para assinaturas iguais, nos dois avaliadores |
+| `LEXICAL_SEQUENCE_WEIGHT`, `LEXICAL_JACCARD_WEIGHT` | 0,7; 0,3 | `LexicalHeaderScorer` |
+| `_MIN_ROLE_PREFIX` | 3 | Menor truncamento que `expand_truncated_role_words` expande |
+| **Perfil dos valores** | | |
+| `PROFILE_DIGIT_COUNT_OVERLAP_WEIGHT`, `PROFILE_TYPE_WEIGHT`, `PROFILE_DIGIT_COUNT_WEIGHT`, `PROFILE_NUMERIC_FRACTION_WEIGHT`, `PROFILE_DIGIT_FRACTION_WEIGHT`, `PROFILE_ALPHA_FRACTION_WEIGHT`, `PROFILE_LENGTH_WEIGHT` | 0,55; 0,15; 0,10; 0,05 cada um dos outros quatro | Pesos de `profile_similarity` (somam 1) |
+| `GENERIC_PROFILE_CAP` | 0,84 | Teto da semelhança de formato em `confianca_dados` (`_local_evidence`): sozinha, ela nunca aceita |
+| **Amostras distintivas e identificadores** | | |
+| `DISTINCTIVE_MIN_DIGITS`, `DISTINCTIVE_MIN_CHARS`, `DISTINCTIVE_MIN_MIXED_CHARS` | 6; 4; 3 | O que conta como amostra distintiva (`_distinctive_samples`) |
+| `MIN_SHARED_SAMPLES` | 2 | Amostras distintivas em comum para valer como evidência de perfil, para a substituição 2 e para "linhas distintivas" |
+| `OVERLAP_SCORE_BASE`, `OVERLAP_SCORE_SLOPE`, `OVERLAP_SCORE_CAP` | 0,90; 0,09; 0,99 | Pontuação de sobreposição: min(0,99; 0,90 + 0,09 × sobreposição) |
+| `IDENTIFIER_MIN_VALID_FRACTION` | 0,80 | Fração com DV válido, nos dois lados, em `identifier_match_score`; também o sinal de DV da aba `Colunas do Cliente sem Uso` |
+| `DISTINCTIVE_IDENTIFIER_SCORE` | 0,90 | Identificador que conta como "linhas distintivas" (`distinctive_profile_match`) |
+| **Aritmética fiscal** | | |
+| `CENTS_TOLERANCE`, `TAX_RELATIVE_TOLERANCE`, `LINE_RELATIVE_TOLERANCE` | 0,02; 2%; 3% | Quando uma linha encaixa na identidade (`_within_tolerance`); `CENTS_TOLERANCE` também é o menor valor que torna uma linha elegível |
+| `NONZERO` | 1e-12 | Abaixo disto o número conta como zero |
+| `MIN_RELATIONSHIP_ROWS` | 5 | Linhas mínimas para pontuar uma relação |
+| `FULL_CONFIDENCE_ROWS` | 20 | Fator min(1, √(linhas / 20)) da pontuação de relação |
+| `MIN_DISTINCT_VALUES`, `DEGENERATE_DISCOUNT` | 3; 0,75 | Base ou valor com menos de 3 valores distintos: identidade degenerada, pontuação × 0,75 |
+| `CONTRADICTION_MIN_ROWS`, `CONTRADICTION_MIN_COVERAGE`, `CONTRADICTION_MAX_FIT` | 20; 0,80; 0,20 | Contradição forte (`_relationship_is_strong_contradiction`): regra de aceite e rebaixamento de trio |
+| `TRIO_MIN_FIT`, `TRIO_MIN_ROWS` | 0,97; 30 | Descoberta de trios fiscais (`discover_client_tax_trios`) |
+| `DEMOTION_MIN_RELATIONSHIP`, `DEMOTION_MIN_IMPROVEMENT` | 0,90; 0,50 | Rebaixamento de trio da primeira passagem (`_inconsistent_trio_position`, `_trio_swap_alternatives`) |
+| **Catálogos oficiais de códigos** | | |
+| `CATALOG_MIN_VALUES`, `CATALOG_MIN_FORMAT_FRACTION` | 5; 0,90 | Pré-requisitos de todo catálogo distintivo e da contradição da auditoria |
+| `UNIQUE_DOMAIN_SPECIFICITY` | 1,0 | Quais catálogos usam o piso abaixo (CFOP, NCM, IBGE) |
+| `DISTINCTIVE_CATALOG_FLOOR`, `DISTINCTIVE_CATALOG_MIN_CODES` | 0,50; 5 | Distintividade dos catálogos de especificidade 1,0 |
+| `AUDIT_MIN_SPECIFICITY`, `AUDIT_MAX_COVERAGE` | 0,90; 0,10 | Contradição que reabre um aceite da primeira passagem (`_catalog_contradicts_accept`) |
+| `CATALOG_DECISION_MIN_SCORE`, `CATALOG_DECISION_MIN_LEAD` | 0,90; 0,10 | Decisão local por catálogo (`_unique_distinctive_catalog_decision`); `--final-threshold` não os altera |
+| `REVIEW_MIN_CATALOG_COVERAGE` | 0,90 | Cobertura distinta do "catálogo distintivo" de `_review_proposal_is_supported` |
+| `UNMATCHED_CATALOG_THRESHOLD` | 1,0 | Sinal `catalogo` da aba `Colunas do Cliente sem Uso` |
+| **Segunda passagem: decisões locais e substituições** | | |
+| `LOCAL_DECISION_NAME_WEIGHT`, `LOCAL_DECISION_DATA_WEIGHT`, `LOCAL_DECISION_FLOOR` | 0,35; 0,65; 0,80 | Confiança da decisão local por catálogo e da substituição 2; como toda confiança de decisão, não chega à regra de aceite |
+| `UNIQUE_RELATIONSHIP_MIN_LEAD` | 0,10 | Vantagem da substituição 1 |
+| `OVERLAP_MAX_NAME_DEFICIT`, `STRONG_OVERLAP`, `STRONG_OVERLAP_FINAL_FLOOR` | 0,10; 0,50; 0,90 | Substituição 2 |
+| **Confiança final local** | | |
+| `NAME_WEIGHT_WITH_OBJECTIVE`, `OBJECTIVE_WEIGHT` | 0,40; 0,60 | Ramo da evidência objetiva de `_local_final_confidence`; também as substituições 1 e 3 |
+| `OBJECTIVE_WEAK_NAME_FLOOR` | 0,80 | Piso desse ramo quando o nome é fraco e o papel não é o mesmo |
+| `CEILING_NAME_WEIGHT`, `CEILING_DATA_WEIGHT` | 0,70; 0,30 | Ramo do teto |
+| `CEILING_GAP` | 0,0001 | Distância do teto até o limiar de aceite (`MapperConfig.clamp_ceiling`) |
+| **Fila de Revisão** | | |
+| `_CLAMPED_BAND` | 0,0002 | Faixas de confiança da ordem da `Fila de Revisão` |
+| `RESOLVER_DISAGREEMENT_GAP` | 0,10 | Quando `divergencia_ia` é preenchida |
+| `FLOAT_TOLERANCE` | 1e-9 | Reconhece o teto em `motivo_retencao` |
+| **Fora do bloco** | | |
+| `DEFAULT_EMBEDDING_MODEL` (`--embedding-model`, `OPENAI_EMBEDDING_MODEL`) | `text-embedding-3-large` | Pontuação de cabeçalho online |
+| `DEFAULT_LLM_MODEL` (`--llm-model`, `OPENAI_MODEL`) | `gpt-4o-mini` | Resolvedor de IA |
+| `MAPPING_SCHEMA_VERSION`, `PROMPT_VERSION` | 3; `2026-08-04.2` | Gravadas em `Metadados da Execução`; 3 é o esquema em português |
+| `reference_catalog._FULL_WEIGHT_SAMPLE` | 5 | Fator de amostra do catálogo, min(1, √(não vazios / 5)), em `ReferenceCatalogs.analyze` |
+| Especificidades dos catálogos | de 0,50 a 1,0 | `reference_data/manifest.json`; pontuação de catálogo |
+| `apply_invoice_mapping.FIRST_DATA_EXCEL_ROW` | 23 | Primeira linha do cliente em `Dados Mapeados` |
 
 ## Onde fazer as mudanças mais comuns
 
@@ -611,7 +668,7 @@ python invoice_mapper.py data/clients/oracle.xlsx --offline --output /tmp/mappin
 python -m mapeval --show-losses
 ```
 
-`python -m pytest -q` roda 344 testes em cerca de 8 segundos. A execução offline exercita a primeira passagem, as auditorias e a gravação do relatório em português; a segunda passagem de verdade precisa do modo online. O mapeval pontua os relatórios que já estão em `data/reports/`; para pontuar uma mudança é preciso um relatório regenerado (online), como descrito no [protocolo de EVALUATION.md](EVALUATION.md#protocolo-para-uma-mudança-proposta).
+`python -m pytest -q` roda 343 testes em cerca de 8 segundos. A execução offline exercita a primeira passagem, as auditorias e a gravação do relatório em português; a segunda passagem de verdade precisa do modo online. O mapeval pontua os relatórios que já estão em `data/reports/`; para pontuar uma mudança é preciso um relatório regenerado (online), como descrito no [protocolo de EVALUATION.md](EVALUATION.md#protocolo-para-uma-mudança-proposta).
 
 **Acrescentar um sinônimo ou uma stopword de cabeçalho.** Edite `_HEADER_TOKEN_ALIASES` ou `_HEADER_STOPWORDS`; uma reescrita de várias palavras vai nas expressões regulares de `semantic_header_signature`. Um sinônimo muda assinaturas, então pode levar um par a 0,98 e deixar a primeira passagem aceitá-lo nos dois avaliadores, e também muda papéis e famílias. Acrescente só vocabulário fiscal geral, em português ou inglês: `test_client_specific_header_pairs_are_not_encoded_as_equivalents` existe porque um par de cabeçalhos de um cliente não é vocabulário. Quando houver escolha, prefira uma etapa de evidência transferível a um sinônimo novo.
 
@@ -626,22 +683,24 @@ python -m mapeval --show-losses
 5. Dê ao id um nome em português em `report_schema.ENUMS["catalog_name"]` (se o id tiver palavra em inglês) e um rótulo legível em `report_schema.TEXT_LABELS["catalog"]`. Nenhum teste cobra isso: sem eles, o relatório grava o id interno e as frases citam o id.
 6. Acrescente testes em `tests/test_reference_catalog.py`.
 
-**Mudar um limiar.** As cinco flags da CLI chegam a `MapperConfig`, e os limiares derivados próximo e fraco acompanham. Os literais de [Constantes](#constantes) não; mude-os no código. A aba `Metadados da Execução` registra as flags usadas (`limiar_nome`, `margem_minima_nome`, `limiar_final`, `quantidade_candidatos`, `tamanho_amostra`). Não baixe o limiar de aceite de 0,90 para recuperar a faixa retida; esse é o trabalho do revisor.
+**Mudar um limiar ou um peso.** Todos ficam no bloco de constantes nomeadas no topo de `invoice_mapper.py` (ver [Constantes](#constantes)); mude o valor ali, nunca com um literal no meio de uma função. As cinco flags da CLI chegam a `MapperConfig`, e as propriedades derivadas (`near_name_threshold`, `weak_name_threshold`, `weak_final_threshold`, `clamp_ceiling`) acompanham. As constantes de módulo não têm flag: mudá-las é mudar o código, e algumas parecem acompanhar o limiar de aceite mas não acompanham (`CATALOG_DECISION_MIN_SCORE`, `DEMOTION_MIN_RELATIONSHIP` e `STRONG_OVERLAP_FINAL_FLOOR` continuam 0,90 com qualquer `--final-threshold`). A aba `Metadados da Execução` registra só as flags usadas (`limiar_nome`, `margem_minima_nome`, `limiar_final`, `quantidade_candidatos`, `tamanho_amostra`). Não baixe o limiar de aceite de 0,90 para recuperar a faixa retida; esse é o trabalho do revisor.
 
 **Acrescentar uma etapa de evidência.**
 
-1. Calcule a evidência por candidato na segunda passagem de `map_columns`, a partir dos dados do cliente ou de regras oficiais, não de palavras do cabeçalho.
+1. Calcule a evidência por candidato em `_candidate_pool`, como já fazem `_candidate_relationship_evidence` e `_candidate_catalog_evidence`, a partir dos dados do cliente ou de regras oficiais, não de palavras do cabeçalho, e guarde-a num campo de `_CandidatePool`.
 2. Se ela deve trazer colunas para o conjunto de candidatos, acrescente uma lista ordenada em `_rank_name_and_profile_candidates`.
-3. Se for objetiva o bastante para aceitar, acrescente-a ao max de `objective_data_score`. Se só deve manter uma proposta em revisão, estenda `_review_proposal_is_supported`.
+3. Leia-a para a coluna escolhida em `_local_evidence`, num campo novo de `_LocalEvidence`. Se for objetiva o bastante para aceitar, acrescente-a ao max de `objective_data_score`. Se só deve manter uma proposta em revisão, estenda `_review_proposal_is_supported` (e o que `_judge_proposal` passa a ela).
 4. Para mostrá-la à IA, acrescente-a ao payload em `OpenAIDataResolver.resolve`, em inglês. Isso muda a entrada do modelo: siga o roteiro de "Mudar o prompt ou o modelo de IA" abaixo.
-5. Registre-a em `mapping_steps.EVIDENCE_STEPS`, na posição certa e com um `transfers` honesto, dê a ela um id em português em `report_schema.STEP_IDS` (`test_every_analysis_step_and_guard_has_a_translation` falha sem isso) e emita o id interno em `_supporting_step_ids`.
+5. Registre-a em `mapping_steps.EVIDENCE_STEPS`, na posição certa e com um `transfers` honesto, dê a ela um id em português em `report_schema.STEP_IDS` (`test_every_analysis_step_and_guard_has_a_translation` falha sem isso), emita o id interno em `_supporting_step_ids` e passe a pontuação a ela pela chamada de `_evidence_attribution` em `_judge_proposal`.
 6. Teste-a por meio de `map_columns` com os dublês `FixedScorer` e `FixedResolver` de `tests/test_invoice_mapper.py`; não precisa de rede.
 7. Confira no mapeval: as fabricações precisam continuar em 0, os ENTREGUES não podem cair e a parcela dos aceites apoiados em etapas transferíveis deve subir.
 
-**Acrescentar uma trava.** Acrescente a condição à regra de aceite da primeira passagem e à expressão `accepted` da segunda, grave o id em `vetoed_by` onde ela disparar e registre-a em `mapping_steps.GUARDS` e, com o nome em português, em `report_schema.GUARD_IDS` (o enum de `vetado_por` sai dessa tabela).
+**Acrescentar uma substituição local.** Escreva uma função `_<nome>_override(choice, pool, config)` que devolva um `_Choice` novo quando a substituição se aplica e `None` quando não, e chame-a de `_apply_local_overrides` na posição certa: a ordem faz parte da regra (a 2 só roda quando a 1 não disparou, e as 4 e 5 olham o que as anteriores deixaram). A evidência dos candidatos já está no `_CandidatePool`. Dê à substituição uma frase própria, `REASON_<NOME>`, no bloco de frases, e decida o `method`: as substituições que trocam a coluna por evidência das linhas gravam `data`, as outras mantêm o `method` recebido. Lembre que a confiança que ela devolve é a da decisão, que nunca chega à regra de aceite; o que aceita é `_judge_proposal`. Teste-a por meio de `map_columns` com os dublês `FixedScorer` e `FixedResolver`, e confira no mapeval.
 
-**Acrescentar uma coluna ou um valor ao relatório.** Acrescente um campo a `MappingResult`; a posição dele define a ordem das colunas. Todo campo precisa de um cabeçalho em português em `report_schema.COLUMNS["mappings"]`, na mesma ordem (`test_every_mapping_result_field_has_a_header`), e de uma entrada em `report_schema.FIELD_KIND` se a célula for enum, etapas, nome de exibição ou frase. O mesmo vale para `UnmatchedColumn` e `AdjudicationRow` (`COLUMNS["unmatched"]`, `COLUMNS["queue"]`), para uma chave nova de metadados (`METADATA_KEYS`) e para um valor novo de situação ou de método (`ENUMS`); `tests/test_report_schema.py` falha quando algum deles fica sem nome em português. O `apply` lê as colunas pelo nome interno: acrescente o campo à lista de opcionais em `_ordered_mapping` para que relatórios antigos continuem aplicáveis e, se ele pertencer ao banner, inclua-o em `MAPPING_METADATA` e em `COLUMNS["banner"]` (isso move `FIRST_DATA_EXCEL_ROW`; `test_every_banner_row_has_a_label` exige as duas listas iguais). Aumente `MAPPING_SCHEMA_VERSION` quando o significado do relatório mudar. Mantenha `Mapeamentos` como primeira aba.
+**Acrescentar uma trava.** Acrescente a condição ao aceite da primeira passagem (`accepted_by_name`, em `_first_pass`) e à regra da segunda (`_accept_gate`), grave o id em `vetoed_by` onde ela disparar (na segunda passagem, em `_judge_proposal`) e registre-a em `mapping_steps.GUARDS` e, com o nome em português, em `report_schema.GUARD_IDS` (o enum de `vetado_por` sai dessa tabela).
 
-**Acrescentar ou mudar uma frase para pessoas.** Escreva-a em português, no ponto em que é montada, com os números passados por `report_schema.format_decimal_br` ou `format_percent_br` e os rótulos de `report_schema.TEXT_LABELS`. Se a frase precisa citar algo que também vai para a IA (como o conflito de cabeçalho), monte a versão em português a partir das mesmas entradas estruturadas; nunca traduza o texto em inglês em memória.
+**Acrescentar uma coluna ou um valor ao relatório.** Acrescente um campo a `MappingResult`; a posição dele define a ordem das colunas. Todo campo precisa de um cabeçalho em português em `report_schema.COLUMNS["mappings"]`, na mesma ordem (`test_every_mapping_result_field_has_a_header`), e de uma entrada em `report_schema.FIELD_KIND["mappings"]` se a célula for enum, etapas, sinais, nome de exibição ou texto livre (`test_every_field_kind_names_a_column_and_an_enum` confere que o campo é uma coluna da tabela e que o enum existe). O mesmo vale para `UnmatchedColumn` e `AdjudicationRow` (`COLUMNS["unmatched"]`, `COLUMNS["queue"]`), para uma chave nova de metadados (`METADATA_KEYS`) e para um valor novo de situação ou de método (`ENUMS`); `tests/test_report_schema.py` falha quando algum deles fica sem nome em português. Na segunda passagem, o valor chega à linha pela chamada de `_mapping_row` em `_judge_proposal`. O `apply` lê as colunas pelo nome interno: acrescente o campo a `OPTIONAL_MAPPING_COLUMNS` para que `_ordered_mapping` continue aceitando relatórios antigos e, se ele pertencer ao banner, inclua-o em `MAPPING_METADATA` e em `COLUMNS["banner"]` (isso move `FIRST_DATA_EXCEL_ROW`; `test_every_banner_row_has_a_label` exige as duas listas iguais). Aumente `MAPPING_SCHEMA_VERSION` quando o significado do relatório mudar. Mantenha `Mapeamentos` como primeira aba.
+
+**Acrescentar ou mudar uma frase para pessoas.** Escreva-a em português, como constante no bloco de frases de `invoice_mapper.py` (ver [Frases escritas em português na origem](#frases-escritas-em-português-na-origem)), com os números passados por `report_schema.format_decimal_br` ou `format_percent_br` e os rótulos de `report_schema.TEXT_LABELS`. Se a frase precisa citar algo que também vai para a IA (como o conflito de cabeçalho), monte a versão em português a partir das mesmas entradas estruturadas; nunca traduza o texto em inglês em memória.
 
 **Mudar o prompt ou o modelo de IA.** As instruções ficam em `OpenAIDataResolver.resolve` e continuam em inglês. Qualquer mudança no que os modelos recebem (prompt, payload, `DataMappingDecision`, prefixo do embedding, texto de `semantic_header_conflict`, `ColumnRef.name` ou `display_name`) faz `tests/test_model_input_golden.py` falhar, e isso é o esperado. Uma mudança deliberada exige três passos juntos: aumentar `PROMPT_VERSION`; regenerar a fixture com `python tests/test_model_input_golden.py --write` e revisar o diff; e medir de novo online, regenerando os relatórios e pontuando com o mapeval (fabricações em 0, ENTREGUES sem cair), como no [protocolo de EVALUATION.md](EVALUATION.md#protocolo-para-uma-mudança-proposta). Nunca regenere a fixture só para fazer o teste passar. O modelo vem de `--llm-model` ou `OPENAI_MODEL`. Lembre que as confianças da IA nunca chegam à regra de aceite, então uma mudança de prompt só pode mudar qual coluna é proposta, ou se alguma é.

@@ -115,7 +115,7 @@ Ele reescreve o relatório no próprio arquivo, sem reexecutar o mapeador: nenhu
 python -m mapeval                     # os quatro clientes
 python -m mapeval --show-losses       # lista cada linha retida, perdida ou com coluna errada
 python -m mapeval --client datasul    # um cliente (a opção pode ser repetida)
-python -m pytest -q                   # 344 testes, offline, cerca de 8 s
+python -m pytest -q                   # 343 testes, offline, cerca de 8 s
 ```
 
 O mapeval pontua os relatórios arquivados `data/reports/mapping_<cliente>_full.xlsx` listados em `CLIENTS`, em `mapeval/cli.py`; ele nunca roda o mapeador. A saída é em português; a linha de totais é `TOTAL COM GABARITO  encontrados 43/56 (76,8%)   ENTREGUES 32/56 (57,1%)   fabricações 0`, seguida de uma linha que conta os 11 mapeamentos corretos encontrados mas não entregues. Alguns testes fixam esses números dos relatórios arquivados. Por isso um relatório `_full` regenerado faz esses testes falharem de propósito, até que alguém atualize os valores fixados conscientemente.
@@ -166,7 +166,7 @@ O repositório contém dados reais de clientes: CNPJs, CPFs, chaves de acesso de
 - Nos dois clientes com gabarito (datasul e oracle, 56 colunas do modelo com resposta no gabarito): **ENTREGUES 32/56 (57,1%)**, encontrados 43/56 (76,8%), 0 fabricações. As 11 colunas encontradas mas retidas são todas linhas `revisao` abaixo do limiar de 0,90 (confiança final de 0,8339 a 0,8999).
 - sap_procosa mostra o que o parecer do revisor destrava: 26 pareceres levaram o cliente de 45 colunas aceitas a 62 entregues (15 propostas confirmadas + 2 correções).
 - O repositório foi traduzido para o português sem mudar nenhuma decisão. Os quatro relatórios arquivados foram migrados para o esquema em português sem reexecutar o mapeador, e as quatro planilhas mapeadas foram regeneradas a partir deles. O mapeval dá os mesmos números de antes da tradução, e o apply entrega 19, 18, 62 e 67 colunas (datasul, oracle, sap_procosa, sap_terumo), como antes.
-- 344 testes passam offline em cerca de 8 s.
+- 343 testes passam offline em cerca de 8 s.
 
 ## Onde ler a seguir
 
