@@ -189,7 +189,7 @@ def _synthetic_catalogs(codes: dict[str, frozenset[str]]) -> ReferenceCatalogs:
 
 
 def _tax_rule(base, rate, value, *, role: str) -> dict[str, object]:
-    """Evidência como _candidate_relationship_evidence monta para um trio."""
+    """Evidência no formato que _candidate_relationship_evidence monta para um trio."""
     rule = tax_calculation_evidence(pd.Series(base), pd.Series(rate), pd.Series(value))
     rule.update(
         {
@@ -579,7 +579,7 @@ def test_the_scenarios_still_cover_what_they_claim(golden) -> None:
 
 
 def test_the_fixture_is_exactly_what_the_capture_produces(captured) -> None:
-    # Pega edição manual do arquivo e diferença de serialização.
+    # Detecta edição manual do arquivo e diferenças de serialização.
     assert serialize(captured) == GOLDEN_PATH.read_text(encoding="utf-8")
 
 
@@ -593,4 +593,4 @@ if __name__ == "__main__":
     with tempfile.TemporaryDirectory() as directory:
         GOLDEN_PATH.parent.mkdir(parents=True, exist_ok=True)
         GOLDEN_PATH.write_text(serialize(build_capture(Path(directory))), encoding="utf-8")
-    print(f"Gravado {GOLDEN_PATH}")
+    print(f"Arquivo dourado gravado em {GOLDEN_PATH}")

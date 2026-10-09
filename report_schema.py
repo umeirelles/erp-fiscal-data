@@ -24,8 +24,9 @@ Leitura nos dois esquemas. Um relatório pode estar no esquema em português
 (``PT_BR``, versão 3) ou no esquema legado em inglês (``LEGACY_EN``, versão 2,
 o dos relatórios arquivados antes desta mudança). Os leitores detectam o
 esquema pelo cabeçalho e convertem para o vocabulário interno. Um arquivo com
-nomes dos dois esquemas é recusado com ``ValueError`` ("esquema misto"),
-porque ler metade dele em silêncio já fez a verificação de hash ser pulada.
+nomes dos dois esquemas é recusado com ``ValueError`` ("esquema misto"):
+lido pela metade, sem aviso, ele faria a verificação de hash ser pulada ou os
+pareceres do revisor serem ignorados.
 
 As tabelas abaixo foram transcritas do glossário do projeto; o JSON do
 glossário não é lido em tempo de execução. Este módulo não importa
@@ -81,8 +82,8 @@ SHEETS: dict[str, tuple[str, str]] = {
     "coverage": ("Coverage", "Cobertura"),
 }
 
-#: Tabela -> tipo de aba onde ela fica. O banner são as linhas de metadados
-#: no topo da aba Dados Mapeados.
+#: Tabela -> tipo de aba onde ela fica. O banner é o bloco de linhas de
+#: metadados no topo da aba Dados Mapeados.
 TABLE_SHEETS: dict[str, str] = {
     "mappings": "mappings",
     "run_metadata": "run_metadata",
@@ -516,9 +517,9 @@ def proof_is_decisive(text: object) -> bool:
 
     Falso quando não há prova (vazio, ``None`` ou valor que não é texto) ou
     quando ela traz o marcador de prova não decisiva, em inglês ou em
-    português. Uma prova assim confirma o escopo do tributo, mas é verdadeira
-    para qualquer um dos blocos disjuntos do cliente; contá-la como evidência
-    aritmética deixaria um cara ou coroa entre dois blocos passar por prova.
+    português. Uma prova assim confirma o escopo do tributo, mas vale para
+    qualquer um dos blocos disjuntos do cliente; contá-la como evidência
+    aritmética faria uma escolha ao acaso entre dois blocos passar por prova.
     """
     if not isinstance(text, str) or not text:
         return False
@@ -922,55 +923,95 @@ def detect_schema(header: Iterable[object], table: str = "mappings") -> str:
     has_portuguese = portuguese_marker in names
     if has_legacy and has_portuguese:
         raise ValueError(
-            f"Esquema misto em {title}: o cabeçalho tem {portuguese_marker!r} (esquema em "
-            f"português) e {legacy_marker!r} (esquema legado em inglês) ao mesmo tempo."
+            f"Esquema misto na aba {title}: o cabeçalho tem {portuguese_marker!r} (esquema "
+            f"em português) e {legacy_marker!r} (esquema legado em inglês) ao mesmo tempo."
         )
     if not has_legacy and not has_portuguese:
         raise ValueError(
-            f"Não foi possível identificar o esquema de {title}: o cabeçalho não tem "
+            f"Não foi possível identificar o esquema da aba {title}: o cabeçalho não tem "
             f"{portuguese_marker!r} (esquema em português) nem {legacy_marker!r} "
             "(esquema legado em inglês)."
         )
     schema = PT_BR if has_portuguese else LEGACY_EN
     columns = COLUMNS[table]
-    legacy_only = set(columns) - set(columns.values())
-    portuguese_only = set(columns.values()) - set(columns)
-    foreign = names & (legacy_only if schema == PT_BR else portuguese_only)
+    # Cabeçalho do outro esquema -> o nome que ele deveria ter neste esquema.
+    if schema == PT_BR:
+        renames = {legacy: pt for legacy, pt in columns.items() if legacy != pt}
+    else:
+        renames = {pt: legacy for legacy, pt in columns.items() if legacy != pt}
+    foreign = sorted(names & set(renames))
     if foreign:
+        listing = ", ".join(f"{name!r} para {renames[name]!r}" for name in foreign)
         raise ValueError(
-            f"Esquema misto em {title}: o cabeçalho está no esquema "
-            f"{_SCHEMA_DESCRIPTIONS[schema]}, mas também tem as colunas {sorted(foreign)} "
-            f"do esquema {_SCHEMA_DESCRIPTIONS[_other_schema(schema)]}. Use um único "
-            "esquema; para converter um relatório legado, use migrate_reports.py."
+            f"Esquema misto na aba {title}: o cabeçalho está no esquema "
+            f"{_SCHEMA_DESCRIPTIONS[schema]}, mas também tem colunas do esquema "
+            f"{_SCHEMA_DESCRIPTIONS[_other_schema(schema)]}. Renomeie {listing}."
         )
     return schema
 
 
-def find_sheet(sheet_names: Sequence[str], kind: str, schema: str) -> str | None:
+def _sheet_key(name: str) -> str:
+    """Forma de comparação de um nome de aba.
+
+    O Excel trata nomes de aba sem distinguir maiúsculas de minúsculas, e um
+    nome com acento pode chegar decomposto (``ç`` como ``c`` + cedilha) ou
+    redigitado sem acento. Sem esta comparação, ``"metadados da execucao"``
+    não seria reconhecida, ``find_sheet`` devolveria ``None`` e a verificação
+    de hash seria pulada em silêncio.
+    """
+    return _fold(name.strip())
+
+
+def find_sheet(sheet_names: Sequence[str], kind: str, schema: str | None) -> str | None:
     """Nome da aba de um tipo numa pasta de trabalho, conferindo o esquema.
 
-    Devolve o nome no esquema detectado, ou ``None`` se a aba não existe (por
-    exemplo, relatórios antigos sem metadados). Levanta ``ValueError`` se só
-    existe a aba do outro esquema (esquema misto) ou se existem as duas: sem
-    isso, a aba de metadados de um esquema seria ignorada em silêncio e a
-    verificação de hash seria pulada.
+    Devolve o nome exatamente como está na pasta de trabalho, para ser usado
+    na leitura, ou ``None`` se a aba não existe (por exemplo, relatórios
+    antigos sem metadados). A comparação ignora caixa, acentos e espaços nas
+    pontas (ver ``_sheet_key``).
+
+    Com ``schema`` igual a ``PT_BR`` ou ``LEGACY_EN``, levanta ``ValueError``
+    se só existe a aba do outro esquema (esquema misto). Com ``schema=None``,
+    aceita o nome de qualquer um dos dois esquemas; serve para localizar a aba
+    de mapeamentos antes de conhecer o esquema, que é decidido depois pelo
+    cabeçalho (``detect_schema``).
+
+    Nos dois casos levanta ``ValueError`` se existem as abas dos dois esquemas
+    ou duas abas com o mesmo nome a menos de caixa e acentos. Sem isso, uma
+    delas seria ignorada em silêncio e, no caso dos metadados, a verificação
+    de hash seria pulada.
     """
-    _check_schema(schema)
-    own = sheet_name(kind, schema)
-    other = sheet_name(kind, _other_schema(schema))
-    names = set(sheet_names)
-    if own in names and other in names:
+    if schema is not None:
+        _check_schema(schema)
+    found: dict[str, list[str]] = {}
+    for candidate in SCHEMAS:
+        wanted = _sheet_key(sheet_name(kind, candidate))
+        found[candidate] = [
+            name for name in sheet_names if isinstance(name, str) and _sheet_key(name) == wanted
+        ]
+    for candidate, names in found.items():
+        if len(names) > 1:
+            raise ValueError(
+                f"A pasta de trabalho tem mais de uma aba {sheet_name(kind, candidate)!r}: "
+                f"{names}. Mantenha só uma."
+            )
+    if found[PT_BR] and found[LEGACY_EN]:
         raise ValueError(
-            f"A pasta de trabalho tem as abas {own!r} e {other!r} ao mesmo tempo; "
-            "mantenha só a do esquema do relatório."
+            f"A pasta de trabalho tem ao mesmo tempo as abas {found[PT_BR][0]!r} (esquema "
+            f"{_SCHEMA_DESCRIPTIONS[PT_BR]}) e {found[LEGACY_EN][0]!r} (esquema "
+            f"{_SCHEMA_DESCRIPTIONS[LEGACY_EN]}); mantenha só a do esquema do relatório."
         )
-    if own in names:
-        return own
-    if other in names:
+    if schema is None:
+        names = found[PT_BR] or found[LEGACY_EN]
+        return names[0] if names else None
+    if found[schema]:
+        return found[schema][0]
+    other = _other_schema(schema)
+    if found[other]:
         raise ValueError(
             f"Esquema misto: o relatório está no esquema {_SCHEMA_DESCRIPTIONS[schema]}, "
-            f"mas a aba se chama {other!r} (esquema {_SCHEMA_DESCRIPTIONS[_other_schema(schema)]}). "
-            f"Renomeie a aba para {own!r} ou migre o relatório com migrate_reports.py."
+            f"mas a aba se chama {found[other][0]!r} (esquema {_SCHEMA_DESCRIPTIONS[other]}). "
+            f"Renomeie a aba para {sheet_name(kind, schema)!r}."
         )
     return None
 
@@ -989,6 +1030,35 @@ def _holds_text(series: pd.Series) -> bool:
     )
 
 
+def _convert_columns(frame: pd.DataFrame, table: str, convert) -> None:
+    """Converte, no próprio ``frame``, as células das colunas que têm tratamento.
+
+    ``convert(campo, valor)`` recebe o nome interno do campo. Só passam por
+    aqui as colunas de ``FIELD_KIND`` que podem conter texto; as demais ficam
+    intactas.
+
+    Não usa ``Series.map``, que reinfere o dtype do resultado: a coluna object
+    ``correct_client_column`` de sap_procosa, com ``[NaN, 6, 32]``, voltava
+    float64 com ``6.0`` e ``32.0``, e ``None`` virava ``NaN``. Aqui cada célula
+    fica exatamente como ``convert`` a devolveu, numa coluna object. As colunas
+    são percorridas por posição, o que também funciona com nomes repetidos.
+    """
+    for position, column in enumerate(frame.columns):
+        if not isinstance(column, str) or _field_kind(table, column) is None:
+            continue
+        series = frame.iloc[:, position]
+        if not _holds_text(series):
+            continue
+        frame.isetitem(
+            position,
+            pd.Series(
+                [convert(column, value) for value in series.tolist()],
+                index=series.index,
+                dtype=object,
+            ),
+        )
+
+
 def to_external_frame(frame: pd.DataFrame, table: str) -> pd.DataFrame:
     """Quadro com nomes e valores internos -> esquema em português, para gravar.
 
@@ -998,14 +1068,7 @@ def to_external_frame(frame: pd.DataFrame, table: str) -> pd.DataFrame:
     alterado.
     """
     out = frame.copy()
-    for column in out.columns:
-        if not isinstance(column, str) or _field_kind(table, column) is None:
-            continue
-        if not _holds_text(out[column]):
-            continue
-        out[column] = out[column].map(
-            lambda value, field=column: external_value(table, field, value)
-        )
+    _convert_columns(out, table, lambda field, value: external_value(table, field, value))
     names = COLUMNS[table]
     return out.rename(
         columns=lambda name: names.get(name, name) if isinstance(name, str) else name
@@ -1026,14 +1089,9 @@ def to_internal_frame(frame: pd.DataFrame, table: str) -> tuple[pd.DataFrame, st
         out = out.rename(
             columns=lambda name: internal.get(name, name) if isinstance(name, str) else name
         )
-    for column in out.columns:
-        if not isinstance(column, str) or _field_kind(table, column) is None:
-            continue
-        if not _holds_text(out[column]):
-            continue
-        out[column] = out[column].map(
-            lambda value, field=column: internal_value(table, field, value, schema)
-        )
+    _convert_columns(
+        out, table, lambda field, value: internal_value(table, field, value, schema)
+    )
     return out, schema
 
 
@@ -1105,13 +1163,14 @@ def internal_metadata(frame: pd.DataFrame, schema: str) -> dict[str, str]:
     _check_schema(schema)
     found = detect_schema(frame.columns, "run_metadata")
     title = sheet_name("run_metadata", schema)
+    key_column = header_label("run_metadata", "key", schema)
+    value_column = header_label("run_metadata", "value", schema)
     if found != schema:
         raise ValueError(
             f"Esquema misto: o relatório está no esquema {_SCHEMA_DESCRIPTIONS[schema]}, "
-            f"mas a aba {title!r} tem os cabeçalhos do esquema {_SCHEMA_DESCRIPTIONS[found]}."
+            f"mas a aba {title!r} tem os cabeçalhos do esquema {_SCHEMA_DESCRIPTIONS[found]}. "
+            f"Renomeie as colunas para {key_column!r} e {value_column!r}."
         )
-    key_column = header_label("run_metadata", "key", schema)
-    value_column = header_label("run_metadata", "value", schema)
     if value_column not in frame.columns:
         raise ValueError(
             f"A aba {title!r} precisa ter as colunas {key_column!r} e {value_column!r}."

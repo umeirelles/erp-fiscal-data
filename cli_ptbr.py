@@ -8,8 +8,16 @@ rodando, e devolve a original ao sair, mesmo quando o argparse encerra o
 programa com ``SystemExit``. Assim nenhum outro parser do processo (o do
 pytest, por exemplo) muda de língua.
 
+Dois textos precisam de mais do que a troca da frase fixa. O erro de valor
+inválido citaria o nome do tipo do Python (``int``, ``float``); aqui ele diz
+em português o que se esperava ("um número inteiro"). A ajuda padrão da ação
+``version`` é montada pelo argparse ao criar o argumento, fora dos métodos do
+parser; ela é traduzida ao formatar a ajuda.
+
 Os nomes das flags (``--offline``, ``--output`` ...) continuam em inglês; a
-ajuda de cada argumento é escrita em português por quem cria o parser.
+ajuda de cada argumento é escrita em português por quem cria o parser, e os
+nomes exibidos dos valores também (``metavar="ARQUIVO"``), porque sem
+``metavar`` o argparse mostra o nome da flag em maiúsculas (``OUTPUT``).
 """
 
 from __future__ import annotations
@@ -17,6 +25,30 @@ from __future__ import annotations
 import argparse
 import contextlib
 from typing import Iterator
+
+#: Nome do tipo do Python citado no erro de valor inválido -> o que se esperava.
+TYPE_LABELS: dict[str, str] = {
+    "int": "um número inteiro",
+    # Quem digita 0,9 no terminal recebe a dica do separador decimal.
+    "float": "um número, com ponto como separador decimal (por exemplo, 0.9)",
+}
+
+
+class _InvalidValueMessage(str):
+    """Mensagem de valor inválido que também traduz o nome do tipo.
+
+    O argparse formata ``_('invalid %(type)s value: %(value)r') % args`` com o
+    ``__name__`` do tipo. O ``%`` desta classe troca esse nome pela descrição
+    de ``TYPE_LABELS`` antes de formatar; um tipo sem descrição (uma função de
+    conversão própria, por exemplo) sai como "um valor do tipo <nome>".
+    """
+
+    def __mod__(self, args):
+        if isinstance(args, dict) and "type" in args:
+            name = str(args["type"])
+            args = {**args, "type": TYPE_LABELS.get(name, f"um valor do tipo {name}")}
+        return str.__mod__(self, args)
+
 
 #: Mensagens do argparse (o texto original é a chave) -> português.
 #: Cobre as do Python 3.13 e as variantes de versões próximas.
@@ -39,11 +71,14 @@ MESSAGES: dict[str, str] = {
     "ambiguous option: %(option)s could match %(matches)s": (
         "opção ambígua: %(option)s pode ser %(matches)s"
     ),
-    "ignored explicit argument %r": "valor explícito ignorado: %r",
+    # Valor dado a uma opção que não aceita valor (--offline=sim).
+    "ignored explicit argument %r": "esta opção não aceita valor: %r",
     "expected one argument": "esperava um argumento",
     "expected at most one argument": "esperava no máximo um argumento",
     "expected at least one argument": "esperava pelo menos um argumento",
-    "invalid %(type)s value: %(value)r": "valor inválido para o tipo %(type)s: %(value)r",
+    "invalid %(type)s value: %(value)r": _InvalidValueMessage(
+        "valor inválido %(value)r: esperava %(type)s"
+    ),
     "invalid choice: %(value)r (choose from %(choices)s)": (
         "valor não permitido: %(value)r (valores aceitos: %(choices)s)"
     ),
@@ -62,6 +97,12 @@ MESSAGES: dict[str, str] = {
     "argument '%(argument_name)s' is deprecated": "o argumento '%(argument_name)s' está obsoleto",
     "command '%(parser_name)s' is deprecated": "o comando '%(parser_name)s' está obsoleto",
 }
+
+#: Ajudas que o próprio argparse dá às ações -h e version quando quem cria o
+#: argumento não passa ``help``.
+_DEFAULT_ACTION_HELPS = frozenset(
+    {"show this help message and exit", "show program's version number and exit"}
+)
 
 #: Mensagens com plural: (singular, plural) originais -> (singular, plural) em português.
 PLURAL_MESSAGES: dict[tuple[str, str], tuple[str, str]] = {
@@ -149,6 +190,11 @@ class PortugueseArgumentParser(argparse.ArgumentParser):
             return super().format_usage()
 
     def format_help(self) -> str:
+        # A ajuda padrão da ação version é montada ao criar o argumento, fora
+        # dos métodos acima; ela é traduzida aqui, em qualquer grupo.
+        for action in self._actions:
+            if action.help in _DEFAULT_ACTION_HELPS:
+                action.help = MESSAGES[action.help]
         with _portuguese_messages():
             return super().format_help()
 

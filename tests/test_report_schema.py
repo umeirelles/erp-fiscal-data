@@ -475,6 +475,45 @@ def test_a_hand_written_portuguese_report_reads_as_internal() -> None:
     assert row["colunaExtra"] == "fica como está"
 
 
+def test_conversions_keep_every_cell_exactly_as_it_was() -> None:
+    # Como em sap_procosa lido com dtype=object: os números de coluna
+    # digitados pelo revisor são inteiros numa coluna object, ao lado de NaN.
+    legacy = pd.DataFrame(
+        {
+            "model_column_number": [1, 2, 3],
+            "client_column": [None, "Valor (occurrence 2)", "CFOP"],
+            "reviewer_status": [math.nan, "incorrect", "incorrect"],
+            "correct_client_column": pd.Series([math.nan, 6, 32], dtype=object),
+            "reviewer_note": pd.Series([None, None, None], dtype=object),
+        }
+    )
+
+    internal, _ = rs.to_internal_frame(legacy, "mappings")
+    external = rs.to_external_frame(internal, "mappings")
+    back, _ = rs.to_internal_frame(external, "mappings")
+
+    for frame in (internal, back):
+        assert frame["correct_client_column"].dtype == object
+        assert [type(value) for value in frame["correct_client_column"][1:]] == [int, int]
+        assert frame["correct_client_column"].tolist()[1:] == [6, 32]
+        assert frame["client_column"][0] is None
+        assert frame["reviewer_note"].tolist() == [None, None, None]
+    assert external["coluna_cliente_correta"].tolist()[1:] == [6, 32]
+    assert external["coluna_cliente"].tolist()[1] == "Valor (ocorrência 2)"
+
+
+def test_conversions_work_with_repeated_column_names() -> None:
+    frame = pd.DataFrame([["accepted", "review"]], columns=["status", "status"])
+    frame.insert(0, "model_column_number", [1])
+
+    external = rs.to_external_frame(frame, "mappings")
+
+    assert list(external.columns) == ["numero_coluna_modelo", "situacao", "situacao"]
+    assert external.iloc[0].tolist() == [1, "aceito", "revisao"]
+    back, _ = rs.to_internal_frame(external, "mappings")
+    assert back.iloc[0].tolist() == [1, "accepted", "review"]
+
+
 def test_enum_values_are_converted_only_when_exact_and_only_in_portuguese() -> None:
     # Valor legado num relatório em português e valor em português num
     # relatório legado passam como estão: a comparação exata a jusante decide.
@@ -501,6 +540,11 @@ def test_archived_reports_have_a_translation_for_every_value(report) -> None:
             continue
         internal, found = rs.to_internal_frame(book[sheet], table)
         assert found == schema
+        if schema == rs.LEGACY_EN:
+            # Um relatório legado é lido sem mudar nada, nem o tipo das
+            # células (os inteiros 6 e 32 dos pareceres de sap_procosa).
+            for column in book[sheet].columns:
+                assert internal[column].equals(book[sheet][column]), (sheet, column)
 
         for (kind_table, field), kind in rs.FIELD_KIND.items():
             if kind_table != table or field not in internal.columns:
@@ -569,9 +613,13 @@ def test_a_header_without_a_marker_is_refused() -> None:
 
 def test_reading_a_half_translated_report_is_refused() -> None:
     frame = pd.DataFrame(columns=["numero_coluna_modelo", "situacao", "reviewer_status"])
-    with pytest.raises(ValueError, match=r"Esquema misto.*\['reviewer_status'\]"):
+    with pytest.raises(
+        ValueError, match=r"Esquema misto.*Renomeie 'reviewer_status' para 'parecer_revisor'"
+    ):
         rs.to_internal_frame(frame, "mappings")
-    with pytest.raises(ValueError, match="Esquema misto"):
+    with pytest.raises(
+        ValueError, match=r"Esquema misto.*Renomeie 'parecer_revisor' para 'reviewer_status'"
+    ):
         rs.internal_header_index(("model_column_number", "parecer_revisor"), "mappings")
 
 
@@ -587,6 +635,50 @@ def test_find_sheet_refuses_the_other_schemas_sheet() -> None:
         rs.find_sheet(["Mappings", "Metadados da Execução"], "run_metadata", rs.LEGACY_EN)
     with pytest.raises(ValueError, match="ao mesmo tempo"):
         rs.find_sheet(["Run Metadata", "Metadados da Execução"], "run_metadata", rs.PT_BR)
+
+
+@pytest.mark.parametrize(
+    "written",
+    [
+        "metadados da execução",
+        "METADADOS DA EXECUÇÃO",
+        "Metadados da Execucao",
+        # "ç" e "ã" decompostos (letra + sinal combinante), como alguns
+        # programas gravam.
+        "Metadados da Execução",
+        " Metadados da Execução ",
+    ],
+)
+def test_find_sheet_ignores_case_and_accents_and_returns_the_name_as_written(written) -> None:
+    # Sem isso a aba não seria encontrada e a verificação de hash seria
+    # pulada em silêncio.
+    assert rs.find_sheet(["Mapeamentos", written], "run_metadata", rs.PT_BR) == written
+    with pytest.raises(ValueError, match="Esquema misto"):
+        rs.find_sheet(["Mappings", written], "run_metadata", rs.LEGACY_EN)
+
+
+def test_find_sheet_refuses_a_legacy_sheet_in_another_case() -> None:
+    # O Excel não distingue caixa nos nomes de aba: "run metadata" é a aba legada.
+    with pytest.raises(ValueError, match="Esquema misto"):
+        rs.find_sheet(["Mapeamentos", "run metadata"], "run_metadata", rs.PT_BR)
+
+
+def test_find_sheet_refuses_two_sheets_that_differ_only_by_accents() -> None:
+    with pytest.raises(ValueError, match="mais de uma aba"):
+        rs.find_sheet(
+            ["Mapeamentos", "Metadados da Execução", "Metadados da Execucao"],
+            "run_metadata",
+            rs.PT_BR,
+        )
+
+
+def test_find_sheet_without_a_schema_accepts_either_name() -> None:
+    # Para localizar a aba de mapeamentos antes de ler o cabeçalho.
+    assert rs.find_sheet(["Mapeamentos", "Metadados da Execução"], "mappings", None) == "Mapeamentos"
+    assert rs.find_sheet(["Mappings", "Run Metadata"], "mappings", None) == "Mappings"
+    assert rs.find_sheet(["Planilha1"], "mappings", None) is None
+    with pytest.raises(ValueError, match="ao mesmo tempo"):
+        rs.find_sheet(["Mappings", "Mapeamentos"], "mappings", None)
 
 
 def test_sheet_and_header_names_in_each_schema() -> None:
@@ -870,6 +962,7 @@ ENGLISH_CHROME = (
     "positional arguments",
     "options:",
     "show this help",
+    "show program's version",
     "error:",
     "the following arguments",
     "unrecognized arguments",
@@ -877,8 +970,16 @@ ENGLISH_CHROME = (
     "invalid choice",
     "invalid int value",
     "invalid float value",
+    "tipo int",
+    "tipo float",
+    "ignored explicit",
     "argument --",
 )
+
+
+def _sheet(value: str) -> int:
+    """Conversão própria, como as que os CLIs passam em ``type=``."""
+    return int(value)
 
 
 def _parser() -> PortugueseArgumentParser:
@@ -887,7 +988,12 @@ def _parser() -> PortugueseArgumentParser:
     parser.add_argument("--output", help="relatório de saída")
     parser.add_argument("--candidates", type=int, default=10, help="quantidade de candidatos")
     parser.add_argument("--final-threshold", type=float, default=0.9)
+    parser.add_argument("--sheet", type=_sheet)
     parser.add_argument("--mode", choices=["offline", "online"])
+    parser.add_argument("--offline", action="store_true")
+    parser.add_argument("--version", action="version", version="ferramenta 1.0")
+    extra = parser.add_argument_group("outras opções")
+    extra.add_argument("--build", action="version", version="build 7")
     return parser
 
 
@@ -903,6 +1009,8 @@ def test_the_help_is_in_portuguese(capsys) -> None:
     assert "-h, --help" in out
     assert "mostra esta mensagem de ajuda e sai" in out
     assert "planilha exportada pelo cliente" in out
+    # A ajuda padrão de version, no grupo principal e num grupo próprio.
+    assert out.count("mostra a versão do programa e sai") == 2
     for english in ENGLISH_CHROME:
         assert english not in out, english
 
@@ -914,8 +1022,17 @@ def test_the_help_is_in_portuguese(capsys) -> None:
         (["c.xlsx", "--mode", "nuvem"], "argumento --mode: valor não permitido: 'nuvem'"),
         (["c.xlsx", "--bogus"], "argumentos não reconhecidos: --bogus"),
         (["c.xlsx", "--output"], "argumento --output: esperava um argumento"),
-        (["c.xlsx", "--candidates", "dez"], "argumento --candidates: valor inválido para o tipo int: 'dez'"),
-        (["c.xlsx", "--final-threshold", "alto"], "valor inválido para o tipo float: 'alto'"),
+        (
+            ["c.xlsx", "--candidates", "dez"],
+            "argumento --candidates: valor inválido 'dez': esperava um número inteiro",
+        ),
+        (
+            ["c.xlsx", "--final-threshold", "0,9"],
+            "argumento --final-threshold: valor inválido '0,9': esperava um número, "
+            "com ponto como separador decimal (por exemplo, 0.9)",
+        ),
+        (["c.xlsx", "--sheet", "aba"], "valor inválido 'aba': esperava um valor do tipo _sheet"),
+        (["c.xlsx", "--offline=sim"], "argumento --offline: esta opção não aceita valor: 'sim'"),
     ],
 )
 def test_common_errors_are_in_portuguese(capsys, argv, message) -> None:
