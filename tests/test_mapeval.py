@@ -1,8 +1,4 @@
-"""Testes da avaliação (mapeval).
-
-A avaliação mede; ela não pode desviar. Estes testes fixam as invariantes que
-tornam os números confiáveis e a linha de base que eles precisam reproduzir.
-"""
+"""Testes do mapeval: as invariantes que tornam os números confiáveis e a linha de base."""
 
 from __future__ import annotations
 
@@ -65,8 +61,7 @@ def test_column_letters_round_trip(letters: str, index: int) -> None:
 
 
 def test_annotation_tolerates_the_trailing_space_in_the_real_key() -> None:
-    # A linha 1 de de_para_datasul.xlsx tem mesmo 'Coluna BV ', com espaço no
-    # fim; um leitor ingênuo descarta essa coluna sem avisar.
+    # Está assim na linha 1 de de_para_datasul.xlsx.
     assert parse_coluna_annotation("Coluna BV ") == 74
 
 
@@ -76,52 +71,42 @@ def test_annotation_ignores_cells_that_are_not_annotations() -> None:
 
 
 def test_a_delivered_vacuous_target_is_fabrication_even_when_the_key_agrees() -> None:
-    # Um mapeamento aceito sobre uma coluna sem dado chega à planilha do
-    # cliente parecendo mapeado e em branco, sem aviso. Está errado, diga o
-    # gabarito o que disser, por isso a coluna vazia é verificada antes de tudo.
     assert classify(
-        model_column=1,
         chosen_client_column=5,
         expected_client_column=5,
         chosen_is_vacuous=True,
-        in_key=True,
         delivered=True,
     ) is Outcome.FABRICATED
 
 
 def test_an_undelivered_vacuous_proposal_is_not_a_fabrication() -> None:
-    # Uma linha em revisão nunca é preenchida pelo apply_invoice_mapping, então
-    # não chega ao cliente. Confundir as duas coisas fazia a execução offline
-    # reportar 35 fabricações quando não entrega nenhuma.
+    # O apply não preenche uma linha em revisão, então ela não chega ao cliente.
     assert classify(
-        model_column=1,
         chosen_client_column=5,
         expected_client_column=5,
         chosen_is_vacuous=True,
-        in_key=True,
         delivered=False,
     ) is Outcome.CORRECT
-
-
-def test_absence_is_a_correct_answer_not_a_miss() -> None:
-    assert classify(
-        model_column=1,
-        chosen_client_column=None,
-        expected_client_column=None,
-        chosen_is_vacuous=False,
-        in_key=True,
-    ) is Outcome.CORRECTLY_ABSENT
 
 
 def test_unkeyed_columns_are_never_credited() -> None:
     for chosen in (None, 5):
         assert classify(
-            model_column=1,
             chosen_client_column=chosen,
             expected_client_column=None,
             chosen_is_vacuous=False,
-            in_key=False,
         ) is Outcome.UNDETERMINED
+
+
+def test_keyed_columns_are_correct_missed_or_wrong() -> None:
+    def outcome(chosen: int | None) -> Outcome:
+        return classify(
+            chosen_client_column=chosen, expected_client_column=5, chosen_is_vacuous=False
+        )
+
+    assert outcome(5) is Outcome.CORRECT
+    assert outcome(None) is Outcome.MISSED
+    assert outcome(6) is Outcome.WRONG_COLUMN
 
 
 @requires_workbooks
@@ -143,8 +128,6 @@ def test_harness_reproduces_the_corrected_baseline() -> None:
 
 @requires_workbooks
 def test_the_four_key_corrections_are_worth_exactly_four_columns() -> None:
-    # Se isto mudar, ou os relatórios mudaram ou uma correção está errada.
-    # Nada mais pode separar o número estrito do corrigido.
     strict = corrected = 0
     for client, (client_file, report_file, key_file) in KEYED.items():
         for apply_corrections, bucket in ((False, "strict"), (True, "corrected")):
@@ -154,8 +137,7 @@ def test_the_four_key_corrections_are_worth_exactly_four_columns() -> None:
                 strict += score.count(Outcome.CORRECT)
             else:
                 corrected += score.count(Outcome.CORRECT)
-    # Os literais mudam sempre que o mapeador melhora; a DIFERENÇA é a
-    # invariante, e é ela que este teste existe para proteger.
+    # A diferença é a invariante; os totais mudam quando os relatórios mudam.
     assert corrected - strict == 4
     assert (strict, corrected) == (39, 43)
     assert sum(len(v) for v in KEY_CORRECTIONS.values()) == 4
@@ -167,10 +149,6 @@ def test_the_four_key_corrections_are_worth_exactly_four_columns() -> None:
     ("oracle", "data/reports/mapping_oracle_full.xlsx"),
 ])
 def test_no_report_delivers_a_column_with_no_data(client: str, report: str) -> None:
-    # O datasul entregou duas assim - m32 <- c280 e m188 <- c326, as duas
-    # aceitas por semelhança de cabeçalho sobre colunas com zero linhas
-    # preenchidas de 6.804. A trava de coluna vazia as removeu; isto garante
-    # que não voltem.
     key = load_answer_key(ROOT / KEYED[client][2], client)
     score = score_report(ROOT / report, ROOT / KEYED[client][0], key)
     assert [
@@ -180,9 +158,7 @@ def test_no_report_delivers_a_column_with_no_data(client: str, report: str) -> N
 
 @requires_workbooks
 def test_delivered_recall_is_never_above_picking_recall() -> None:
-    # A invariante que permite imprimir os dois números lado a lado: a entrega
-    # é um subconjunto da escolha, então uma execução nunca entrega uma coluna
-    # que não encontrou antes.
+    # A entrega é um subconjunto da escolha.
     for client, (client_file, report_file, key_file) in KEYED.items():
         key = load_answer_key(ROOT / key_file, client)
         score = score_report(ROOT / report_file, ROOT / client_file, key)
@@ -194,27 +170,20 @@ def test_delivered_recall_is_never_above_picking_recall() -> None:
 
 @requires_workbooks
 def test_the_accept_gate_withholds_eleven_correct_mappings() -> None:
-    # O recall da escolha é 42/56, mas o cliente recebe 31. A diferença é a
-    # maior perda isolada do pipeline e fica invisível para qualquer métrica
-    # que pontue só a escolha, por isso está fixada aqui.
+    # A maior perda isolada do pipeline: corretos encontrados e não entregues.
     found = delivered = 0
     for client, (client_file, report_file, key_file) in KEYED.items():
         key = load_answer_key(ROOT / key_file, client)
         score = score_report(ROOT / report_file, ROOT / client_file, key)
         found += score.count(Outcome.CORRECT)
         delivered += score.delivered_correct
-    # A diferença é a invariante que dá nome a este teste; os totais mudam
-    # conforme o mapeador melhora, e os dois precisam mudar juntos, senão
-    # algo regrediu.
     assert found - delivered == 11
     assert (found, delivered) == (43, 32)
 
 
 @requires_workbooks
 def test_every_withheld_correct_mapping_sits_below_the_accept_threshold() -> None:
-    # Confirma que a diferença é o limiar de confiança e não outra recusa: se
-    # uma linha retida passar de 0,90, outra coisa a está bloqueando e esta
-    # análise deixa de explicar a perda.
+    # Se uma linha retida passar de 0,90, é outra recusa, e não o limiar, que a segura.
     for client, (client_file, report_file, key_file) in KEYED.items():
         key = load_answer_key(ROOT / key_file, client)
         score = score_report(ROOT / report_file, ROOT / client_file, key)
@@ -225,12 +194,8 @@ def test_every_withheld_correct_mapping_sits_below_the_accept_threshold() -> Non
 
 
 def test_a_non_discriminating_proof_is_not_independent_evidence() -> None:
-    # Dois blocos disjuntos do mesmo tributo satisfazem valor = base x
-    # alíquota, então uma prova tirada de qualquer um deles não distingue
-    # nenhum, e a frase traz o marcador "não distingue esta coluna". Contá-la
-    # deixaria um cara ou coroa entre blocos passar por evidência aritmética;
-    # sem o marcador, os quatro aceites de datasul com prova assim passariam a
-    # contar como independentes de cabeçalho.
+    # Uma prova que dois blocos disjuntos do mesmo tributo satisfazem traz o
+    # marcador "não distingue esta coluna" e não conta como evidência.
     assert _accepted_row(
         "valor = base x alíquota se confirma para PIS em 500 linhas, com aderência 0,99"
     ).header_independent
@@ -284,9 +249,7 @@ def _synthetic_report(path: Path, proof: str) -> Path:
 
 
 def test_a_report_scores_without_the_client_workbooks(tmp_path: Path) -> None:
-    # Não depende das planilhas confidenciais. O relatório tem situacao
-    # 'aceito', metodo 'catalogo' e a prova não decisiva; a pontuação volta
-    # ao vocabulário interno.
+    # Relatório em português; a pontuação volta ao vocabulário interno.
     client = _synthetic_client(tmp_path / "cliente.xlsx")
     key = AnswerKey(client="sintetico", present={1: 1, 2: 3})
     portuguese = score_report(
@@ -298,6 +261,7 @@ def test_a_report_scores_without_the_client_workbooks(tmp_path: Path) -> None:
         Outcome.CORRECT, Outcome.CORRECT, Outcome.UNDETERMINED, Outcome.UNDETERMINED,
     ]
     assert portuguese.delivered_correct == 2
+    assert portuguese.correct_pairs == {(1, 1), (2, 3)}
     # m1 tem só prova não decisiva; m2 é aceite por catálogo.
     assert portuguese.header_independent_share == 0.5
     # m3 propõe a coluna vazia, mas está em revisão: não é fabricação.
@@ -307,8 +271,7 @@ def test_a_report_scores_without_the_client_workbooks(tmp_path: Path) -> None:
 
 def test_a_half_translated_report_is_refused(tmp_path: Path) -> None:
     # Cabeçalhos em português numa aba com o nome antigo, ou um cabeçalho em
-    # inglês numa aba em português. Lido pela metade, o relatório daria
-    # números errados sem aviso.
+    # inglês numa aba em português.
     path = _synthetic_report(tmp_path / "pt.xlsx", "")
     book = openpyxl.load_workbook(path)
     book.active.title = report_schema.LEGACY_SHEETS["mappings"]
@@ -335,8 +298,6 @@ def test_a_report_without_the_mappings_sheet_is_refused(tmp_path: Path) -> None:
 
 @requires_workbooks
 def test_the_marker_keeps_datasul_non_decisive_proofs_out_of_the_metric() -> None:
-    # Com o relatório real: há aceites de datasul cuja única prova é não
-    # decisiva, e eles não contam como independentes de cabeçalho.
     client_file, report_file, key_file = KEYED["datasul"]
     score = score_report(
         ROOT / report_file, ROOT / client_file, load_answer_key(ROOT / key_file, "datasul")
@@ -394,10 +355,8 @@ def test_help_is_in_portuguese(capsys: pytest.CaptureFixture[str]) -> None:
 
 @requires_workbooks
 def test_accepts_the_key_cannot_check_are_counted_and_visible() -> None:
-    # O código de saída lê só as fabricações, e um aceite fora do gabarito
-    # sobre uma coluna PREENCHIDA é UNDETERMINED, não FABRICATED - então uma
-    # regra que inventa mapeamentos fora do gabarito sai com 0. Isto fixa o
-    # número que expõe esse caso.
+    # O código de saída lê só as fabricações; um aceite fora do gabarito sai
+    # com 0 e só aparece nesta contagem.
     for client, (client_file, report_file, key_file) in KEYED.items():
         key = load_answer_key(ROOT / key_file, client)
         score = score_report(ROOT / report_file, ROOT / client_file, key)
@@ -405,6 +364,5 @@ def test_accepts_the_key_cannot_check_are_counted_and_visible() -> None:
             len(score.accepted)
             - sum(1 for r in score.accepted if r.outcome is not Outcome.UNDETERMINED)
         )
-        # e é exatamente o que separa o limite de precisão de 100%
         good = sum(1 for r in score.accepted if r.outcome is Outcome.CORRECT)
         assert good + len(score.undetermined_accepts) <= len(score.accepted)
