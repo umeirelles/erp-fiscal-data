@@ -19,10 +19,75 @@ data/mapped/<cliente>_mapped.xlsx      abas: Dados Mapeados, Cobertura
 python -m mapeval                      pontua os relatórios arquivados contra os gabaritos (só leitura)
 ```
 
-1. **Mapear** (`invoice_mapper.py`, `map_columns`). A primeira passagem aceita uma coluna do cliente só pelo cabeçalho. Isso acontece quando a similaridade dos cabeçalhos (embeddings da OpenAI no modo online, comparação léxica no offline) é de pelo menos 0,90, supera a segunda melhor por uma margem de pelo menos 0,05 e nenhuma trava se opõe. A segunda passagem pega as colunas do modelo que sobraram e pesa os valores: aritmética fiscal (base de cálculo × alíquota = valor do imposto), catálogos oficiais de códigos, sobreposição com os valores de amostra do modelo e dígitos verificadores dos identificadores. Em geral o resolvedor de IA (`gpt-4o-mini`) propõe a coluna; depois o código local recalcula a confiança e aplica o limiar de aceite de 0,90. Cada coluna do modelo termina como `aceito`, `revisao` ou `sem_correspondencia`, com uma `justificativa`. As colunas `apoiado_por` / `decidido_por` / `vetado_por` nomeiam as etapas de evidência e as travas por trás do resultado; `mapping_steps.py` define essas etapas. As confianças são sinais de decisão, não probabilidades calibradas.
+1. **Mapear** (`invoice_mapper.py`). Decide, para cada coluna do modelo, qual coluna do cliente a alimenta, ou que nenhuma alimenta. É o coração da ferramenta e está explicado passo a passo em [Como uma coluna é mapeada](#como-uma-coluna-é-mapeada).
 2. **Revisar.** O revisor registra o parecer nas linhas da aba `Mapeamentos` do relatório: em `parecer_revisor`, `correto`, `incorreto` (com a coluna certa em `coluna_cliente_correta`) ou `inexistente` (o cliente não tem esse campo). A aba `Fila de Revisão` ordena as propostas que o limiar reteve. A aba `Colunas do Cliente sem Uso` lista as colunas do cliente cujos dados não chegaram a nenhuma coluna do modelo. O relatório arquivado de sap_procosa é anterior a essas duas abas e tem só `Mapeamentos` e `Metadados da Execução`.
 3. **Aplicar** (`apply_invoice_mapping.py`). Copia os valores do cliente sem alteração, na ordem das colunas do modelo. Preenche só as colunas aceitas e as confirmadas pelo revisor. A aba `Cobertura` marca cada coluna do modelo como `entregue`, `aguardando decisão` ou `não consta na exportação do cliente`.
 4. **Medir** (`mapeval/`). Pontuação, só de leitura, dos relatórios arquivados contra os gabaritos que os próprios clientes escreveram. Sai com código 1 se houver qualquer fabricação.
+
+## Como uma coluna é mapeada
+
+O mapeador decide, para cada uma das 227 colunas do modelo, qual coluna do cliente a alimenta, ou que nenhuma alimenta. Cada decisão termina num de três resultados, gravados na aba `Mapeamentos` do relatório:
+
+- `aceito`: a coluna entra na planilha mapeada.
+- `revisao`: existe uma proposta, mas sem evidência suficiente para entrar sozinha; ela vai para a `Fila de Revisão` e espera o parecer de uma pessoa.
+- `sem_correspondencia`: nenhuma coluna do cliente tem apoio. Quase sempre o cliente simplesmente não manda aquele campo, e essa é a resposta certa.
+
+O caminho tem quatro etapas.
+
+### 1. Preparar
+
+- Lê o modelo (227 cabeçalhos e 209 linhas de amostra) e a exportação do cliente. Nenhum valor é alterado.
+- Normaliza cada cabeçalho: tira acentos e pontuação e reduz abreviações a uma forma comum (`Vlr` vira `valor`, `Aliq` vira `aliquota`, `Vlr Contábil` vira `valor total nf`).
+- Compara cada cabeçalho do modelo com cada cabeçalho do cliente e dá a cada par uma nota de 0 a 1: embeddings da OpenAI no modo online, comparação de texto no offline.
+- Procura, só nas colunas do cliente, trios do mesmo tributo em que base × alíquota = valor fecha linha a linha. É a prova aritmética, que vale qualquer que seja o nome que o cliente deu às colunas.
+
+### 2. Primeira passagem: o nome basta?
+
+Percorre as colunas do modelo da esquerda para a direita e aceita a coluna do cliente de melhor nota quando tudo isto vale ao mesmo tempo:
+
+- a nota é de pelo menos 0,90;
+- ela fica pelo menos 0,05 acima da segunda melhor, ou seja, não há empate;
+- não há conflito de tributo nem de papel: `Base ICMS` nunca aceita uma coluna de valor, de PIS ou de ICMS-ST;
+- o cabeçalho do cliente não é genérico demais (uma palavra só, contida num cabeçalho maior do modelo, como `Centro` para `Centro custo`);
+- a coluna do cliente tem dados.
+
+Uma coluna do cliente aceita sai da disputa: ela alimenta no máximo uma coluna do modelo. Depois, duas auditorias desfazem aceites que os dados contradizem: uma coluna aceita como CFOP, NCM ou município em que quase nenhum valor é código oficial, e um trio base/alíquota/valor aceito pelo nome que não fecha a conta. Nos relatórios arquivados, 130 dos 149 aceites saíram desta passagem.
+
+### 3. Segunda passagem: o que dizem os valores?
+
+Para cada coluna do modelo que sobrou:
+
+1. **Candidatas.** Junta até 40 colunas do cliente ainda livres: as 10 melhores pelo nome, pelo formato dos valores, pela aritmética e pelo catálogo.
+2. **Evidência que não depende do nome que o cliente escolheu:**
+   - aritmética: a candidata fecha base × alíquota = valor com as outras duas colunas do mesmo tributo, já aceitas;
+   - catálogo oficial: os valores são códigos válidos de CFOP, NCM, município do IBGE, CST ou cClassTrib (`reference_data/`); só CFOP, NCM e município decidem sozinhos, os outros só ajudam;
+   - amostras em comum: valores distintivos que também aparecem nas linhas de amostra do modelo;
+   - dígito verificador: CPF, CNPJ ou chave de acesso de NF-e válidos.
+3. **Escolha.** Se um catálogo oficial aponta uma única candidata com folga, ela é escolhida sem chamar a IA. Senão, o resolvedor de IA (`gpt-4o-mini`) recebe os nomes, as evidências e até 8 valores de amostra de cada candidata e escolhe uma ou nenhuma. Regras locais podem trocar essa escolha, por exemplo quando só uma candidata fecha a conta aritmética.
+4. **Confiança.** O código calcula a confiança sozinho; a nota da IA fica registrada só para auditoria.
+   - Se o nome é decisivo (as mesmas condições da primeira passagem), a confiança é a nota do nome.
+   - Se há evidência objetiva (aritmética, catálogo, amostras ou dígito verificador) de pelo menos 0,90, a confiança mistura nome (40%) e evidência (60%).
+   - Sem nenhuma das duas, a confiança fica presa abaixo do limiar, em no máximo 0,8999: sem nome nem dado decisivo, não há aceite automático.
+5. **Resultado.** `aceito` quando a confiança é de pelo menos 0,90, há nome ou dado decisivo, não há conflito de cabeçalho nem contradição aritmética e a coluna tem dados. Senão `revisao`, se a proposta tem apoio suficiente (nome razoável ou alguma evidência); senão `sem_correspondencia`.
+
+No modo offline (`--offline`) não há IA nem segunda passagem de verdade: só a primeira passagem aceita, e toda coluna que sobra vira `revisao` com o melhor cabeçalho.
+
+### 4. Gravar o relatório
+
+O relatório tem quatro abas: `Mapeamentos` (uma linha por coluna do modelo, com a coluna escolhida, as notas, a `justificativa` e as etapas que apoiaram, decidiram ou vetaram a decisão em `apoiado_por`, `decidido_por` e `vetado_por`), `Metadados da Execução`, `Colunas do Cliente sem Uso` e `Fila de Revisão`. As confianças são sinais de decisão, não probabilidades calibradas.
+
+### Exemplos tirados dos relatórios arquivados
+
+| Coluna do modelo | Coluna do cliente | Como foi decidido | Resultado |
+|---|---|---|---|
+| `Série` | `SERIE` (oracle) | nome idêntico: nota 1,00, 0,19 acima da segunda melhor | `aceito` na primeira passagem |
+| `Base IPI` | `BASE IPI` (oracle) | nome idêntico, e o trio do IPI fecha base × alíquota = valor em 333 linhas | `aceito`, com `decidido_por` = `aritmetica` |
+| `Aliquota IBS` | `IBSS Rate with 4 decimals` (sap_procosa) | nome fraco (0,80), reprovado na primeira passagem; na segunda, fecha a conta com a base e o valor do IBS já aceitos (0,9993) | `aceito` com 0,92 |
+| `CFOP` | `Cod. Fiscal` (datasul) | nome fraco (0,85), mas todos os códigos distintos são CFOP oficiais | `aceito` com 0,94, pelo catálogo, sem chamar a IA |
+| `CFOP` | `CFO` (oracle) | catálogo bom (0,88), mas abaixo de 0,90, e o nome não decide | `revisao` com 0,85: o revisor confirma na `Fila de Revisão` |
+| `Base CBS` | nenhuma (oracle) | nenhuma coluna do cliente com apoio suficiente | `sem_correspondencia`: o cliente não manda CBS |
+
+Por que tanta cautela: preencher uma coluna com o dado errado (uma `Base CBS` fabricada) é muito pior do que deixá-la vazia. Por isso tudo o que não tem prova suficiente fica para o revisor, e não para um limiar mais baixo. Cada regra, os limiares exatos e o fluxograma completo estão em [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#o-roteiro-de-map_columns).
 
 ## Estrutura do repositório
 
