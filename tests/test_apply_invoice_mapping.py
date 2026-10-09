@@ -612,11 +612,10 @@ def test_coverage_sheet_separates_absence_from_a_pending_decision(files) -> None
     assert data[3]["coluna_modelo"] == "Valor IPI"
 
 
-def test_coverage_states_are_the_portuguese_of_the_old_states() -> None:
-    states = report_schema.ENUMS["coverage_state"]
-    assert states["delivered"] == STATE_DELIVERED
-    assert states["awaiting decision"] == STATE_PENDING
-    assert states["not in this client's export"] == STATE_ABSENT
+def test_coverage_states_are_the_documented_portuguese_states() -> None:
+    assert (STATE_DELIVERED, STATE_PENDING, STATE_ABSENT) == (
+        "entregue", "aguardando decisão", "não consta na exportação do cliente",
+    )
 
 
 def test_command_line_is_in_portuguese(capsys) -> None:

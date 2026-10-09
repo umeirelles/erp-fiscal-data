@@ -37,8 +37,6 @@ requires_reports = pytest.mark.skipif(
     not ARCHIVED_REPORTS, reason="relatórios arquivados ausentes"
 )
 REPORT_TABLES = ("mappings", "run_metadata", "unmatched", "queue")
-#: Enums de frases em português natural, e não de valores snake_case.
-PHRASE_ENUMS = {"why_held", "coverage_state"}
 
 
 # ---------------------------------------------------------------------------
@@ -102,8 +100,6 @@ def test_enum_values_are_distinct_and_translation_is_idempotent() -> None:
             # tradução de si mesmo, senão traduzir duas vezes o mudaria.
             if portuguese in values:
                 assert values[portuguese] == portuguese, (name, internal, portuguese)
-        if name in PHRASE_ENUMS:
-            continue
         for portuguese in values.values():
             assert portuguese == "" or SNAKE_CASE.fullmatch(portuguese), (name, portuguese)
 
@@ -112,7 +108,7 @@ def test_every_field_kind_names_a_column_and_an_enum() -> None:
     for table, kinds in rs.FIELD_KIND.items():
         assert set(kinds) <= set(rs.COLUMNS[table]), table
         for kind in kinds.values():
-            if kind.startswith(("enum:", "phrase:")):
+            if kind.startswith("enum:"):
                 assert kind.split(":", 1)[1] in rs.ENUMS, kind
 
 
@@ -156,17 +152,6 @@ def test_every_portuguese_verdict_reads_back_as_an_internal_one() -> None:
     assert set(verdicts) == {"", "correct", "incorrect", "no_mapping_exists"}
 
 
-def test_every_coverage_state_has_a_translation() -> None:
-    states = rs.ENUMS["coverage_state"]
-    known = set(states) | set(states.values())
-    for state in (
-        apply_invoice_mapping.STATE_DELIVERED,
-        apply_invoice_mapping.STATE_PENDING,
-        apply_invoice_mapping.STATE_ABSENT,
-    ):
-        assert state in known, state
-
-
 def test_every_analysis_step_and_guard_has_a_translation() -> None:
     assert {step.id for step in mapping_steps.EVIDENCE_STEPS} == set(rs.STEP_IDS)
     assert {step.id for step in mapping_steps.GUARDS} == set(rs.GUARD_IDS)
@@ -208,10 +193,12 @@ def test_every_queue_reason_has_a_translation() -> None:
         final_threshold=0.9,
         sample_size=8,
     )
-    phrases = rs.ENUMS["why_held"]
     held = {row.why_held for row in rows}
-    assert len(held) == 3
-    assert held <= set(phrases) | set(phrases.values())
+    assert held == {
+        invoice_mapper.WHY_HELD_BELOW_THRESHOLD,
+        invoice_mapper.WHY_HELD_NAME_ONLY,
+        invoice_mapper.WHY_HELD_VACUOUS,
+    }
 
 
 def test_every_run_metadata_key_and_sentinel_has_a_translation(tmp_path, monkeypatch) -> None:
@@ -324,16 +311,15 @@ def _internal_queue() -> pd.DataFrame:
                 "proposed_client_column": "Valor ICMS (occurrence 2)",
                 "final_confidence": 0.8999, "gate_distance": 0.0001, "name_margin": 0.0,
                 "rows_with_value": 40, "resolver_disagrees": "", "arithmetic_proof": "",
-                "client_sample_values": "1 | 2", "why_held": "below the accept threshold",
+                "client_sample_values": "1 | 2", "why_held": "abaixo do limiar de aceite",
             },
         ]
     )
 
 
 def _one_way(table: str, field: str) -> bool:
-    """Campos que só são traduzidos na gravação: as frases fixas e o parecer do revisor."""
-    kind = rs.FIELD_KIND.get(table, {}).get(field, "")
-    return kind.startswith("phrase:") or kind == "enum:reviewer_status"
+    """O parecer do revisor só é traduzido na gravação; na leitura passa como foi digitado."""
+    return rs.FIELD_KIND.get(table, {}).get(field, "") == "enum:reviewer_status"
 
 
 @pytest.mark.parametrize(
@@ -541,7 +527,7 @@ def test_archived_reports_have_a_translation_for_every_value(report) -> None:
             if field not in internal.columns:
                 continue
             values = [v for v in internal[field].tolist() if isinstance(v, str) and v]
-            if kind.startswith(("enum:", "phrase:")):
+            if kind.startswith("enum:"):
                 enum = rs.ENUMS[kind.split(":", 1)[1]]
                 assert set(values) <= set(enum) | set(enum.values()), (field, set(values) - set(enum))
             elif kind == "steps":
@@ -557,8 +543,6 @@ def test_archived_reports_have_a_translation_for_every_value(report) -> None:
 
         back = rs.to_internal_frame(rs.to_external_frame(internal, table), table)
         for column in internal.columns:
-            if rs.FIELD_KIND.get(table, {}).get(column, "").startswith("phrase:"):
-                continue
             assert back[column].equals(internal[column]), (sheet, column)
 
     metadata_sheet = rs.find_sheet(names, "run_metadata")

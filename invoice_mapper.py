@@ -278,7 +278,7 @@ SIGNAL_NO_SIGNAL = (
     "relação fique completa."
 )
 
-#: Coluna motivo_retencao: os valores em português de ``report_schema.ENUMS["why_held"]``.
+#: Coluna motivo_retencao: as três razões possíveis.
 WHY_HELD_BELOW_THRESHOLD = "abaixo do limiar de aceite"
 WHY_HELD_NAME_ONLY = (
     "só há evidência de nome - este caminho não aceita automaticamente, por mais que "

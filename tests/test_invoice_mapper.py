@@ -1411,14 +1411,6 @@ def test_the_queue_says_when_the_branch_rather_than_the_evidence_held_a_row() ->
     assert rows[0].why_held == WHY_HELD_NAME_ONLY
 
 
-def test_the_queue_phrases_are_the_portuguese_values_of_the_schema() -> None:
-    # A fila é escrita em português na origem; report_schema reconhece as
-    # mesmas frases e traduz as legadas em inglês para elas.
-    assert set(rs.ENUMS["why_held"].values()) == {
-        WHY_HELD_BELOW_THRESHOLD, WHY_HELD_NAME_ONLY, WHY_HELD_VACUOUS,
-    }
-
-
 def test_the_resolver_disagreement_uses_a_decimal_comma() -> None:
     sheet = table(["A"], [["x"], ["y"]])
     rows = summarize_adjudication_queue(

@@ -337,29 +337,9 @@ ENUMS: dict[str, dict[str, str]] = {
         "cpf_checkdigit": "dv_cpf",
         "date": "data",
     },
-    # Frases fixas, que o código já escreve em português. As chaves são as
-    # frases do formato antigo, em inglês: viram português na gravação, e
-    # nada volta na leitura.
-    "why_held": {
-        "below the accept threshold": "abaixo do limiar de aceite",
-        "name evidence only - this branch cannot auto-accept however well the headers match": (
-            "só há evidência de nome - este caminho não aceita automaticamente, "
-            "por mais que os cabeçalhos coincidam"
-        ),
-        "the proposed column has no populated rows - confirming this would ship a blank column": (
-            "a coluna proposta não tem linhas preenchidas - confirmá-la entregaria "
-            "uma coluna em branco"
-        ),
-    },
-    "coverage_state": {
-        "delivered": "entregue",
-        "awaiting decision": "aguardando decisão",
-        "not in this client's export": "não consta na exportação do cliente",
-    },
     # Rótulos de mapeval.outcomes.Outcome: só impressos, nunca gravados.
     "outcome": {
         "correct": "correto",
-        "correctly_absent": "ausente_com_acerto",
         "missed": "perdido",
         "wrong_column": "coluna_errada",
         "fabricated": "fabricado",
@@ -442,8 +422,6 @@ CATALOG_LABELS: dict[str, str] = TEXT_LABELS["catalog"]
 #: * ``enum:<nome>``: valor de ``ENUMS[<nome>]``, que volta ao interno na
 #:   leitura. O parecer do revisor é a exceção: passa como foi digitado, e
 #:   quem lê o valida com ``normalize_reviewer_status``.
-#: * ``phrase:<nome>``: frase fixa de ``ENUMS[<nome>]``; só é traduzida na
-#:   gravação.
 #: * ``steps``: ids de etapa separados por `` + ``.
 #: * ``signals``: ids de sinal separados por vírgula.
 #: * ``display``: nome de exibição de coluna do cliente.
@@ -479,10 +457,10 @@ FIELD_KIND: dict[str, dict[str, str]] = {
         "proposed_client_column": "display",
         "resolver_disagrees": "text",
         "arithmetic_proof": "text",
-        "why_held": "phrase:why_held",
+        "why_held": "text",
     },
     "coverage": {
-        "state": "phrase:coverage_state",
+        "state": "text",
         "client_column": "display",
         "reason": "text",
     },
@@ -652,7 +630,7 @@ def external_value(table: str, field: str, value: object) -> object:
         return steps_to_external(value)
     if kind == "signals":
         return _translate_signals(value, ENUMS["signals"])
-    if kind and kind.startswith(("enum:", "phrase:")) and isinstance(value, str):
+    if kind and kind.startswith("enum:") and isinstance(value, str):
         return ENUMS[kind.split(":", 1)[1]].get(value, value)
     return value
 
@@ -662,8 +640,7 @@ def internal_value(table: str, field: str, value: object) -> object:
 
     Um enum só volta quando o valor gravado é exato. O parecer do revisor
     passa como foi digitado, para que quem lê o valide com
-    ``normalize_reviewer_status`` citando a linha. Frases e texto livre não
-    voltam para o inglês.
+    ``normalize_reviewer_status`` citando a linha. Texto livre passa intacto.
     """
     kind = _field_kind(table, field)
     if kind == "display":
