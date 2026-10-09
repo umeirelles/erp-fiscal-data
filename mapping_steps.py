@@ -1,29 +1,43 @@
-"""The named steps of the column-mapping analysis.
+"""As etapas nomeadas da análise de mapeamento de colunas.
 
-This module is the single place where the pipeline's reasoning is given
-official names. Every mapping the tool produces reports which of these steps
-carried the decision and which merely corroborated it, so a reviewer can read
-*how* a column was matched and not only *that* it was.
+Este módulo é o único lugar em que o raciocínio do pipeline recebe nomes
+oficiais. Cada mapeamento que a ferramenta produz informa quais destas etapas
+sustentaram a decisão e quais apenas a corroboraram, para que o revisor veja
+*como* uma coluna foi casada, e não só *que* ela foi casada.
 
-Two kinds of step, and the difference matters:
+Há dois tipos de etapa, e a diferença importa:
 
-* An **evidence step** is a reason to believe a client column belongs in a
-  model column. Evidence accumulates; several steps can support one mapping.
-* A **guard** is a reason to refuse one. A guard that fires overrides any
-  amount of evidence, because on tax output a wrong column is worse than an
-  empty one.
+* Uma **etapa de evidência** é um motivo para acreditar que uma coluna do
+  cliente corresponde a uma coluna do modelo. As evidências se somam: várias
+  etapas podem sustentar o mesmo mapeamento.
+* Uma **trava** é um motivo para recusá-lo. Uma trava que dispara prevalece
+  sobre qualquer quantidade de evidência, porque, num documento fiscal, uma
+  coluna errada é pior do que uma coluna vazia.
 
-Each evidence step declares whether it ``transfers``. A step that transfers
-rests on something true of Brazilian fiscal documents in general - tax law,
-official code tables, check-digit arithmetic - so it works on an ERP nobody
-has seen. A step that does not transfer rests on the words this particular
-client chose for its headers, and is worth little on the next client. The
-share of mappings resting on transferring steps is the generalization metric
-for the whole tool; the four sample clients are reference material, so a gain
-that shows up only in non-transferring steps is close to worthless.
+Cada etapa de evidência declara, no campo ``transfers``, se é transferível,
+isto é, se continua valendo num ERP desconhecido. Uma etapa transferível se
+apoia em algo que vale para os documentos fiscais brasileiros em geral (a
+legislação tributária, as tabelas oficiais de códigos, a conta dos dígitos
+verificadores) e por isso funciona num ERP que ninguém viu antes. Uma etapa
+não transferível se apoia nas palavras que este cliente específico escolheu
+para os cabeçalhos e vale pouco no próximo cliente. A parcela dos
+mapeamentos apoiados em etapas transferíveis é a métrica de generalização da
+ferramenta inteira. Os quatro clientes de amostra são material de
+referência, então um ganho que aparece só nas etapas não transferíveis quase
+não vale nada.
 
-Adding a step means adding an entry here and populating it at the point of
-decision. Renaming one means editing one line.
+Os ids das etapas (``lexical``, ``catalog`` ...) são vocabulário interno e
+continuam em inglês. Nos relatórios em português eles são gravados como
+``lexico``, ``catalogo`` etc. por ``report_schema``. Uma célula de etapas
+lida de um relatório precisa passar por ``report_schema.steps_to_internal``
+antes de chegar a ``deciding_step`` ou ``format_steps``, que só reconhecem
+os ids internos.
+
+Acrescentar uma etapa é acrescentar uma entrada aqui, preenchê-la no ponto da
+decisão e dar a ela um id em português em ``report_schema.STEP_IDS`` (ou
+``GUARD_IDS``, se for uma trava); ``tests/test_report_schema.py`` acusa se
+as duas listas divergirem. Mudar o nome ou o resumo de uma etapa é editar
+uma linha.
 """
 
 from __future__ import annotations
@@ -33,103 +47,109 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class Step:
-    """One named way the tool can justify - or refuse - a column mapping."""
+    """Uma forma nomeada de a ferramenta justificar, ou recusar, o mapeamento de uma coluna."""
 
     id: str
     name: str
     summary: str
-    #: Whether the step's reasoning survives an ERP whose vocabulary is unknown.
+    #: Se o raciocínio da etapa continua válido num ERP de vocabulário desconhecido.
     transfers: bool
-    #: Where the logic lives, so a reader can go and check it.
+    #: Onde a lógica está, para quem lê poder ir conferir.
     implemented_by: str
 
 
-#: Evidence steps, ordered from weakest to strongest claim on correctness.
-#: The order is meaningful: where several steps support one mapping, the last
-#: one in this tuple is the one reported as having decided it.
+#: Etapas de evidência, da alegação de correção mais fraca para a mais forte.
+#: A ordem tem significado: quando várias etapas sustentam um mapeamento, a
+#: última delas nesta tupla é a informada como a que o decidiu.
 EVIDENCE_STEPS: tuple[Step, ...] = (
     Step(
         id="resolver",
-        name="Model adjudication",
+        name="Adjudicação pela IA",
         summary=(
-            "Weighs every other step's evidence for the shortlisted candidates "
-            "and chooses, returning its own confidence and a one-sentence "
-            "reason. Reached only for columns the earlier steps left uncertain."
+            "A IA pondera a evidência de todas as outras etapas sobre os "
+            "candidatos pré-selecionados e escolhe um, informando a própria "
+            "confiança e uma justificativa de uma frase. Só entra em ação nas "
+            "colunas que as etapas anteriores deixaram em dúvida."
         ),
-        # Ranked weakest on purpose, and marked as not transferring. The
-        # resolver is an adjudicator, not evidence: what generalises is the
-        # evidence underneath it. So "decided by resolver" carries its honest
-        # meaning - nothing objective supported this and the model's judgment
-        # carried it - and a header-only mapping cannot pass as transferable
-        # merely because the resolver was the one to choose it.
+        # Esta etapa fica na posição mais fraca de propósito e é marcada como
+        # não transferível. O resolvedor é um árbitro, não uma evidência: o que
+        # se generaliza é a evidência por baixo dele. Assim, "decidido pelo
+        # resolvedor" mantém o seu significado honesto (nada objetivo sustentou
+        # o mapeamento e o julgamento da IA decidiu), e um mapeamento apoiado só
+        # no cabeçalho não passa por transferível apenas porque foi o resolvedor
+        # quem o escolheu.
         transfers=False,
         implemented_by="_openai_data_decision",
     ),
     Step(
         id="lexical",
-        name="Lexical header match",
+        name="Correspondência léxica de cabeçalho",
         summary=(
-            "Compares header text after normalising accents, case, punctuation "
-            "and known fiscal abbreviations, then scores token overlap and edit "
-            "distance. Handles ERP truncation - 'Vlr Isen ICM' reads as the "
-            "exempt ICMS slot."
+            "Compara o texto dos cabeçalhos depois de normalizar acentos, "
+            "maiúsculas e minúsculas, pontuação e abreviações fiscais "
+            "conhecidas, e pontua a sobreposição de termos e a distância de "
+            "edição. Lida com os cabeçalhos truncados dos ERPs: 'Vlr Isen ICM' "
+            "é reconhecido como o campo de isentas do ICMS."
         ),
         transfers=False,
         implemented_by="LexicalHeaderScorer, normalize_header, semantic_header_signature",
     ),
     Step(
         id="semantic",
-        name="Semantic header match",
+        name="Correspondência semântica de cabeçalho",
         summary=(
-            "Compares the meaning of header names using embeddings, so "
-            "'Nota Fiscal number' can reach 'Nº da Nota Fiscal' without sharing "
-            "a token. Requires online mode."
+            "Compara o significado dos nomes de cabeçalho por meio de "
+            "embeddings, de modo que 'Nota Fiscal number' pode chegar a "
+            "'Nº da Nota Fiscal' sem depender de termos em comum. Exige o "
+            "modo online."
         ),
         transfers=False,
         implemented_by="OpenAIEmbeddingHeaderScorer",
     ),
     Step(
         id="profile",
-        name="Value profile match",
+        name="Correspondência de perfil de valores",
         summary=(
-            "Compares the shape of the data itself - inferred type, digit "
-            "widths, string lengths, numeric distribution - and any exact "
-            "overlap of distinctive sample values."
+            "Compara o formato dos próprios dados (tipo inferido, quantidade "
+            "de dígitos, comprimento dos textos, distribuição numérica) e "
+            "qualquer coincidência exata de valores de amostra distintivos."
         ),
         transfers=True,
         implemented_by="profile_similarity, distinctive_sample_overlap",
     ),
     Step(
         id="identifier",
-        name="Identifier validation",
+        name="Validação de identificador (DV)",
         summary=(
-            "Recognises Brazilian identifiers by their check digits rather than "
-            "their headers: CPF, CNPJ and the 44-digit NF-e access key. A "
-            "column whose values validate is that identifier whatever it is called."
+            "Reconhece identificadores brasileiros pelos dígitos verificadores, "
+            "e não pelo cabeçalho: CPF, CNPJ e a chave de acesso de 44 dígitos "
+            "da NF-e. Uma coluna cujos valores passam na validação é aquele "
+            "identificador, qualquer que seja o nome dela."
         ),
         transfers=True,
         implemented_by="identifier_match_score, _cpf_is_valid, _cnpj_is_valid, _nfe_key_is_valid",
     ),
     Step(
         id="catalog",
-        name="Fiscal catalog lookup",
+        name="Consulta a catálogo fiscal",
         summary=(
-            "Tests values for membership in the official code tables - CFOP, "
-            "NCM, IBGE municipality, the CST families, CSOSN and the IBS/CBS "
-            "codes - discounting short, collision-prone domains such as "
-            "two-digit CST."
+            "Verifica se os valores pertencem às tabelas oficiais de códigos "
+            "(CFOP, NCM, código de município do IBGE, as famílias de CST, "
+            "CSOSN e os códigos do IBS/CBS), descontando domínios curtos e "
+            "sujeitos a colisão, como o CST de dois dígitos."
         ),
         transfers=True,
         implemented_by="reference_catalog.best_catalog_evidence, catalog_evidence_is_distinctive",
     ),
     Step(
         id="arithmetic",
-        name="Fiscal arithmetic",
+        name="Aritmética fiscal",
         summary=(
-            "Proves a column's role from an identity that is tax law rather "
-            "than vocabulary: valor = base x aliquota across a tax trio, and "
-            "line value = quantity x unit price. The strongest evidence the "
-            "tool has, and the most transferable."
+            "Prova o papel de uma coluna por uma identidade que vem da "
+            "legislação tributária, e não do vocabulário: valor = base x "
+            "alíquota num trio fiscal, e valor do item = quantidade x preço "
+            "unitário. É a evidência mais forte que a ferramenta tem, e a "
+            "mais transferível."
         ),
         transfers=True,
         implemented_by="tax_calculation_evidence, discover_client_tax_trios, line_calculation_role",
@@ -137,49 +157,51 @@ EVIDENCE_STEPS: tuple[Step, ...] = (
 )
 
 
-#: Guards. A guard that fires refuses the mapping regardless of evidence.
+#: Travas. Uma trava que dispara recusa o mapeamento, qualquer que seja a evidência.
 GUARDS: tuple[Step, ...] = (
     Step(
         id="vacuity",
-        name="Empty-column veto",
+        name="Veto por coluna vazia",
         summary=(
-            "Refuses a mapping onto a client column with no populated rows. "
-            "Delivered, it would be a column that looks mapped and is silently "
-            "blank - fabrication by construction."
+            "Recusa um mapeamento para uma coluna do cliente sem nenhuma linha "
+            "preenchida. Se fosse entregue, seria uma coluna que parece "
+            "mapeada e está em branco sem aviso: fabricação por construção."
         ),
         transfers=True,
         implemented_by="client_column_is_vacuous",
     ),
     Step(
         id="family_conflict",
-        name="Tax-family conflict veto",
+        name="Veto por conflito tributário",
         summary=(
-            "Refuses a mapping across incompatible tax families or slots - "
-            "ICMS is not ICSP, a base is not a rate - however similar the "
-            "headers look."
+            "Recusa um mapeamento entre famílias de tributo ou campos "
+            "incompatíveis (ICMS não é ICSP, base de cálculo não é alíquota), "
+            "por mais parecidos que sejam os cabeçalhos."
         ),
         transfers=True,
         implemented_by="semantic_header_conflict, header_tax_families, header_semantic_role",
     ),
     Step(
         id="underspecified",
-        name="Underspecified-header veto",
+        name="Veto por cabeçalho genérico",
         summary=(
-            "Refuses a match where the client header is a bare generic term "
-            "that names no specific model concept."
+            "Recusa uma correspondência em que o cabeçalho do cliente é só um "
+            "termo genérico, que não nomeia nenhum conceito específico do "
+            "modelo."
         ),
         transfers=True,
         implemented_by="underspecified_header_match",
     ),
     Step(
         id="exclusivity",
-        name="Source already consumed",
+        name="Origem já consumida",
         summary=(
-            "A client column accepted onto one model column is withdrawn from "
-            "the pool, so two model columns cannot claim the same source."
+            "Uma coluna do cliente aceita para uma coluna do modelo sai do "
+            "conjunto de candidatas, para que duas colunas do modelo não "
+            "reivindiquem a mesma origem."
         ),
         transfers=True,
-        implemented_by="build_mapping (the available set)",
+        implemented_by="build_mapping (o conjunto available)",
     ),
 )
 
@@ -187,24 +209,29 @@ STEPS_BY_ID: dict[str, Step] = {
     step.id: step for step in (*EVIDENCE_STEPS, *GUARDS)
 }
 
-#: Reporting order, strongest claim last - see EVIDENCE_STEPS.
+#: Ordem de apresentação, com a alegação mais forte por último; ver EVIDENCE_STEPS.
 _EVIDENCE_RANK: dict[str, int] = {
     step.id: index for index, step in enumerate(EVIDENCE_STEPS)
 }
 
-#: Steps whose reasoning survives an unseen ERP.
+#: Etapas cujo raciocínio continua válido num ERP nunca visto.
 TRANSFERRING_STEP_IDS: frozenset[str] = frozenset(
     step.id for step in EVIDENCE_STEPS if step.transfers
 )
 
 
 def deciding_step(supporting: object) -> str:
-    """The step reported as having carried the decision.
+    """A etapa informada como a que sustentou a decisão.
 
-    The strongest supporting step wins, using the EVIDENCE_STEPS order. A
-    mapping corroborated by both a header match and fiscal arithmetic is
-    reported as decided by arithmetic, because that is the claim that would
-    still hold on a client whose headers we cannot read.
+    Vence a etapa de apoio mais forte, pela ordem de EVIDENCE_STEPS. Um
+    mapeamento corroborado tanto por uma correspondência de cabeçalho quanto
+    pela aritmética fiscal é informado como decidido pela aritmética, porque
+    essa é a alegação que continuaria valendo num cliente cujos cabeçalhos
+    não conseguimos ler.
+
+    O que não é id de etapa de evidência é ignorado: travas, o
+    ``unrecorded`` e o ``catalog (agrees)`` do preenchimento retroativo e
+    ids em português. Se nada sobra, devolve ``""``.
     """
     ranked = [step for step in _as_ids(supporting) if step in _EVIDENCE_RANK]
     if not ranked:
@@ -213,7 +240,7 @@ def deciding_step(supporting: object) -> str:
 
 
 def format_steps(supporting: object) -> str:
-    """Render supporting steps for a spreadsheet cell, strongest last."""
+    """Monta a célula de planilha com as etapas de apoio, a mais forte por último."""
     ranked = sorted(
         (step for step in _as_ids(supporting) if step in _EVIDENCE_RANK),
         key=lambda step: _EVIDENCE_RANK[step],
@@ -222,16 +249,18 @@ def format_steps(supporting: object) -> str:
 
 
 def rests_only_on_headers(supporting: object) -> bool:
-    """Whether nothing but the client's header text supports this mapping.
+    """Se nada além do texto do cabeçalho do cliente sustenta este mapeamento.
 
-    The question that predicts client #5. True means the mapping would not
-    survive an ERP using different words for the same concept.
+    É a pergunta que antecipa o resultado no cliente nº 5. True significa que
+    o mapeamento não sobreviveria a um ERP que usa outras palavras para o
+    mesmo conceito.
     """
     ids = {step for step in _as_ids(supporting) if step in _EVIDENCE_RANK}
     return bool(ids) and not (ids & TRANSFERRING_STEP_IDS)
 
 
 def _as_ids(supporting: object) -> list[str]:
+    """Separa uma célula (``"lexical + catalog"``) ou uma sequência de ids numa lista de ids."""
     if supporting is None:
         return []
     if isinstance(supporting, str):
