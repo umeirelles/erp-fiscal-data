@@ -1,16 +1,21 @@
-"""Evaluation harness for the invoice column mapper.
+"""Avaliação do mapeador de colunas de notas fiscais.
 
-Scores a mapping report against the client-authored de-para answer keys.
-Changes no mapping; it only measures.
+Pontua um relatório de mapeamento contra os gabaritos de-para escritos pelo
+próprio cliente. Não altera nenhum mapeamento; só mede.
 
-Two rules govern every number this package reports:
+Duas regras valem para todo número que este pacote mostra:
 
-1. The base model is a deliberate superset. A client legitimately carries
-   only a minority of its 227 columns, so 227 is never a denominator here.
-   Recall is always against the columns the client actually has.
-2. Absence is a correct answer. The failure that matters is fabrication -
-   claiming a model column the client has no data for - so the five
-   outcomes are never collapsed into a single accuracy figure.
+1. O modelo base é, de propósito, um superconjunto. Um cliente tem, com
+   razão, só uma minoria das 227 colunas do modelo, então 227 nunca é
+   denominador aqui. O recall é sempre medido contra as colunas que o
+   cliente de fato tem.
+2. Ausência é resposta certa. A falha que importa é a fabricação - declarar
+   uma coluna do modelo para a qual o cliente não tem dado -, por isso os
+   cinco resultados nunca são reduzidos a um único número de acurácia.
+
+Os relatórios são lidos nos dois esquemas, o em português e o legado em
+inglês, por meio de ``report_schema``; os números não dependem da língua do
+arquivo.
 """
 
 from mapeval.excel import column_letter_to_index, index_to_column_letter

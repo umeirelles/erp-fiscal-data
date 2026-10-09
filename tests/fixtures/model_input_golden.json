@@ -1,0 +1,675 @@
+{
+ "_leia_me": "Entrada dos modelos de IA capturada no código anterior à tradução (commit 2ae4b6d). Gerado por tests/test_model_input_golden.py; não edite à mão.",
+ "data_mapping_decision_json_schema": {
+  "properties": {
+   "client_column_id": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "description": "One candidate client_column_id, or null when none is compatible.",
+    "title": "Client Column Id"
+   },
+   "data_confidence": {
+    "maximum": 1.0,
+    "minimum": 0.0,
+    "title": "Data Confidence",
+    "type": "number"
+   },
+   "final_confidence": {
+    "maximum": 1.0,
+    "minimum": 0.0,
+    "title": "Final Confidence",
+    "type": "number"
+   },
+   "reason": {
+    "description": "Short explanation grounded in names and sample values.",
+    "title": "Reason",
+    "type": "string"
+   }
+  },
+  "required": [
+   "client_column_id",
+   "data_confidence",
+   "final_confidence",
+   "reason"
+  ],
+  "title": "DataMappingDecision",
+  "type": "object"
+ },
+ "embedding_header_set": {
+  "client_columns": [
+   {
+    "display_name": "CFOP",
+    "id": "column_001",
+    "index": 0,
+    "name": "CFOP",
+    "occurrence": 1
+   },
+   {
+    "display_name": "Unnamed column 2",
+    "id": "column_002",
+    "index": 1,
+    "name": "Unnamed column 2",
+    "occurrence": 1
+   },
+   {
+    "display_name": "Valor ICMS",
+    "id": "column_003",
+    "index": 2,
+    "name": "Valor ICMS",
+    "occurrence": 1
+   },
+   {
+    "display_name": "valor icms (occurrence 2)",
+    "id": "column_004",
+    "index": 3,
+    "name": "valor icms",
+    "occurrence": 2
+   },
+   {
+    "display_name": "Unnamed column 5",
+    "id": "column_005",
+    "index": 4,
+    "name": "Unnamed column 5",
+    "occurrence": 1
+   },
+   {
+    "display_name": "Nº da Nota Fiscal",
+    "id": "column_006",
+    "index": 5,
+    "name": "Nº da Nota Fiscal",
+    "occurrence": 1
+   },
+   {
+    "display_name": "Valor ICMS (occurrence 3)",
+    "id": "column_007",
+    "index": 6,
+    "name": "Valor ICMS",
+    "occurrence": 3
+   }
+  ],
+  "embedding_calls": [
+   {
+    "encoding_format": "float",
+    "input": [
+     "Brazilian invoice spreadsheet column: CFOP",
+     "Brazilian invoice spreadsheet column: Valor ICMS",
+     "Brazilian invoice spreadsheet column: Nº da Nota Fiscal"
+    ],
+    "model": "text-embedding-3-large"
+   },
+   {
+    "encoding_format": "float",
+    "input": [
+     "Brazilian invoice spreadsheet column: CFOP",
+     "Brazilian invoice spreadsheet column: Unnamed column 2",
+     "Brazilian invoice spreadsheet column: Valor ICMS",
+     "Brazilian invoice spreadsheet column: valor icms",
+     "Brazilian invoice spreadsheet column: Unnamed column 5",
+     "Brazilian invoice spreadsheet column: Nº da Nota Fiscal"
+    ],
+    "model": "text-embedding-3-large"
+   }
+  ],
+  "model_headers": [
+   "CFOP",
+   "Valor ICMS",
+   "Nº da Nota Fiscal"
+  ]
+ },
+ "embedding_prefix": "Brazilian invoice spreadsheet column: ",
+ "end_to_end": {
+  "client_columns": [
+   {
+    "display_name": "CFOP",
+    "id": "column_001",
+    "index": 0,
+    "name": "CFOP",
+    "occurrence": 1
+   },
+   {
+    "display_name": "Base ICMS",
+    "id": "column_002",
+    "index": 1,
+    "name": "Base ICMS",
+    "occurrence": 1
+   },
+   {
+    "display_name": "Aliquota ICMS",
+    "id": "column_003",
+    "index": 2,
+    "name": "Aliquota ICMS",
+    "occurrence": 1
+   },
+   {
+    "display_name": "Unnamed column 4",
+    "id": "column_004",
+    "index": 3,
+    "name": "Unnamed column 4",
+    "occurrence": 1
+   },
+   {
+    "display_name": "Valor IPI",
+    "id": "column_005",
+    "index": 4,
+    "name": "Valor IPI",
+    "occurrence": 1
+   },
+   {
+    "display_name": "Valor ICMS ST",
+    "id": "column_006",
+    "index": 5,
+    "name": "Valor ICMS ST",
+    "occurrence": 1
+   },
+   {
+    "display_name": "Base Calculo Total",
+    "id": "column_007",
+    "index": 6,
+    "name": "Base Calculo Total",
+    "occurrence": 1
+   },
+   {
+    "display_name": "Classificacao",
+    "id": "column_008",
+    "index": 7,
+    "name": "Classificacao",
+    "occurrence": 1
+   },
+   {
+    "display_name": "Data Emissao",
+    "id": "column_009",
+    "index": 8,
+    "name": "Data Emissao",
+    "occurrence": 1
+   },
+   {
+    "display_name": "CNPJ Emitente",
+    "id": "column_010",
+    "index": 9,
+    "name": "CNPJ Emitente",
+    "occurrence": 1
+   },
+   {
+    "display_name": "Observacao",
+    "id": "column_011",
+    "index": 10,
+    "name": "Observacao",
+    "occurrence": 1
+   },
+   {
+    "display_name": "Observacao (occurrence 2)",
+    "id": "column_012",
+    "index": 11,
+    "name": "Observacao",
+    "occurrence": 2
+   },
+   {
+    "display_name": "Valor Total",
+    "id": "column_013",
+    "index": 12,
+    "name": "Valor Total",
+    "occurrence": 1
+   },
+   {
+    "display_name": "Base COFINS",
+    "id": "column_014",
+    "index": 13,
+    "name": "Base COFINS",
+    "occurrence": 1
+   },
+   {
+    "display_name": "Aliquota COFINS",
+    "id": "column_015",
+    "index": 14,
+    "name": "Aliquota COFINS",
+    "occurrence": 1
+   },
+   {
+    "display_name": "Valor COFINS",
+    "id": "column_016",
+    "index": 15,
+    "name": "Valor COFINS",
+    "occurrence": 1
+   },
+   {
+    "display_name": "Base PIS",
+    "id": "column_017",
+    "index": 16,
+    "name": "Base PIS",
+    "occurrence": 1
+   },
+   {
+    "display_name": "Aliq PIS",
+    "id": "column_018",
+    "index": 17,
+    "name": "Aliq PIS",
+    "occurrence": 1
+   },
+   {
+    "display_name": "Valor PIS",
+    "id": "column_019",
+    "index": 18,
+    "name": "Valor PIS",
+    "occurrence": 1
+   },
+   {
+    "display_name": "Base PIS Ap",
+    "id": "column_020",
+    "index": 19,
+    "name": "Base PIS Ap",
+    "occurrence": 1
+   },
+   {
+    "display_name": "Aliq PIS Ap",
+    "id": "column_021",
+    "index": 20,
+    "name": "Aliq PIS Ap",
+    "occurrence": 1
+   },
+   {
+    "display_name": "Vlr PIS Ap",
+    "id": "column_022",
+    "index": 21,
+    "name": "Vlr PIS Ap",
+    "occurrence": 1
+   }
+  ],
+  "decisions": [
+   {
+    "arithmetic_proof_present": false,
+    "catalog_confidence": null,
+    "catalog_coverage": null,
+    "catalog_distinct_coverage": null,
+    "catalog_name": null,
+    "client_column": "CFOP",
+    "client_column_number": 1,
+    "data_confidence": null,
+    "decided_by": "semantic",
+    "final_confidence": 1.0,
+    "llm_data_confidence": null,
+    "llm_final_confidence": null,
+    "method": "name",
+    "model_column": "CFOP",
+    "model_column_number": 1,
+    "name_confidence": 1.0,
+    "name_margin": 0.2,
+    "name_runner_up_confidence": 0.8,
+    "status": "accepted",
+    "supported_by": "semantic",
+    "vetoed_by": ""
+   },
+   {
+    "arithmetic_proof_present": false,
+    "catalog_confidence": null,
+    "catalog_coverage": null,
+    "catalog_distinct_coverage": null,
+    "catalog_name": null,
+    "client_column": "Base ICMS",
+    "client_column_number": 2,
+    "data_confidence": null,
+    "decided_by": "semantic",
+    "final_confidence": 1.0,
+    "llm_data_confidence": null,
+    "llm_final_confidence": null,
+    "method": "name",
+    "model_column": "Base ICMS",
+    "model_column_number": 2,
+    "name_confidence": 1.0,
+    "name_margin": 0.2285,
+    "name_runner_up_confidence": 0.7715,
+    "status": "accepted",
+    "supported_by": "semantic",
+    "vetoed_by": ""
+   },
+   {
+    "arithmetic_proof_present": false,
+    "catalog_confidence": null,
+    "catalog_coverage": null,
+    "catalog_distinct_coverage": null,
+    "catalog_name": null,
+    "client_column": "Aliquota ICMS",
+    "client_column_number": 3,
+    "data_confidence": null,
+    "decided_by": "semantic",
+    "final_confidence": 1.0,
+    "llm_data_confidence": null,
+    "llm_final_confidence": null,
+    "method": "name",
+    "model_column": "Aliquota ICMS",
+    "model_column_number": 3,
+    "name_confidence": 1.0,
+    "name_margin": 0.2697,
+    "name_runner_up_confidence": 0.7303,
+    "status": "accepted",
+    "supported_by": "semantic",
+    "vetoed_by": ""
+   },
+   {
+    "arithmetic_proof_present": false,
+    "catalog_confidence": null,
+    "catalog_coverage": null,
+    "catalog_distinct_coverage": null,
+    "catalog_name": null,
+    "client_column": "Unnamed column 4",
+    "client_column_number": 4,
+    "data_confidence": 1.0,
+    "decided_by": "arithmetic",
+    "final_confidence": 0.8722,
+    "llm_data_confidence": 0.9,
+    "llm_final_confidence": 0.92,
+    "method": "data",
+    "model_column": "Valor ICMS",
+    "model_column_number": 4,
+    "name_confidence": 0.6804,
+    "name_margin": -0.1529,
+    "name_runner_up_confidence": 0.8333,
+    "status": "review",
+    "supported_by": "resolver + semantic + arithmetic",
+    "vetoed_by": ""
+   },
+   {
+    "arithmetic_proof_present": false,
+    "catalog_confidence": null,
+    "catalog_coverage": null,
+    "catalog_distinct_coverage": null,
+    "catalog_name": null,
+    "client_column": null,
+    "client_column_number": null,
+    "data_confidence": 0.0,
+    "decided_by": "",
+    "final_confidence": 0.0,
+    "llm_data_confidence": 0.9,
+    "llm_final_confidence": 0.92,
+    "method": "data",
+    "model_column": "NCM",
+    "model_column_number": 5,
+    "name_confidence": 0.8,
+    "name_margin": 0.0,
+    "name_runner_up_confidence": 0.8,
+    "status": "no_match",
+    "supported_by": "",
+    "vetoed_by": ""
+   },
+   {
+    "arithmetic_proof_present": false,
+    "catalog_confidence": null,
+    "catalog_coverage": null,
+    "catalog_distinct_coverage": null,
+    "catalog_name": null,
+    "client_column": "Observacao (occurrence 2)",
+    "client_column_number": 12,
+    "data_confidence": 0.0,
+    "decided_by": "semantic",
+    "final_confidence": 0.8999,
+    "llm_data_confidence": 0.9,
+    "llm_final_confidence": 1.0,
+    "method": "data",
+    "model_column": "Observacao",
+    "model_column_number": 6,
+    "name_confidence": 1.0,
+    "name_margin": 0.0,
+    "name_runner_up_confidence": 1.0,
+    "status": "review",
+    "supported_by": "resolver + semantic",
+    "vetoed_by": ""
+   },
+   {
+    "arithmetic_proof_present": false,
+    "catalog_confidence": null,
+    "catalog_coverage": null,
+    "catalog_distinct_coverage": null,
+    "catalog_name": null,
+    "client_column": "Data Emissao",
+    "client_column_number": 9,
+    "data_confidence": null,
+    "decided_by": "semantic",
+    "final_confidence": 0.98,
+    "llm_data_confidence": null,
+    "llm_final_confidence": null,
+    "method": "name",
+    "model_column": "Data de Emissao",
+    "model_column_number": 7,
+    "name_confidence": 0.98,
+    "name_margin": 0.2022,
+    "name_runner_up_confidence": 0.7778,
+    "status": "accepted",
+    "supported_by": "semantic",
+    "vetoed_by": ""
+   },
+   {
+    "arithmetic_proof_present": false,
+    "catalog_confidence": null,
+    "catalog_coverage": null,
+    "catalog_distinct_coverage": null,
+    "catalog_name": null,
+    "client_column": "CNPJ Emitente",
+    "client_column_number": 10,
+    "data_confidence": null,
+    "decided_by": "semantic",
+    "final_confidence": 0.98,
+    "llm_data_confidence": null,
+    "llm_final_confidence": null,
+    "method": "name",
+    "model_column": "CNPJ do Emitente",
+    "model_column_number": 8,
+    "name_confidence": 0.98,
+    "name_margin": 0.2241,
+    "name_runner_up_confidence": 0.7559,
+    "status": "accepted",
+    "supported_by": "semantic",
+    "vetoed_by": ""
+   },
+   {
+    "arithmetic_proof_present": false,
+    "catalog_confidence": null,
+    "catalog_coverage": null,
+    "catalog_distinct_coverage": null,
+    "catalog_name": null,
+    "client_column": null,
+    "client_column_number": null,
+    "data_confidence": 0.1,
+    "decided_by": "",
+    "final_confidence": 0.0,
+    "llm_data_confidence": 0.1,
+    "llm_final_confidence": 0.1,
+    "method": "data",
+    "model_column": "Campo Inexistente",
+    "model_column_number": 9,
+    "name_confidence": 0.7303,
+    "name_margin": 0.0,
+    "name_runner_up_confidence": 0.7303,
+    "status": "no_match",
+    "supported_by": "",
+    "vetoed_by": ""
+   },
+   {
+    "arithmetic_proof_present": true,
+    "catalog_confidence": null,
+    "catalog_coverage": null,
+    "catalog_distinct_coverage": null,
+    "catalog_name": null,
+    "client_column": "Base COFINS",
+    "client_column_number": 14,
+    "data_confidence": null,
+    "decided_by": "arithmetic",
+    "final_confidence": 1.0,
+    "llm_data_confidence": null,
+    "llm_final_confidence": null,
+    "method": "name",
+    "model_column": "Base COFINS",
+    "model_column_number": 10,
+    "name_confidence": 1.0,
+    "name_margin": 0.2285,
+    "name_runner_up_confidence": 0.7715,
+    "status": "accepted",
+    "supported_by": "semantic + arithmetic",
+    "vetoed_by": ""
+   },
+   {
+    "arithmetic_proof_present": true,
+    "catalog_confidence": null,
+    "catalog_coverage": null,
+    "catalog_distinct_coverage": null,
+    "catalog_name": null,
+    "client_column": "Valor PIS",
+    "client_column_number": 19,
+    "data_confidence": null,
+    "decided_by": "semantic",
+    "final_confidence": 1.0,
+    "llm_data_confidence": null,
+    "llm_final_confidence": null,
+    "method": "name",
+    "model_column": "Valor PIS",
+    "model_column_number": 11,
+    "name_confidence": 1.0,
+    "name_margin": 0.1667,
+    "name_runner_up_confidence": 0.8333,
+    "status": "accepted",
+    "supported_by": "semantic",
+    "vetoed_by": ""
+   }
+  ],
+  "embedding_calls": [
+   {
+    "encoding_format": "float",
+    "input": [
+     "Brazilian invoice spreadsheet column: CFOP",
+     "Brazilian invoice spreadsheet column: Base ICMS",
+     "Brazilian invoice spreadsheet column: Aliquota ICMS",
+     "Brazilian invoice spreadsheet column: Valor ICMS",
+     "Brazilian invoice spreadsheet column: NCM",
+     "Brazilian invoice spreadsheet column: Observacao",
+     "Brazilian invoice spreadsheet column: Data de Emissao",
+     "Brazilian invoice spreadsheet column: CNPJ do Emitente",
+     "Brazilian invoice spreadsheet column: Campo Inexistente",
+     "Brazilian invoice spreadsheet column: Base COFINS",
+     "Brazilian invoice spreadsheet column: Valor PIS"
+    ],
+    "model": "text-embedding-3-large"
+   },
+   {
+    "encoding_format": "float",
+    "input": [
+     "Brazilian invoice spreadsheet column: CFOP",
+     "Brazilian invoice spreadsheet column: Base ICMS",
+     "Brazilian invoice spreadsheet column: Aliquota ICMS",
+     "Brazilian invoice spreadsheet column: Unnamed column 4",
+     "Brazilian invoice spreadsheet column: Valor IPI",
+     "Brazilian invoice spreadsheet column: Valor ICMS ST",
+     "Brazilian invoice spreadsheet column: Base Calculo Total",
+     "Brazilian invoice spreadsheet column: Classificacao",
+     "Brazilian invoice spreadsheet column: Data Emissao",
+     "Brazilian invoice spreadsheet column: CNPJ Emitente",
+     "Brazilian invoice spreadsheet column: Observacao",
+     "Brazilian invoice spreadsheet column: Valor Total",
+     "Brazilian invoice spreadsheet column: Base COFINS",
+     "Brazilian invoice spreadsheet column: Aliquota COFINS",
+     "Brazilian invoice spreadsheet column: Valor COFINS",
+     "Brazilian invoice spreadsheet column: Base PIS",
+     "Brazilian invoice spreadsheet column: Aliq PIS",
+     "Brazilian invoice spreadsheet column: Valor PIS",
+     "Brazilian invoice spreadsheet column: Base PIS Ap",
+     "Brazilian invoice spreadsheet column: Aliq PIS Ap",
+     "Brazilian invoice spreadsheet column: Vlr PIS Ap"
+    ],
+    "model": "text-embedding-3-large"
+   }
+  ],
+  "parse_calls": [
+   {
+    "input": "{\"model_column\": {\"name\": \"Valor ICMS\", \"profile\": {\"non_empty_count\": 3, \"unique_count\": 1, \"inferred_type\": \"integer\", \"numeric_fraction\": 1.0, \"zero_fraction\": 1.0, \"median_length\": 1.0, \"median_digit_count\": 1.0, \"digit_count_values\": [1], \"digit_fraction\": 1.0, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 0.0, \"numeric_q25\": 0.0, \"numeric_median\": 0.0, \"numeric_q75\": 0.0, \"numeric_max\": 0.0, \"fixed_digit_width\": 1, \"fixed_digit_width_fraction\": 1.0, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"all_zero\", \"samples\": [\"0\"]}}, \"client_candidates\": [{\"client_column_id\": \"column_006\", \"name\": \"Valor ICMS ST\", \"column_number\": 6, \"name_confidence\": 0.9258, \"semantic_header_conflict\": \"tax-qualifier conflict (regular vs st)\", \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [{\"available\": true, \"rows_tested\": 40, \"eligible_rows\": 40, \"coverage\": 1.0, \"score\": 0.0, \"fit_score\": 0.0, \"rate_representation\": \"percent\", \"median_relative_error\": 0.4643, \"degenerate\": false, \"rule\": \"tax_value_equals_base_times_rate\", \"target_role\": \"value\", \"tax_scope\": \"icms\", \"tax_qualifiers\": []}], \"catalog_evidence\": [], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 40, \"inferred_type\": \"mixed-integer-float\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 5.0, \"median_digit_count\": 4.0, \"digit_count_values\": [2, 3, 4], \"digit_fraction\": 0.794, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 3.1, \"numeric_q25\": 24.1875, \"numeric_median\": 45.27, \"numeric_q75\": 66.35, \"numeric_max\": 87.44, \"fixed_digit_width\": 4, \"fixed_digit_width_fraction\": 0.8, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"3.1\", \"5.26\", \"13.91\", \"26.89\", \"37.7\", \"50.67\", \"61.49\", \"74.46\"]}}, {\"client_column_id\": \"column_005\", \"name\": \"Valor IPI\", \"column_number\": 5, \"name_confidence\": 0.8333, \"semantic_header_conflict\": \"tax-family conflict (icms vs ipi)\", \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [{\"available\": true, \"rows_tested\": 40, \"eligible_rows\": 40, \"coverage\": 1.0, \"score\": 0.0, \"fit_score\": 0.0, \"rate_representation\": \"percent\", \"median_relative_error\": 0.4344, \"degenerate\": false, \"rule\": \"tax_value_equals_base_times_rate\", \"target_role\": \"value\", \"tax_scope\": \"icms\", \"tax_qualifiers\": []}], \"catalog_evidence\": [], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 40, \"inferred_type\": \"mixed-integer-float\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 5.0, \"median_digit_count\": 4.0, \"digit_count_values\": [1, 2, 3, 4], \"digit_fraction\": 0.816, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 5.0, \"numeric_q25\": 23.2825, \"numeric_median\": 41.56, \"numeric_q75\": 59.8475, \"numeric_max\": 78.12, \"fixed_digit_width\": 4, \"fixed_digit_width_fraction\": 0.7, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"5\", \"6.88\", \"14.38\", \"25.62\", \"35\", \"46.25\", \"55.62\", \"66.88\"]}}, {\"client_column_id\": \"column_013\", \"name\": \"Valor Total\", \"column_number\": 13, \"name_confidence\": 0.8333, \"semantic_header_conflict\": null, \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [{\"available\": true, \"rows_tested\": 40, \"eligible_rows\": 40, \"coverage\": 1.0, \"score\": 0.0, \"fit_score\": 0.0, \"rate_representation\": \"decimal\", \"median_relative_error\": 0.853, \"degenerate\": false, \"rule\": \"tax_value_equals_base_times_rate\", \"target_role\": \"value\", \"tax_scope\": \"icms\", \"tax_qualifiers\": []}], \"catalog_evidence\": [], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 40, \"inferred_type\": \"mixed-integer-float\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 6.0, \"median_digit_count\": 5.0, \"digit_count_values\": [3, 4, 5, 6], \"digit_fraction\": 0.878, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 130.0, \"numeric_q25\": 605.3125, \"numeric_median\": 1080.625, \"numeric_q75\": 1555.9375, \"numeric_max\": 2031.25, \"fixed_digit_width\": 5, \"fixed_digit_width_fraction\": 0.375, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"130\", \"178.75\", \"373.75\", \"666.25\", \"910\", \"1202.5\", \"1446.25\", \"1738.75\"]}}, {\"client_column_id\": \"column_016\", \"name\": \"Valor COFINS\", \"column_number\": 16, \"name_confidence\": 0.8333, \"semantic_header_conflict\": \"tax-family conflict (icms vs cofins)\", \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [{\"available\": true, \"rows_tested\": 40, \"eligible_rows\": 40, \"coverage\": 1.0, \"score\": 0.0, \"fit_score\": 0.0, \"rate_representation\": \"percent\", \"median_relative_error\": 0.6098, \"degenerate\": false, \"rule\": \"tax_value_equals_base_times_rate\", \"target_role\": \"value\", \"tax_scope\": \"icms\", \"tax_qualifiers\": []}], \"catalog_evidence\": [], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 40, \"inferred_type\": \"floating\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 5.0, \"median_digit_count\": 4.0, \"digit_count_values\": [2, 3, 4], \"digit_fraction\": 0.787, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 6.08, \"numeric_q25\": 15.1575, \"numeric_median\": 24.235, \"numeric_q75\": 33.3125, \"numeric_max\": 42.39, \"fixed_digit_width\": 4, \"fixed_digit_width_fraction\": 0.775, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"6.08\", \"7.01\", \"10.73\", \"16.32\", \"20.98\", \"26.56\", \"31.22\", \"36.8\"]}}, {\"client_column_id\": \"column_008\", \"name\": \"Classificacao\", \"column_number\": 8, \"name_confidence\": 0.7303, \"semantic_header_conflict\": \"semantic-role conflict (value vs tax_classification)\", \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [{\"available\": true, \"rows_tested\": 40, \"eligible_rows\": 40, \"coverage\": 1.0, \"score\": 0.0, \"fit_score\": 0.0, \"rate_representation\": \"decimal\", \"median_relative_error\": 0.9999, \"degenerate\": false, \"rule\": \"tax_value_equals_base_times_rate\", \"target_role\": \"value\", \"tax_scope\": \"icms\", \"tax_qualifiers\": []}], \"catalog_evidence\": [], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 4, \"inferred_type\": \"string\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 8.0, \"median_digit_count\": 8.0, \"digit_count_values\": [8], \"digit_fraction\": 1.0, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 39269090.0, \"numeric_q25\": 73353447.5, \"numeric_median\": 84714900.0, \"numeric_q75\": 85167910.0, \"numeric_max\": 99999999.0, \"fixed_digit_width\": 8, \"fixed_digit_width_fraction\": 1.0, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"84714900\", \"85167910\", \"39269090\", \"99999999\"]}}, {\"client_column_id\": \"column_011\", \"name\": \"Observacao\", \"column_number\": 11, \"name_confidence\": 0.7303, \"semantic_header_conflict\": null, \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [{\"available\": true, \"rows_tested\": 40, \"eligible_rows\": 40, \"coverage\": 1.0, \"score\": 0.0, \"fit_score\": 0.0, \"rate_representation\": \"decimal\", \"median_relative_error\": 0.838, \"degenerate\": false, \"rule\": \"tax_value_equals_base_times_rate\", \"target_role\": \"value\", \"tax_scope\": \"icms\", \"tax_qualifiers\": []}], \"catalog_evidence\": [], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 40, \"inferred_type\": \"string\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 11.0, \"median_digit_count\": 4.0, \"digit_count_values\": [4], \"digit_fraction\": 0.364, \"alpha_fraction\": 0.545, \"negative_fraction\": 0.0, \"numeric_min\": 1000.0, \"numeric_q25\": 1009.75, \"numeric_median\": 1019.5, \"numeric_q75\": 1029.25, \"numeric_max\": 1039.0, \"fixed_digit_width\": 4, \"fixed_digit_width_fraction\": 1.0, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"Pedido 1000\", \"Pedido 1001\", \"Pedido 1005\", \"Pedido 1011\", \"Pedido 1016\", \"Pedido 1022\", \"Pedido 1027\", \"Pedido 1033\"]}}, {\"client_column_id\": \"column_012\", \"name\": \"Observacao\", \"column_number\": 12, \"name_confidence\": 0.7303, \"semantic_header_conflict\": null, \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [{\"available\": true, \"rows_tested\": 40, \"eligible_rows\": 40, \"coverage\": 1.0, \"score\": 0.0, \"fit_score\": 0.0, \"rate_representation\": \"percent\", \"median_relative_error\": 0.9621, \"degenerate\": false, \"rule\": \"tax_value_equals_base_times_rate\", \"target_role\": \"value\", \"tax_scope\": \"icms\", \"tax_qualifiers\": []}], \"catalog_evidence\": [], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 7, \"inferred_type\": \"string\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.15, \"median_length\": 6.0, \"median_digit_count\": 1.0, \"digit_count_values\": [1], \"digit_fraction\": 0.167, \"alpha_fraction\": 0.667, \"negative_fraction\": 0.0, \"numeric_min\": 0.0, \"numeric_q25\": 1.0, \"numeric_median\": 3.0, \"numeric_q75\": 4.25, \"numeric_max\": 6.0, \"fixed_digit_width\": 1, \"fixed_digit_width_fraction\": 1.0, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"Lote 0\", \"Lote 1\", \"Lote 2\", \"Lote 3\", \"Lote 4\", \"Lote 5\", \"Lote 6\"]}}, {\"client_column_id\": \"column_004\", \"name\": \"Unnamed column 4\", \"column_number\": 4, \"name_confidence\": 0.6804, \"semantic_header_conflict\": null, \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [{\"available\": true, \"rows_tested\": 40, \"eligible_rows\": 40, \"coverage\": 1.0, \"score\": 1.0, \"fit_score\": 1.0, \"rate_representation\": \"percent\", \"median_relative_error\": 0.0, \"degenerate\": false, \"rule\": \"tax_value_equals_base_times_rate\", \"target_role\": \"value\", \"tax_scope\": \"icms\", \"tax_qualifiers\": []}], \"catalog_evidence\": [], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 40, \"inferred_type\": \"mixed-integer-float\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 4.0, \"median_digit_count\": 3.0, \"digit_count_values\": [2, 3, 4, 5], \"digit_fraction\": 0.83, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 8.5, \"numeric_q25\": 34.1875, \"numeric_median\": 63.625, \"numeric_q75\": 111.1875, \"numeric_max\": 261.0, \"fixed_digit_width\": 3, \"fixed_digit_width_fraction\": 0.5, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"8.5\", \"12.25\", \"20.5\", \"38.5\", \"52.5\", \"72\", \"99\", \"153\"]}}, {\"client_column_id\": \"column_015\", \"name\": \"Aliquota COFINS\", \"column_number\": 15, \"name_confidence\": 0.6667, \"semantic_header_conflict\": \"tax-family conflict (icms vs cofins)\", \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [{\"available\": true, \"rows_tested\": 40, \"eligible_rows\": 40, \"coverage\": 1.0, \"score\": 0.0, \"fit_score\": 0.0, \"rate_representation\": \"percent\", \"median_relative_error\": 0.8805, \"degenerate\": true, \"rule\": \"tax_value_equals_base_times_rate\", \"target_role\": \"value\", \"tax_scope\": \"icms\", \"tax_qualifiers\": []}], \"catalog_evidence\": [], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 1, \"inferred_type\": \"floating\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 3.0, \"median_digit_count\": 2.0, \"digit_count_values\": [2], \"digit_fraction\": 0.667, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 7.6, \"numeric_q25\": 7.6, \"numeric_median\": 7.6, \"numeric_q75\": 7.6, \"numeric_max\": 7.6, \"fixed_digit_width\": 2, \"fixed_digit_width_fraction\": 1.0, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"7.6\"]}}, {\"client_column_id\": \"column_017\", \"name\": \"Base PIS\", \"column_number\": 17, \"name_confidence\": 0.6667, \"semantic_header_conflict\": \"tax-family conflict (icms vs pis)\", \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [{\"available\": true, \"rows_tested\": 40, \"eligible_rows\": 40, \"coverage\": 1.0, \"score\": 0.0, \"fit_score\": 0.0, \"rate_representation\": \"percent\", \"median_relative_error\": 0.8417, \"degenerate\": false, \"rule\": \"tax_value_equals_base_times_rate\", \"target_role\": \"value\", \"tax_scope\": \"icms\", \"tax_qualifiers\": []}], \"catalog_evidence\": [], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 40, \"inferred_type\": \"integer\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 3.0, \"median_digit_count\": 3.0, \"digit_count_values\": [3], \"digit_fraction\": 1.0, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 200.0, \"numeric_q25\": 307.25, \"numeric_median\": 414.5, \"numeric_q75\": 521.75, \"numeric_max\": 629.0, \"fixed_digit_width\": 3, \"fixed_digit_width_fraction\": 1.0, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"200\", \"211\", \"255\", \"321\", \"376\", \"442\", \"497\", \"563\"]}}]}",
+    "instructions": "Map one client spreadsheet column to one canonical Brazilian invoice column. The column names and name_confidence remain the primary semantic evidence throughout the decision; compare how close the candidate name scores are and never forget them after inspecting values. A client header can be bogus or misleading, so distinctive content and format evidence may override a weak name; generic numeric similarity alone is not enough. profile_similarity is a generic value-shape retrieval signal, not proof of a mapping. Then use representative values, inferred types, formats, lengths, and numeric scales. Recognize dates, monetary values, tax bases, tax rates, tax amounts, CFOP, NCM, CNPJ/CPF, invoice numbers, series, and 44-digit NF-e keys. First identify the semantic role of each header: a tax situation/code is not a tax base, rate, or amount even when all contain numbers. semantic_header_conflict identifies explicit tax-family or role disagreement; treat it as strong contrary evidence. A conflicting candidate may remain viable only when distinctive row content indicates that its header is bogus or wrong. Most canonical fields may be absent from a client export. Do not choose the best of bad candidates: return null unless the evidence supports the same business meaning. Matching only a broad type, generic numbers, zeros, dates, or strings is not semantic evidence. distinctive_sample_overlap reports exact overlap after excluding zeros and trivial short numbers; a positive value is strong row evidence and should be examined together with the headers. relationship_evidence contains conservative row-wise fiscal checks such as tax value approximately equaling base times rate, or line value approximately equaling quantity times unit price. A high score across many rows is strong evidence; a low score is contrary evidence, but legitimate adjustments, rounding, exemptions, credits, and reversals mean it is not an absolute rule. catalog_evidence reports membership in versioned official Brazilian fiscal-code tables. coverage is the fraction of all nonblank values found in the catalog; score also discounts short, collision-prone domains such as two-digit CST. High coverage in CFOP, NCM, municipality, or cClassTrib is distinctive content evidence. CST values overlap across taxes, especially PIS and COFINS, so use the header and tax-family context to disambiguate them. all_zero_only is not useful evidence. State, municipal, and federal registrations are distinct and cannot be selected only because their values have similar shapes. CPF/CNPJ values may contain 11 or 14 digits, may include punctuation, and spreadsheet numeric cells may lose a leading zero. Prefer a candidate that explicitly names the compatible identifier over a generic document-number field. When candidates are otherwise close, prefer the header with the same semantic role and no unrelated extra qualifier. CFOP may appear as four digits (5102) or with an ERP suffix (5102/AA); those formats are compatible. Do not choose a candidate merely because both are numeric. A profile whose evidence_quality is empty or all_zero provides little or no row evidence: zeros neither confirm a mapping nor contradict a strong name match. When row evidence is weak, keep final_confidence close to the relevant name_confidence. Return null when the data does not support a mapping. final_confidence must reflect both the name and data evidence. Keep the reason to one sentence.",
+    "model": "gpt-4o-mini",
+    "store": false,
+    "temperature": 0,
+    "text_format": "invoice_mapper.DataMappingDecision"
+   },
+   {
+    "input": "{\"model_column\": {\"name\": \"NCM\", \"profile\": {\"non_empty_count\": 0, \"unique_count\": 0, \"inferred_type\": \"empty\", \"numeric_fraction\": 0.0, \"zero_fraction\": 0.0, \"median_length\": 0.0, \"median_digit_count\": 0.0, \"digit_count_values\": [], \"digit_fraction\": 0.0, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": null, \"numeric_q25\": null, \"numeric_median\": null, \"numeric_q75\": null, \"numeric_max\": null, \"fixed_digit_width\": 0, \"fixed_digit_width_fraction\": 0.0, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"empty\", \"samples\": []}}, \"client_candidates\": [{\"client_column_id\": \"column_008\", \"name\": \"Classificacao\", \"column_number\": 8, \"name_confidence\": 0.8, \"semantic_header_conflict\": null, \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [], \"catalog_evidence\": [{\"catalog\": \"ncm\", \"source_version\": \"golden-fixture-1\", \"source_url\": \"https://example.invalid/ncm\", \"width\": 8, \"specificity\": 1.0, \"nonempty_count\": 40, \"format_fraction\": 1.0, \"valid_count\": 32, \"coverage\": 0.8, \"distinct_coverage\": 0.75, \"unique_valid_count\": 3, \"unique_formatted_count\": 4, \"all_zero_only\": false, \"score\": 0.75, \"invalid_examples\": [\"99999999\"]}], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 4, \"inferred_type\": \"string\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 8.0, \"median_digit_count\": 8.0, \"digit_count_values\": [8], \"digit_fraction\": 1.0, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 39269090.0, \"numeric_q25\": 73353447.5, \"numeric_median\": 84714900.0, \"numeric_q75\": 85167910.0, \"numeric_max\": 99999999.0, \"fixed_digit_width\": 8, \"fixed_digit_width_fraction\": 1.0, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"84714900\", \"85167910\", \"39269090\", \"99999999\"]}}, {\"client_column_id\": \"column_011\", \"name\": \"Observacao\", \"column_number\": 11, \"name_confidence\": 0.8, \"semantic_header_conflict\": null, \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [], \"catalog_evidence\": [{\"catalog\": \"ncm\", \"source_version\": \"golden-fixture-1\", \"source_url\": \"https://example.invalid/ncm\", \"width\": 8, \"specificity\": 1.0, \"nonempty_count\": 40, \"format_fraction\": 0.0, \"valid_count\": 0, \"coverage\": 0.0, \"distinct_coverage\": 0.0, \"unique_valid_count\": 0, \"unique_formatted_count\": 0, \"all_zero_only\": false, \"score\": 0.0, \"invalid_examples\": [\"Pedido 1000\", \"Pedido 1001\", \"Pedido 1002\"]}], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 40, \"inferred_type\": \"string\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 11.0, \"median_digit_count\": 4.0, \"digit_count_values\": [4], \"digit_fraction\": 0.364, \"alpha_fraction\": 0.545, \"negative_fraction\": 0.0, \"numeric_min\": 1000.0, \"numeric_q25\": 1009.75, \"numeric_median\": 1019.5, \"numeric_q75\": 1029.25, \"numeric_max\": 1039.0, \"fixed_digit_width\": 4, \"fixed_digit_width_fraction\": 1.0, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"Pedido 1000\", \"Pedido 1001\", \"Pedido 1005\", \"Pedido 1011\", \"Pedido 1016\", \"Pedido 1022\", \"Pedido 1027\", \"Pedido 1033\"]}}, {\"client_column_id\": \"column_012\", \"name\": \"Observacao\", \"column_number\": 12, \"name_confidence\": 0.8, \"semantic_header_conflict\": null, \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [], \"catalog_evidence\": [{\"catalog\": \"ncm\", \"source_version\": \"golden-fixture-1\", \"source_url\": \"https://example.invalid/ncm\", \"width\": 8, \"specificity\": 1.0, \"nonempty_count\": 40, \"format_fraction\": 0.0, \"valid_count\": 0, \"coverage\": 0.0, \"distinct_coverage\": 0.0, \"unique_valid_count\": 0, \"unique_formatted_count\": 0, \"all_zero_only\": false, \"score\": 0.0, \"invalid_examples\": [\"Lote 0\", \"Lote 1\", \"Lote 2\"]}], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 7, \"inferred_type\": \"string\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.15, \"median_length\": 6.0, \"median_digit_count\": 1.0, \"digit_count_values\": [1], \"digit_fraction\": 0.167, \"alpha_fraction\": 0.667, \"negative_fraction\": 0.0, \"numeric_min\": 0.0, \"numeric_q25\": 1.0, \"numeric_median\": 3.0, \"numeric_q75\": 4.25, \"numeric_max\": 6.0, \"fixed_digit_width\": 1, \"fixed_digit_width_fraction\": 1.0, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"Lote 0\", \"Lote 1\", \"Lote 2\", \"Lote 3\", \"Lote 4\", \"Lote 5\", \"Lote 6\"]}}, {\"client_column_id\": \"column_004\", \"name\": \"Unnamed column 4\", \"column_number\": 4, \"name_confidence\": 0.7454, \"semantic_header_conflict\": null, \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [], \"catalog_evidence\": [{\"catalog\": \"ncm\", \"source_version\": \"golden-fixture-1\", \"source_url\": \"https://example.invalid/ncm\", \"width\": 8, \"specificity\": 1.0, \"nonempty_count\": 40, \"format_fraction\": 0.25, \"valid_count\": 0, \"coverage\": 0.0, \"distinct_coverage\": 0.0, \"unique_valid_count\": 0, \"unique_formatted_count\": 10, \"all_zero_only\": false, \"score\": 0.0, \"invalid_examples\": [\"18\", \"16.5\", \"12.25\"]}], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 40, \"inferred_type\": \"mixed-integer-float\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 4.0, \"median_digit_count\": 3.0, \"digit_count_values\": [2, 3, 4, 5], \"digit_fraction\": 0.83, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 8.5, \"numeric_q25\": 34.1875, \"numeric_median\": 63.625, \"numeric_q75\": 111.1875, \"numeric_max\": 261.0, \"fixed_digit_width\": 3, \"fixed_digit_width_fraction\": 0.5, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"8.5\", \"12.25\", \"20.5\", \"38.5\", \"52.5\", \"72\", \"99\", \"153\"]}}, {\"client_column_id\": \"column_005\", \"name\": \"Valor IPI\", \"column_number\": 5, \"name_confidence\": 0.7303, \"semantic_header_conflict\": null, \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [], \"catalog_evidence\": [{\"catalog\": \"ncm\", \"source_version\": \"golden-fixture-1\", \"source_url\": \"https://example.invalid/ncm\", \"width\": 8, \"specificity\": 1.0, \"nonempty_count\": 40, \"format_fraction\": 0.125, \"valid_count\": 0, \"coverage\": 0.0, \"distinct_coverage\": 0.0, \"unique_valid_count\": 0, \"unique_formatted_count\": 5, \"all_zero_only\": false, \"score\": 0.0, \"invalid_examples\": [\"5\", \"6.88\", \"8.75\"]}], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 40, \"inferred_type\": \"mixed-integer-float\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 5.0, \"median_digit_count\": 4.0, \"digit_count_values\": [1, 2, 3, 4], \"digit_fraction\": 0.816, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 5.0, \"numeric_q25\": 23.2825, \"numeric_median\": 41.56, \"numeric_q75\": 59.8475, \"numeric_max\": 78.12, \"fixed_digit_width\": 4, \"fixed_digit_width_fraction\": 0.7, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"5\", \"6.88\", \"14.38\", \"25.62\", \"35\", \"46.25\", \"55.62\", \"66.88\"]}}, {\"client_column_id\": \"column_013\", \"name\": \"Valor Total\", \"column_number\": 13, \"name_confidence\": 0.7303, \"semantic_header_conflict\": null, \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [], \"catalog_evidence\": [{\"catalog\": \"ncm\", \"source_version\": \"golden-fixture-1\", \"source_url\": \"https://example.invalid/ncm\", \"width\": 8, \"specificity\": 1.0, \"nonempty_count\": 40, \"format_fraction\": 0.25, \"valid_count\": 0, \"coverage\": 0.0, \"distinct_coverage\": 0.0, \"unique_valid_count\": 0, \"unique_formatted_count\": 10, \"all_zero_only\": false, \"score\": 0.0, \"invalid_examples\": [\"130\", \"178.75\", \"227.5\"]}], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 40, \"inferred_type\": \"mixed-integer-float\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 6.0, \"median_digit_count\": 5.0, \"digit_count_values\": [3, 4, 5, 6], \"digit_fraction\": 0.878, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 130.0, \"numeric_q25\": 605.3125, \"numeric_median\": 1080.625, \"numeric_q75\": 1555.9375, \"numeric_max\": 2031.25, \"fixed_digit_width\": 5, \"fixed_digit_width_fraction\": 0.375, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"130\", \"178.75\", \"373.75\", \"666.25\", \"910\", \"1202.5\", \"1446.25\", \"1738.75\"]}}, {\"client_column_id\": \"column_015\", \"name\": \"Aliquota COFINS\", \"column_number\": 15, \"name_confidence\": 0.7303, \"semantic_header_conflict\": null, \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [], \"catalog_evidence\": [{\"catalog\": \"ncm\", \"source_version\": \"golden-fixture-1\", \"source_url\": \"https://example.invalid/ncm\", \"width\": 8, \"specificity\": 1.0, \"nonempty_count\": 40, \"format_fraction\": 0.0, \"valid_count\": 0, \"coverage\": 0.0, \"distinct_coverage\": 0.0, \"unique_valid_count\": 0, \"unique_formatted_count\": 0, \"all_zero_only\": false, \"score\": 0.0, \"invalid_examples\": [\"7.6\"]}], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 1, \"inferred_type\": \"floating\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 3.0, \"median_digit_count\": 2.0, \"digit_count_values\": [2], \"digit_fraction\": 0.667, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 7.6, \"numeric_q25\": 7.6, \"numeric_median\": 7.6, \"numeric_q75\": 7.6, \"numeric_max\": 7.6, \"fixed_digit_width\": 2, \"fixed_digit_width_fraction\": 1.0, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"7.6\"]}}, {\"client_column_id\": \"column_016\", \"name\": \"Valor COFINS\", \"column_number\": 16, \"name_confidence\": 0.7303, \"semantic_header_conflict\": null, \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [], \"catalog_evidence\": [{\"catalog\": \"ncm\", \"source_version\": \"golden-fixture-1\", \"source_url\": \"https://example.invalid/ncm\", \"width\": 8, \"specificity\": 1.0, \"nonempty_count\": 40, \"format_fraction\": 0.0, \"valid_count\": 0, \"coverage\": 0.0, \"distinct_coverage\": 0.0, \"unique_valid_count\": 0, \"unique_formatted_count\": 0, \"all_zero_only\": false, \"score\": 0.0, \"invalid_examples\": [\"6.08\", \"7.01\", \"7.94\"]}], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 40, \"inferred_type\": \"floating\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 5.0, \"median_digit_count\": 4.0, \"digit_count_values\": [2, 3, 4], \"digit_fraction\": 0.787, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 6.08, \"numeric_q25\": 15.1575, \"numeric_median\": 24.235, \"numeric_q75\": 33.3125, \"numeric_max\": 42.39, \"fixed_digit_width\": 4, \"fixed_digit_width_fraction\": 0.775, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"6.08\", \"7.01\", \"10.73\", \"16.32\", \"20.98\", \"26.56\", \"31.22\", \"36.8\"]}}, {\"client_column_id\": \"column_017\", \"name\": \"Base PIS\", \"column_number\": 17, \"name_confidence\": 0.7303, \"semantic_header_conflict\": null, \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [], \"catalog_evidence\": [{\"catalog\": \"ncm\", \"source_version\": \"golden-fixture-1\", \"source_url\": \"https://example.invalid/ncm\", \"width\": 8, \"specificity\": 1.0, \"nonempty_count\": 40, \"format_fraction\": 1.0, \"valid_count\": 0, \"coverage\": 0.0, \"distinct_coverage\": 0.0, \"unique_valid_count\": 0, \"unique_formatted_count\": 40, \"all_zero_only\": false, \"score\": 0.0, \"invalid_examples\": [\"200\", \"211\", \"222\"]}], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 40, \"inferred_type\": \"integer\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 3.0, \"median_digit_count\": 3.0, \"digit_count_values\": [3], \"digit_fraction\": 1.0, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 200.0, \"numeric_q25\": 307.25, \"numeric_median\": 414.5, \"numeric_q75\": 521.75, \"numeric_max\": 629.0, \"fixed_digit_width\": 3, \"fixed_digit_width_fraction\": 1.0, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"200\", \"211\", \"255\", \"321\", \"376\", \"442\", \"497\", \"563\"]}}, {\"client_column_id\": \"column_018\", \"name\": \"Aliq PIS\", \"column_number\": 18, \"name_confidence\": 0.7303, \"semantic_header_conflict\": null, \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [], \"catalog_evidence\": [{\"catalog\": \"ncm\", \"source_version\": \"golden-fixture-1\", \"source_url\": \"https://example.invalid/ncm\", \"width\": 8, \"specificity\": 1.0, \"nonempty_count\": 40, \"format_fraction\": 0.0, \"valid_count\": 0, \"coverage\": 0.0, \"distinct_coverage\": 0.0, \"unique_valid_count\": 0, \"unique_formatted_count\": 0, \"all_zero_only\": false, \"score\": 0.0, \"invalid_examples\": [\"1.65\"]}], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 1, \"inferred_type\": \"floating\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 4.0, \"median_digit_count\": 3.0, \"digit_count_values\": [3], \"digit_fraction\": 0.75, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 1.65, \"numeric_q25\": 1.65, \"numeric_median\": 1.65, \"numeric_q75\": 1.65, \"numeric_max\": 1.65, \"fixed_digit_width\": 3, \"fixed_digit_width_fraction\": 1.0, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"1.65\"]}}]}",
+    "instructions": "Map one client spreadsheet column to one canonical Brazilian invoice column. The column names and name_confidence remain the primary semantic evidence throughout the decision; compare how close the candidate name scores are and never forget them after inspecting values. A client header can be bogus or misleading, so distinctive content and format evidence may override a weak name; generic numeric similarity alone is not enough. profile_similarity is a generic value-shape retrieval signal, not proof of a mapping. Then use representative values, inferred types, formats, lengths, and numeric scales. Recognize dates, monetary values, tax bases, tax rates, tax amounts, CFOP, NCM, CNPJ/CPF, invoice numbers, series, and 44-digit NF-e keys. First identify the semantic role of each header: a tax situation/code is not a tax base, rate, or amount even when all contain numbers. semantic_header_conflict identifies explicit tax-family or role disagreement; treat it as strong contrary evidence. A conflicting candidate may remain viable only when distinctive row content indicates that its header is bogus or wrong. Most canonical fields may be absent from a client export. Do not choose the best of bad candidates: return null unless the evidence supports the same business meaning. Matching only a broad type, generic numbers, zeros, dates, or strings is not semantic evidence. distinctive_sample_overlap reports exact overlap after excluding zeros and trivial short numbers; a positive value is strong row evidence and should be examined together with the headers. relationship_evidence contains conservative row-wise fiscal checks such as tax value approximately equaling base times rate, or line value approximately equaling quantity times unit price. A high score across many rows is strong evidence; a low score is contrary evidence, but legitimate adjustments, rounding, exemptions, credits, and reversals mean it is not an absolute rule. catalog_evidence reports membership in versioned official Brazilian fiscal-code tables. coverage is the fraction of all nonblank values found in the catalog; score also discounts short, collision-prone domains such as two-digit CST. High coverage in CFOP, NCM, municipality, or cClassTrib is distinctive content evidence. CST values overlap across taxes, especially PIS and COFINS, so use the header and tax-family context to disambiguate them. all_zero_only is not useful evidence. State, municipal, and federal registrations are distinct and cannot be selected only because their values have similar shapes. CPF/CNPJ values may contain 11 or 14 digits, may include punctuation, and spreadsheet numeric cells may lose a leading zero. Prefer a candidate that explicitly names the compatible identifier over a generic document-number field. When candidates are otherwise close, prefer the header with the same semantic role and no unrelated extra qualifier. CFOP may appear as four digits (5102) or with an ERP suffix (5102/AA); those formats are compatible. Do not choose a candidate merely because both are numeric. A profile whose evidence_quality is empty or all_zero provides little or no row evidence: zeros neither confirm a mapping nor contradict a strong name match. When row evidence is weak, keep final_confidence close to the relevant name_confidence. Return null when the data does not support a mapping. final_confidence must reflect both the name and data evidence. Keep the reason to one sentence.",
+    "model": "gpt-4o-mini",
+    "store": false,
+    "temperature": 0,
+    "text_format": "invoice_mapper.DataMappingDecision"
+   },
+   {
+    "input": "{\"model_column\": {\"name\": \"Observacao\", \"profile\": {\"non_empty_count\": 0, \"unique_count\": 0, \"inferred_type\": \"empty\", \"numeric_fraction\": 0.0, \"zero_fraction\": 0.0, \"median_length\": 0.0, \"median_digit_count\": 0.0, \"digit_count_values\": [], \"digit_fraction\": 0.0, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": null, \"numeric_q25\": null, \"numeric_median\": null, \"numeric_q75\": null, \"numeric_max\": null, \"fixed_digit_width\": 0, \"fixed_digit_width_fraction\": 0.0, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"empty\", \"samples\": []}}, \"client_candidates\": [{\"client_column_id\": \"column_011\", \"name\": \"Observacao\", \"column_number\": 11, \"name_confidence\": 1.0, \"semantic_header_conflict\": null, \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [], \"catalog_evidence\": [], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 40, \"inferred_type\": \"string\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 11.0, \"median_digit_count\": 4.0, \"digit_count_values\": [4], \"digit_fraction\": 0.364, \"alpha_fraction\": 0.545, \"negative_fraction\": 0.0, \"numeric_min\": 1000.0, \"numeric_q25\": 1009.75, \"numeric_median\": 1019.5, \"numeric_q75\": 1029.25, \"numeric_max\": 1039.0, \"fixed_digit_width\": 4, \"fixed_digit_width_fraction\": 1.0, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"Pedido 1000\", \"Pedido 1001\", \"Pedido 1005\", \"Pedido 1011\", \"Pedido 1016\", \"Pedido 1022\", \"Pedido 1027\", \"Pedido 1033\"]}}, {\"client_column_id\": \"column_012\", \"name\": \"Observacao\", \"column_number\": 12, \"name_confidence\": 1.0, \"semantic_header_conflict\": null, \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [], \"catalog_evidence\": [], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 7, \"inferred_type\": \"string\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.15, \"median_length\": 6.0, \"median_digit_count\": 1.0, \"digit_count_values\": [1], \"digit_fraction\": 0.167, \"alpha_fraction\": 0.667, \"negative_fraction\": 0.0, \"numeric_min\": 0.0, \"numeric_q25\": 1.0, \"numeric_median\": 3.0, \"numeric_q75\": 4.25, \"numeric_max\": 6.0, \"fixed_digit_width\": 1, \"fixed_digit_width_fraction\": 1.0, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"Lote 0\", \"Lote 1\", \"Lote 2\", \"Lote 3\", \"Lote 4\", \"Lote 5\", \"Lote 6\"]}}, {\"client_column_id\": \"column_008\", \"name\": \"Classificacao\", \"column_number\": 8, \"name_confidence\": 0.8, \"semantic_header_conflict\": null, \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [], \"catalog_evidence\": [], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 4, \"inferred_type\": \"string\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 8.0, \"median_digit_count\": 8.0, \"digit_count_values\": [8], \"digit_fraction\": 1.0, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 39269090.0, \"numeric_q25\": 73353447.5, \"numeric_median\": 84714900.0, \"numeric_q75\": 85167910.0, \"numeric_max\": 99999999.0, \"fixed_digit_width\": 8, \"fixed_digit_width_fraction\": 1.0, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"84714900\", \"85167910\", \"39269090\", \"99999999\"]}}, {\"client_column_id\": \"column_004\", \"name\": \"Unnamed column 4\", \"column_number\": 4, \"name_confidence\": 0.7454, \"semantic_header_conflict\": null, \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [], \"catalog_evidence\": [], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 40, \"inferred_type\": \"mixed-integer-float\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 4.0, \"median_digit_count\": 3.0, \"digit_count_values\": [2, 3, 4, 5], \"digit_fraction\": 0.83, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 8.5, \"numeric_q25\": 34.1875, \"numeric_median\": 63.625, \"numeric_q75\": 111.1875, \"numeric_max\": 261.0, \"fixed_digit_width\": 3, \"fixed_digit_width_fraction\": 0.5, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"8.5\", \"12.25\", \"20.5\", \"38.5\", \"52.5\", \"72\", \"99\", \"153\"]}}, {\"client_column_id\": \"column_005\", \"name\": \"Valor IPI\", \"column_number\": 5, \"name_confidence\": 0.7303, \"semantic_header_conflict\": null, \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [], \"catalog_evidence\": [], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 40, \"inferred_type\": \"mixed-integer-float\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 5.0, \"median_digit_count\": 4.0, \"digit_count_values\": [1, 2, 3, 4], \"digit_fraction\": 0.816, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 5.0, \"numeric_q25\": 23.2825, \"numeric_median\": 41.56, \"numeric_q75\": 59.8475, \"numeric_max\": 78.12, \"fixed_digit_width\": 4, \"fixed_digit_width_fraction\": 0.7, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"5\", \"6.88\", \"14.38\", \"25.62\", \"35\", \"46.25\", \"55.62\", \"66.88\"]}}, {\"client_column_id\": \"column_013\", \"name\": \"Valor Total\", \"column_number\": 13, \"name_confidence\": 0.7303, \"semantic_header_conflict\": null, \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [], \"catalog_evidence\": [], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 40, \"inferred_type\": \"mixed-integer-float\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 6.0, \"median_digit_count\": 5.0, \"digit_count_values\": [3, 4, 5, 6], \"digit_fraction\": 0.878, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 130.0, \"numeric_q25\": 605.3125, \"numeric_median\": 1080.625, \"numeric_q75\": 1555.9375, \"numeric_max\": 2031.25, \"fixed_digit_width\": 5, \"fixed_digit_width_fraction\": 0.375, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"130\", \"178.75\", \"373.75\", \"666.25\", \"910\", \"1202.5\", \"1446.25\", \"1738.75\"]}}, {\"client_column_id\": \"column_015\", \"name\": \"Aliquota COFINS\", \"column_number\": 15, \"name_confidence\": 0.7303, \"semantic_header_conflict\": null, \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [], \"catalog_evidence\": [], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 1, \"inferred_type\": \"floating\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 3.0, \"median_digit_count\": 2.0, \"digit_count_values\": [2], \"digit_fraction\": 0.667, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 7.6, \"numeric_q25\": 7.6, \"numeric_median\": 7.6, \"numeric_q75\": 7.6, \"numeric_max\": 7.6, \"fixed_digit_width\": 2, \"fixed_digit_width_fraction\": 1.0, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"7.6\"]}}, {\"client_column_id\": \"column_016\", \"name\": \"Valor COFINS\", \"column_number\": 16, \"name_confidence\": 0.7303, \"semantic_header_conflict\": null, \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [], \"catalog_evidence\": [], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 40, \"inferred_type\": \"floating\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 5.0, \"median_digit_count\": 4.0, \"digit_count_values\": [2, 3, 4], \"digit_fraction\": 0.787, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 6.08, \"numeric_q25\": 15.1575, \"numeric_median\": 24.235, \"numeric_q75\": 33.3125, \"numeric_max\": 42.39, \"fixed_digit_width\": 4, \"fixed_digit_width_fraction\": 0.775, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"6.08\", \"7.01\", \"10.73\", \"16.32\", \"20.98\", \"26.56\", \"31.22\", \"36.8\"]}}, {\"client_column_id\": \"column_017\", \"name\": \"Base PIS\", \"column_number\": 17, \"name_confidence\": 0.7303, \"semantic_header_conflict\": null, \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [], \"catalog_evidence\": [], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 40, \"inferred_type\": \"integer\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 3.0, \"median_digit_count\": 3.0, \"digit_count_values\": [3], \"digit_fraction\": 1.0, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 200.0, \"numeric_q25\": 307.25, \"numeric_median\": 414.5, \"numeric_q75\": 521.75, \"numeric_max\": 629.0, \"fixed_digit_width\": 3, \"fixed_digit_width_fraction\": 1.0, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"200\", \"211\", \"255\", \"321\", \"376\", \"442\", \"497\", \"563\"]}}, {\"client_column_id\": \"column_018\", \"name\": \"Aliq PIS\", \"column_number\": 18, \"name_confidence\": 0.7303, \"semantic_header_conflict\": null, \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [], \"catalog_evidence\": [], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 1, \"inferred_type\": \"floating\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 4.0, \"median_digit_count\": 3.0, \"digit_count_values\": [3], \"digit_fraction\": 0.75, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 1.65, \"numeric_q25\": 1.65, \"numeric_median\": 1.65, \"numeric_q75\": 1.65, \"numeric_max\": 1.65, \"fixed_digit_width\": 3, \"fixed_digit_width_fraction\": 1.0, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"1.65\"]}}]}",
+    "instructions": "Map one client spreadsheet column to one canonical Brazilian invoice column. The column names and name_confidence remain the primary semantic evidence throughout the decision; compare how close the candidate name scores are and never forget them after inspecting values. A client header can be bogus or misleading, so distinctive content and format evidence may override a weak name; generic numeric similarity alone is not enough. profile_similarity is a generic value-shape retrieval signal, not proof of a mapping. Then use representative values, inferred types, formats, lengths, and numeric scales. Recognize dates, monetary values, tax bases, tax rates, tax amounts, CFOP, NCM, CNPJ/CPF, invoice numbers, series, and 44-digit NF-e keys. First identify the semantic role of each header: a tax situation/code is not a tax base, rate, or amount even when all contain numbers. semantic_header_conflict identifies explicit tax-family or role disagreement; treat it as strong contrary evidence. A conflicting candidate may remain viable only when distinctive row content indicates that its header is bogus or wrong. Most canonical fields may be absent from a client export. Do not choose the best of bad candidates: return null unless the evidence supports the same business meaning. Matching only a broad type, generic numbers, zeros, dates, or strings is not semantic evidence. distinctive_sample_overlap reports exact overlap after excluding zeros and trivial short numbers; a positive value is strong row evidence and should be examined together with the headers. relationship_evidence contains conservative row-wise fiscal checks such as tax value approximately equaling base times rate, or line value approximately equaling quantity times unit price. A high score across many rows is strong evidence; a low score is contrary evidence, but legitimate adjustments, rounding, exemptions, credits, and reversals mean it is not an absolute rule. catalog_evidence reports membership in versioned official Brazilian fiscal-code tables. coverage is the fraction of all nonblank values found in the catalog; score also discounts short, collision-prone domains such as two-digit CST. High coverage in CFOP, NCM, municipality, or cClassTrib is distinctive content evidence. CST values overlap across taxes, especially PIS and COFINS, so use the header and tax-family context to disambiguate them. all_zero_only is not useful evidence. State, municipal, and federal registrations are distinct and cannot be selected only because their values have similar shapes. CPF/CNPJ values may contain 11 or 14 digits, may include punctuation, and spreadsheet numeric cells may lose a leading zero. Prefer a candidate that explicitly names the compatible identifier over a generic document-number field. When candidates are otherwise close, prefer the header with the same semantic role and no unrelated extra qualifier. CFOP may appear as four digits (5102) or with an ERP suffix (5102/AA); those formats are compatible. Do not choose a candidate merely because both are numeric. A profile whose evidence_quality is empty or all_zero provides little or no row evidence: zeros neither confirm a mapping nor contradict a strong name match. When row evidence is weak, keep final_confidence close to the relevant name_confidence. Return null when the data does not support a mapping. final_confidence must reflect both the name and data evidence. Keep the reason to one sentence.",
+    "model": "gpt-4o-mini",
+    "store": false,
+    "temperature": 0,
+    "text_format": "invoice_mapper.DataMappingDecision"
+   },
+   {
+    "input": "{\"model_column\": {\"name\": \"Campo Inexistente\", \"profile\": {\"non_empty_count\": 0, \"unique_count\": 0, \"inferred_type\": \"empty\", \"numeric_fraction\": 0.0, \"zero_fraction\": 0.0, \"median_length\": 0.0, \"median_digit_count\": 0.0, \"digit_count_values\": [], \"digit_fraction\": 0.0, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": null, \"numeric_q25\": null, \"numeric_median\": null, \"numeric_q75\": null, \"numeric_max\": null, \"fixed_digit_width\": 0, \"fixed_digit_width_fraction\": 0.0, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"empty\", \"samples\": []}}, \"client_candidates\": [{\"client_column_id\": \"column_008\", \"name\": \"Classificacao\", \"column_number\": 8, \"name_confidence\": 0.7303, \"semantic_header_conflict\": null, \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [], \"catalog_evidence\": [], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 4, \"inferred_type\": \"string\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 8.0, \"median_digit_count\": 8.0, \"digit_count_values\": [8], \"digit_fraction\": 1.0, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 39269090.0, \"numeric_q25\": 73353447.5, \"numeric_median\": 84714900.0, \"numeric_q75\": 85167910.0, \"numeric_max\": 99999999.0, \"fixed_digit_width\": 8, \"fixed_digit_width_fraction\": 1.0, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"84714900\", \"85167910\", \"39269090\", \"99999999\"]}}, {\"client_column_id\": \"column_011\", \"name\": \"Observacao\", \"column_number\": 11, \"name_confidence\": 0.7303, \"semantic_header_conflict\": null, \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [], \"catalog_evidence\": [], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 40, \"inferred_type\": \"string\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 11.0, \"median_digit_count\": 4.0, \"digit_count_values\": [4], \"digit_fraction\": 0.364, \"alpha_fraction\": 0.545, \"negative_fraction\": 0.0, \"numeric_min\": 1000.0, \"numeric_q25\": 1009.75, \"numeric_median\": 1019.5, \"numeric_q75\": 1029.25, \"numeric_max\": 1039.0, \"fixed_digit_width\": 4, \"fixed_digit_width_fraction\": 1.0, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"Pedido 1000\", \"Pedido 1001\", \"Pedido 1005\", \"Pedido 1011\", \"Pedido 1016\", \"Pedido 1022\", \"Pedido 1027\", \"Pedido 1033\"]}}, {\"client_column_id\": \"column_012\", \"name\": \"Observacao\", \"column_number\": 12, \"name_confidence\": 0.7303, \"semantic_header_conflict\": null, \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [], \"catalog_evidence\": [], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 7, \"inferred_type\": \"string\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.15, \"median_length\": 6.0, \"median_digit_count\": 1.0, \"digit_count_values\": [1], \"digit_fraction\": 0.167, \"alpha_fraction\": 0.667, \"negative_fraction\": 0.0, \"numeric_min\": 0.0, \"numeric_q25\": 1.0, \"numeric_median\": 3.0, \"numeric_q75\": 4.25, \"numeric_max\": 6.0, \"fixed_digit_width\": 1, \"fixed_digit_width_fraction\": 1.0, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"Lote 0\", \"Lote 1\", \"Lote 2\", \"Lote 3\", \"Lote 4\", \"Lote 5\", \"Lote 6\"]}}, {\"client_column_id\": \"column_004\", \"name\": \"Unnamed column 4\", \"column_number\": 4, \"name_confidence\": 0.6804, \"semantic_header_conflict\": null, \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [], \"catalog_evidence\": [], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 40, \"inferred_type\": \"mixed-integer-float\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 4.0, \"median_digit_count\": 3.0, \"digit_count_values\": [2, 3, 4, 5], \"digit_fraction\": 0.83, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 8.5, \"numeric_q25\": 34.1875, \"numeric_median\": 63.625, \"numeric_q75\": 111.1875, \"numeric_max\": 261.0, \"fixed_digit_width\": 3, \"fixed_digit_width_fraction\": 0.5, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"8.5\", \"12.25\", \"20.5\", \"38.5\", \"52.5\", \"72\", \"99\", \"153\"]}}, {\"client_column_id\": \"column_005\", \"name\": \"Valor IPI\", \"column_number\": 5, \"name_confidence\": 0.6667, \"semantic_header_conflict\": null, \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [], \"catalog_evidence\": [], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 40, \"inferred_type\": \"mixed-integer-float\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 5.0, \"median_digit_count\": 4.0, \"digit_count_values\": [1, 2, 3, 4], \"digit_fraction\": 0.816, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 5.0, \"numeric_q25\": 23.2825, \"numeric_median\": 41.56, \"numeric_q75\": 59.8475, \"numeric_max\": 78.12, \"fixed_digit_width\": 4, \"fixed_digit_width_fraction\": 0.7, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"5\", \"6.88\", \"14.38\", \"25.62\", \"35\", \"46.25\", \"55.62\", \"66.88\"]}}, {\"client_column_id\": \"column_013\", \"name\": \"Valor Total\", \"column_number\": 13, \"name_confidence\": 0.6667, \"semantic_header_conflict\": null, \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [], \"catalog_evidence\": [], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 40, \"inferred_type\": \"mixed-integer-float\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 6.0, \"median_digit_count\": 5.0, \"digit_count_values\": [3, 4, 5, 6], \"digit_fraction\": 0.878, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 130.0, \"numeric_q25\": 605.3125, \"numeric_median\": 1080.625, \"numeric_q75\": 1555.9375, \"numeric_max\": 2031.25, \"fixed_digit_width\": 5, \"fixed_digit_width_fraction\": 0.375, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"130\", \"178.75\", \"373.75\", \"666.25\", \"910\", \"1202.5\", \"1446.25\", \"1738.75\"]}}, {\"client_column_id\": \"column_015\", \"name\": \"Aliquota COFINS\", \"column_number\": 15, \"name_confidence\": 0.6667, \"semantic_header_conflict\": null, \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [], \"catalog_evidence\": [], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 1, \"inferred_type\": \"floating\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 3.0, \"median_digit_count\": 2.0, \"digit_count_values\": [2], \"digit_fraction\": 0.667, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 7.6, \"numeric_q25\": 7.6, \"numeric_median\": 7.6, \"numeric_q75\": 7.6, \"numeric_max\": 7.6, \"fixed_digit_width\": 2, \"fixed_digit_width_fraction\": 1.0, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"7.6\"]}}, {\"client_column_id\": \"column_016\", \"name\": \"Valor COFINS\", \"column_number\": 16, \"name_confidence\": 0.6667, \"semantic_header_conflict\": null, \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [], \"catalog_evidence\": [], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 40, \"inferred_type\": \"floating\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 5.0, \"median_digit_count\": 4.0, \"digit_count_values\": [2, 3, 4], \"digit_fraction\": 0.787, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 6.08, \"numeric_q25\": 15.1575, \"numeric_median\": 24.235, \"numeric_q75\": 33.3125, \"numeric_max\": 42.39, \"fixed_digit_width\": 4, \"fixed_digit_width_fraction\": 0.775, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"6.08\", \"7.01\", \"10.73\", \"16.32\", \"20.98\", \"26.56\", \"31.22\", \"36.8\"]}}, {\"client_column_id\": \"column_017\", \"name\": \"Base PIS\", \"column_number\": 17, \"name_confidence\": 0.6667, \"semantic_header_conflict\": null, \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [], \"catalog_evidence\": [], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 40, \"inferred_type\": \"integer\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 3.0, \"median_digit_count\": 3.0, \"digit_count_values\": [3], \"digit_fraction\": 1.0, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 200.0, \"numeric_q25\": 307.25, \"numeric_median\": 414.5, \"numeric_q75\": 521.75, \"numeric_max\": 629.0, \"fixed_digit_width\": 3, \"fixed_digit_width_fraction\": 1.0, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"200\", \"211\", \"255\", \"321\", \"376\", \"442\", \"497\", \"563\"]}}, {\"client_column_id\": \"column_018\", \"name\": \"Aliq PIS\", \"column_number\": 18, \"name_confidence\": 0.6667, \"semantic_header_conflict\": null, \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [], \"catalog_evidence\": [], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 1, \"inferred_type\": \"floating\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 4.0, \"median_digit_count\": 3.0, \"digit_count_values\": [3], \"digit_fraction\": 0.75, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 1.65, \"numeric_q25\": 1.65, \"numeric_median\": 1.65, \"numeric_q75\": 1.65, \"numeric_max\": 1.65, \"fixed_digit_width\": 3, \"fixed_digit_width_fraction\": 1.0, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"1.65\"]}}]}",
+    "instructions": "Map one client spreadsheet column to one canonical Brazilian invoice column. The column names and name_confidence remain the primary semantic evidence throughout the decision; compare how close the candidate name scores are and never forget them after inspecting values. A client header can be bogus or misleading, so distinctive content and format evidence may override a weak name; generic numeric similarity alone is not enough. profile_similarity is a generic value-shape retrieval signal, not proof of a mapping. Then use representative values, inferred types, formats, lengths, and numeric scales. Recognize dates, monetary values, tax bases, tax rates, tax amounts, CFOP, NCM, CNPJ/CPF, invoice numbers, series, and 44-digit NF-e keys. First identify the semantic role of each header: a tax situation/code is not a tax base, rate, or amount even when all contain numbers. semantic_header_conflict identifies explicit tax-family or role disagreement; treat it as strong contrary evidence. A conflicting candidate may remain viable only when distinctive row content indicates that its header is bogus or wrong. Most canonical fields may be absent from a client export. Do not choose the best of bad candidates: return null unless the evidence supports the same business meaning. Matching only a broad type, generic numbers, zeros, dates, or strings is not semantic evidence. distinctive_sample_overlap reports exact overlap after excluding zeros and trivial short numbers; a positive value is strong row evidence and should be examined together with the headers. relationship_evidence contains conservative row-wise fiscal checks such as tax value approximately equaling base times rate, or line value approximately equaling quantity times unit price. A high score across many rows is strong evidence; a low score is contrary evidence, but legitimate adjustments, rounding, exemptions, credits, and reversals mean it is not an absolute rule. catalog_evidence reports membership in versioned official Brazilian fiscal-code tables. coverage is the fraction of all nonblank values found in the catalog; score also discounts short, collision-prone domains such as two-digit CST. High coverage in CFOP, NCM, municipality, or cClassTrib is distinctive content evidence. CST values overlap across taxes, especially PIS and COFINS, so use the header and tax-family context to disambiguate them. all_zero_only is not useful evidence. State, municipal, and federal registrations are distinct and cannot be selected only because their values have similar shapes. CPF/CNPJ values may contain 11 or 14 digits, may include punctuation, and spreadsheet numeric cells may lose a leading zero. Prefer a candidate that explicitly names the compatible identifier over a generic document-number field. When candidates are otherwise close, prefer the header with the same semantic role and no unrelated extra qualifier. CFOP may appear as four digits (5102) or with an ERP suffix (5102/AA); those formats are compatible. Do not choose a candidate merely because both are numeric. A profile whose evidence_quality is empty or all_zero provides little or no row evidence: zeros neither confirm a mapping nor contradict a strong name match. When row evidence is weak, keep final_confidence close to the relevant name_confidence. Return null when the data does not support a mapping. final_confidence must reflect both the name and data evidence. Keep the reason to one sentence.",
+    "model": "gpt-4o-mini",
+    "store": false,
+    "temperature": 0,
+    "text_format": "invoice_mapper.DataMappingDecision"
+   }
+  ]
+ },
+ "fingerprints": {
+  "data_mapping_decision_json_schema_sha256": "af94e7a6f33db607cd8411d0110f234177dab31fa56ee9c703400eb7f33350bd",
+  "resolver_instructions_sha256": "a8577b570ce503ad51d9b74a040c32888a5489a0b6c6e7780bd25f9f8b25aace"
+ },
+ "resolver_cases": {
+  "catalog_evidence_and_identifier_profiles": {
+   "candidate_display_names": [
+    "Cod. Fiscal",
+    "Natureza da Operacao",
+    "Data Emissao",
+    "CNPJ Emitente",
+    "Chave NF-e"
+   ],
+   "parse_kwargs": {
+    "input": "{\"model_column\": {\"name\": \"CFOP\", \"profile\": {\"non_empty_count\": 2, \"unique_count\": 2, \"inferred_type\": \"string\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 4.0, \"median_digit_count\": 4.0, \"digit_count_values\": [4], \"digit_fraction\": 1.0, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 5102.0, \"numeric_q25\": 5352.0, \"numeric_median\": 5602.0, \"numeric_q75\": 5852.0, \"numeric_max\": 6102.0, \"fixed_digit_width\": 4, \"fixed_digit_width_fraction\": 1.0, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"5102\", \"6102\"]}}, \"client_candidates\": [{\"client_column_id\": \"column_003\", \"name\": \"Cod. Fiscal\", \"column_number\": 3, \"name_confidence\": 0.42, \"semantic_header_conflict\": null, \"profile_similarity\": 0.9955, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [], \"catalog_evidence\": [{\"catalog\": \"cfop\", \"source_version\": \"golden-fixture-1\", \"source_url\": \"https://example.invalid/cfop\", \"width\": 4, \"specificity\": 1.0, \"nonempty_count\": 40, \"format_fraction\": 1.0, \"valid_count\": 35, \"coverage\": 0.875, \"distinct_coverage\": 0.8571, \"unique_valid_count\": 6, \"unique_formatted_count\": 7, \"all_zero_only\": false, \"score\": 0.8571, \"invalid_examples\": [\"5949\"]}], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 7, \"inferred_type\": \"string\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 4.0, \"median_digit_count\": 4.0, \"digit_count_values\": [4], \"digit_fraction\": 0.946, \"alpha_fraction\": 0.036, \"negative_fraction\": 0.0, \"numeric_min\": 1102.0, \"numeric_q25\": 4352.0, \"numeric_median\": 5253.5, \"numeric_q75\": 5987.25, \"numeric_max\": 6108.0, \"fixed_digit_width\": 4, \"fixed_digit_width_fraction\": 1.0, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"5102\", \"1102\", \"2102\", \"5405\", \"5949\", \"6102/AA\", \"6108\"]}}, {\"client_column_id\": \"column_007\", \"name\": \"Natureza da Operacao\", \"column_number\": 7, \"name_confidence\": 0.31, \"semantic_header_conflict\": null, \"profile_similarity\": 0.1786, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [], \"catalog_evidence\": [{\"catalog\": \"cfop\", \"source_version\": \"golden-fixture-1\", \"source_url\": \"https://example.invalid/cfop\", \"width\": 4, \"specificity\": 1.0, \"nonempty_count\": 40, \"format_fraction\": 0.0, \"valid_count\": 0, \"coverage\": 0.0, \"distinct_coverage\": 0.0, \"unique_valid_count\": 0, \"unique_formatted_count\": 0, \"all_zero_only\": false, \"score\": 0.0, \"invalid_examples\": [\"Venda\", \"Devolucao\", \"Remessa\"]}], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 3, \"inferred_type\": \"string\", \"numeric_fraction\": 0.0, \"zero_fraction\": 0.0, \"median_length\": 7.0, \"median_digit_count\": 0.0, \"digit_count_values\": [], \"digit_fraction\": 0.0, \"alpha_fraction\": 1.0, \"negative_fraction\": 0.0, \"numeric_min\": null, \"numeric_q25\": null, \"numeric_median\": null, \"numeric_q75\": null, \"numeric_max\": null, \"fixed_digit_width\": 0, \"fixed_digit_width_fraction\": 0.0, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"Venda\", \"Devolucao\", \"Remessa\"]}}, {\"client_column_id\": \"column_008\", \"name\": \"Data Emissao\", \"column_number\": 8, \"name_confidence\": 0.12, \"semantic_header_conflict\": null, \"profile_similarity\": 0.16, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [], \"catalog_evidence\": [{\"catalog\": \"cfop\", \"source_version\": \"golden-fixture-1\", \"source_url\": \"https://example.invalid/cfop\", \"width\": 4, \"specificity\": 1.0, \"nonempty_count\": 40, \"format_fraction\": 0.0, \"valid_count\": 0, \"coverage\": 0.0, \"distinct_coverage\": 0.0, \"unique_valid_count\": 0, \"unique_formatted_count\": 0, \"all_zero_only\": false, \"score\": 0.0, \"invalid_examples\": [\"2026-05-01 00:00:00\", \"2026-05-02 00:00:00\", \"2026-05-03 00:00:00\"]}], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 40, \"inferred_type\": \"datetime64\", \"numeric_fraction\": 0.0, \"zero_fraction\": 0.0, \"median_length\": 10.0, \"median_digit_count\": 8.0, \"digit_count_values\": [8], \"digit_fraction\": 0.8, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": null, \"numeric_q25\": null, \"numeric_median\": null, \"numeric_q75\": null, \"numeric_max\": null, \"fixed_digit_width\": 8, \"fixed_digit_width_fraction\": 1.0, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"2026-05-01T00:00:00\", \"2026-05-02T00:00:00\", \"2026-05-06T00:00:00\", \"2026-05-12T00:00:00\", \"2026-05-17T00:00:00\", \"2026-05-23T00:00:00\", \"2026-05-28T00:00:00\", \"2026-06-03T00:00:00\"]}}, {\"client_column_id\": \"column_009\", \"name\": \"CNPJ Emitente\", \"column_number\": 9, \"name_confidence\": 0.1, \"semantic_header_conflict\": null, \"profile_similarity\": 0.2786, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [], \"catalog_evidence\": [{\"catalog\": \"cfop\", \"source_version\": \"golden-fixture-1\", \"source_url\": \"https://example.invalid/cfop\", \"width\": 4, \"specificity\": 1.0, \"nonempty_count\": 40, \"format_fraction\": 0.0, \"valid_count\": 0, \"coverage\": 0.0, \"distinct_coverage\": 0.0, \"unique_valid_count\": 0, \"unique_formatted_count\": 0, \"all_zero_only\": false, \"score\": 0.0, \"invalid_examples\": [\"11.222.333/0001-81\", \"11.222.334/0001-26\", \"11.222.335/0001-70\"]}], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 40, \"inferred_type\": \"string\", \"numeric_fraction\": 0.0, \"zero_fraction\": 0.0, \"median_length\": 18.0, \"median_digit_count\": 14.0, \"digit_count_values\": [14], \"digit_fraction\": 0.778, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": null, \"numeric_q25\": null, \"numeric_median\": null, \"numeric_q75\": null, \"numeric_max\": null, \"fixed_digit_width\": 14, \"fixed_digit_width_fraction\": 1.0, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 1.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"11.222.333/0001-81\", \"11.222.334/0001-26\", \"11.222.338/0001-04\", \"11.222.344/0001-61\", \"11.222.349/0001-94\", \"11.222.355/0001-41\", \"11.222.360/0001-54\", \"11.222.366/0001-21\"]}}, {\"client_column_id\": \"column_010\", \"name\": \"Chave NF-e\", \"column_number\": 10, \"name_confidence\": 0.05, \"semantic_header_conflict\": null, \"profile_similarity\": 0.3136, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [], \"catalog_evidence\": [{\"catalog\": \"cfop\", \"source_version\": \"golden-fixture-1\", \"source_url\": \"https://example.invalid/cfop\", \"width\": 4, \"specificity\": 1.0, \"nonempty_count\": 40, \"format_fraction\": 0.0, \"valid_count\": 0, \"coverage\": 0.0, \"distinct_coverage\": 0.0, \"unique_valid_count\": 0, \"unique_formatted_count\": 0, \"all_zero_only\": false, \"score\": 0.0, \"invalid_examples\": [\"35260511222333000181550010000000001000000000\", \"35260511222333000181550010000000011000000016\", \"35260511222333000181550010000000021000000021\"]}], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 40, \"inferred_type\": \"string\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 44.0, \"median_digit_count\": 44.0, \"digit_count_values\": [44], \"digit_fraction\": 1.0, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 3.5260511222333003e+43, \"numeric_q25\": 3.5260511222333003e+43, \"numeric_median\": 3.5260511222333003e+43, \"numeric_q75\": 3.5260511222333003e+43, \"numeric_max\": 3.5260511222333003e+43, \"fixed_digit_width\": 44, \"fixed_digit_width_fraction\": 1.0, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 1.0, \"evidence_quality\": \"informative\", \"samples\": [\"35260511222333000181550010000000001000000000\", \"35260511222333000181550010000000011000000016\", \"35260511222333000181550010000000051000000058\", \"35260511222333000181550010000000111000000110\", \"35260511222333000181550010000000161000000167\", \"35260511222333000181550010000000221000000229\", \"35260511222333000181550010000000271000000276\", \"35260511222333000181550010000000331000000338\"]}}]}",
+    "instructions": "Map one client spreadsheet column to one canonical Brazilian invoice column. The column names and name_confidence remain the primary semantic evidence throughout the decision; compare how close the candidate name scores are and never forget them after inspecting values. A client header can be bogus or misleading, so distinctive content and format evidence may override a weak name; generic numeric similarity alone is not enough. profile_similarity is a generic value-shape retrieval signal, not proof of a mapping. Then use representative values, inferred types, formats, lengths, and numeric scales. Recognize dates, monetary values, tax bases, tax rates, tax amounts, CFOP, NCM, CNPJ/CPF, invoice numbers, series, and 44-digit NF-e keys. First identify the semantic role of each header: a tax situation/code is not a tax base, rate, or amount even when all contain numbers. semantic_header_conflict identifies explicit tax-family or role disagreement; treat it as strong contrary evidence. A conflicting candidate may remain viable only when distinctive row content indicates that its header is bogus or wrong. Most canonical fields may be absent from a client export. Do not choose the best of bad candidates: return null unless the evidence supports the same business meaning. Matching only a broad type, generic numbers, zeros, dates, or strings is not semantic evidence. distinctive_sample_overlap reports exact overlap after excluding zeros and trivial short numbers; a positive value is strong row evidence and should be examined together with the headers. relationship_evidence contains conservative row-wise fiscal checks such as tax value approximately equaling base times rate, or line value approximately equaling quantity times unit price. A high score across many rows is strong evidence; a low score is contrary evidence, but legitimate adjustments, rounding, exemptions, credits, and reversals mean it is not an absolute rule. catalog_evidence reports membership in versioned official Brazilian fiscal-code tables. coverage is the fraction of all nonblank values found in the catalog; score also discounts short, collision-prone domains such as two-digit CST. High coverage in CFOP, NCM, municipality, or cClassTrib is distinctive content evidence. CST values overlap across taxes, especially PIS and COFINS, so use the header and tax-family context to disambiguate them. all_zero_only is not useful evidence. State, municipal, and federal registrations are distinct and cannot be selected only because their values have similar shapes. CPF/CNPJ values may contain 11 or 14 digits, may include punctuation, and spreadsheet numeric cells may lose a leading zero. Prefer a candidate that explicitly names the compatible identifier over a generic document-number field. When candidates are otherwise close, prefer the header with the same semantic role and no unrelated extra qualifier. CFOP may appear as four digits (5102) or with an ERP suffix (5102/AA); those formats are compatible. Do not choose a candidate merely because both are numeric. A profile whose evidence_quality is empty or all_zero provides little or no row evidence: zeros neither confirm a mapping nor contradict a strong name match. When row evidence is weak, keep final_confidence close to the relevant name_confidence. Return null when the data does not support a mapping. final_confidence must reflect both the name and data evidence. Keep the reason to one sentence.",
+    "model": "gpt-4o-mini",
+    "store": false,
+    "temperature": 0,
+    "text_format": "invoice_mapper.DataMappingDecision"
+   }
+  },
+  "header_conflicts_unnamed_and_occurrence": {
+   "candidate_display_names": [
+    "Valor IPI",
+    "Valor ICMS ST",
+    "Base ICMS",
+    "Unnamed column 4",
+    "Valor ICMS (occurrence 2)"
+   ],
+   "parse_kwargs": {
+    "input": "{\"model_column\": {\"name\": \"Valor ICMS\", \"profile\": {\"non_empty_count\": 3, \"unique_count\": 1, \"inferred_type\": \"floating\", \"numeric_fraction\": 1.0, \"zero_fraction\": 1.0, \"median_length\": 3.0, \"median_digit_count\": 2.0, \"digit_count_values\": [2], \"digit_fraction\": 0.667, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 0.0, \"numeric_q25\": 0.0, \"numeric_median\": 0.0, \"numeric_q75\": 0.0, \"numeric_max\": 0.0, \"fixed_digit_width\": 2, \"fixed_digit_width_fraction\": 1.0, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"all_zero\", \"samples\": [\"0.0\"]}}, \"client_candidates\": [{\"client_column_id\": \"column_005\", \"name\": \"Valor IPI\", \"column_number\": 5, \"name_confidence\": 0.8333, \"semantic_header_conflict\": \"tax-family conflict (icms vs ipi)\", \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [{\"available\": true, \"rows_tested\": 40, \"eligible_rows\": 40, \"coverage\": 1.0, \"score\": 0.0, \"fit_score\": 0.0, \"rate_representation\": \"percent\", \"median_relative_error\": 0.4344, \"degenerate\": false, \"rule\": \"tax_value_equals_base_times_rate\", \"target_role\": \"value\", \"tax_scope\": \"icms\", \"tax_qualifiers\": []}], \"catalog_evidence\": [], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 40, \"inferred_type\": \"floating\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 5.0, \"median_digit_count\": 4.0, \"digit_count_values\": [2, 3, 4], \"digit_fraction\": 0.783, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 5.0, \"numeric_q25\": 23.2825, \"numeric_median\": 41.56, \"numeric_q75\": 59.8475, \"numeric_max\": 78.12, \"fixed_digit_width\": 4, \"fixed_digit_width_fraction\": 0.7, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"5.0\", \"6.88\", \"14.38\", \"25.62\", \"35.0\", \"46.25\", \"55.62\", \"66.88\"]}}, {\"client_column_id\": \"column_006\", \"name\": \"Valor ICMS ST\", \"column_number\": 6, \"name_confidence\": 0.9258, \"semantic_header_conflict\": \"tax-qualifier conflict (regular vs st)\", \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [{\"available\": true, \"rows_tested\": 40, \"eligible_rows\": 40, \"coverage\": 1.0, \"score\": 0.0, \"fit_score\": 0.0, \"rate_representation\": \"percent\", \"median_relative_error\": 0.4643, \"degenerate\": false, \"rule\": \"tax_value_equals_base_times_rate\", \"target_role\": \"value\", \"tax_scope\": \"icms\", \"tax_qualifiers\": []}], \"catalog_evidence\": [], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 40, \"inferred_type\": \"floating\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 5.0, \"median_digit_count\": 4.0, \"digit_count_values\": [2, 3, 4], \"digit_fraction\": 0.788, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 3.1, \"numeric_q25\": 24.1875, \"numeric_median\": 45.27, \"numeric_q75\": 66.35, \"numeric_max\": 87.44, \"fixed_digit_width\": 4, \"fixed_digit_width_fraction\": 0.8, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"3.1\", \"5.26\", \"13.91\", \"26.89\", \"37.7\", \"50.67\", \"61.49\", \"74.46\"]}}, {\"client_column_id\": \"column_002\", \"name\": \"Base ICMS\", \"column_number\": 2, \"name_confidence\": 0.7071, \"semantic_header_conflict\": \"semantic-role conflict (value vs base)\", \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [], \"catalog_evidence\": [], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 40, \"inferred_type\": \"floating\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 5.0, \"median_digit_count\": 4.0, \"digit_count_values\": [4, 5], \"digit_fraction\": 0.813, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 100.0, \"numeric_q25\": 465.625, \"numeric_median\": 831.25, \"numeric_q75\": 1196.875, \"numeric_max\": 1562.5, \"fixed_digit_width\": 4, \"fixed_digit_width_fraction\": 0.6, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"100.0\", \"137.5\", \"287.5\", \"512.5\", \"700.0\", \"925.0\", \"1112.5\", \"1337.5\"]}}, {\"client_column_id\": \"column_004\", \"name\": \"Unnamed column 4\", \"column_number\": 4, \"name_confidence\": 0.6804, \"semantic_header_conflict\": null, \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [{\"available\": true, \"rows_tested\": 40, \"eligible_rows\": 40, \"coverage\": 1.0, \"score\": 1.0, \"fit_score\": 1.0, \"rate_representation\": \"percent\", \"median_relative_error\": 0.0, \"degenerate\": false, \"rule\": \"tax_value_equals_base_times_rate\", \"target_role\": \"value\", \"tax_scope\": \"icms\", \"tax_qualifiers\": []}], \"catalog_evidence\": [], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 40, \"inferred_type\": \"floating\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 5.0, \"median_digit_count\": 4.0, \"digit_count_values\": [2, 3, 4, 5], \"digit_fraction\": 0.775, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 8.5, \"numeric_q25\": 34.1875, \"numeric_median\": 63.625, \"numeric_q75\": 111.1875, \"numeric_max\": 261.0, \"fixed_digit_width\": 4, \"fixed_digit_width_fraction\": 0.5, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"8.5\", \"12.25\", \"20.5\", \"38.5\", \"52.5\", \"72.0\", \"99.0\", \"153.0\"]}}, {\"client_column_id\": \"column_012\", \"name\": \"Valor ICMS\", \"column_number\": 12, \"name_confidence\": 1.0, \"semantic_header_conflict\": null, \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [{\"available\": true, \"rows_tested\": 40, \"eligible_rows\": 40, \"coverage\": 1.0, \"score\": 0.0, \"fit_score\": 0.0, \"rate_representation\": \"decimal\", \"median_relative_error\": 0.8756, \"degenerate\": false, \"rule\": \"tax_value_equals_base_times_rate\", \"target_role\": \"value\", \"tax_scope\": \"icms\", \"tax_qualifiers\": []}], \"catalog_evidence\": [], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 40, \"inferred_type\": \"floating\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 6.0, \"median_digit_count\": 5.0, \"digit_count_values\": [4, 5, 6], \"digit_fraction\": 0.83, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 110.0, \"numeric_q25\": 512.1875, \"numeric_median\": 914.375, \"numeric_q75\": 1316.5625, \"numeric_max\": 1718.75, \"fixed_digit_width\": 5, \"fixed_digit_width_fraction\": 0.5, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"110.0\", \"151.25\", \"316.25\", \"563.75\", \"770.0\", \"1017.5\", \"1223.75\", \"1471.25\"]}}]}",
+    "instructions": "Map one client spreadsheet column to one canonical Brazilian invoice column. The column names and name_confidence remain the primary semantic evidence throughout the decision; compare how close the candidate name scores are and never forget them after inspecting values. A client header can be bogus or misleading, so distinctive content and format evidence may override a weak name; generic numeric similarity alone is not enough. profile_similarity is a generic value-shape retrieval signal, not proof of a mapping. Then use representative values, inferred types, formats, lengths, and numeric scales. Recognize dates, monetary values, tax bases, tax rates, tax amounts, CFOP, NCM, CNPJ/CPF, invoice numbers, series, and 44-digit NF-e keys. First identify the semantic role of each header: a tax situation/code is not a tax base, rate, or amount even when all contain numbers. semantic_header_conflict identifies explicit tax-family or role disagreement; treat it as strong contrary evidence. A conflicting candidate may remain viable only when distinctive row content indicates that its header is bogus or wrong. Most canonical fields may be absent from a client export. Do not choose the best of bad candidates: return null unless the evidence supports the same business meaning. Matching only a broad type, generic numbers, zeros, dates, or strings is not semantic evidence. distinctive_sample_overlap reports exact overlap after excluding zeros and trivial short numbers; a positive value is strong row evidence and should be examined together with the headers. relationship_evidence contains conservative row-wise fiscal checks such as tax value approximately equaling base times rate, or line value approximately equaling quantity times unit price. A high score across many rows is strong evidence; a low score is contrary evidence, but legitimate adjustments, rounding, exemptions, credits, and reversals mean it is not an absolute rule. catalog_evidence reports membership in versioned official Brazilian fiscal-code tables. coverage is the fraction of all nonblank values found in the catalog; score also discounts short, collision-prone domains such as two-digit CST. High coverage in CFOP, NCM, municipality, or cClassTrib is distinctive content evidence. CST values overlap across taxes, especially PIS and COFINS, so use the header and tax-family context to disambiguate them. all_zero_only is not useful evidence. State, municipal, and federal registrations are distinct and cannot be selected only because their values have similar shapes. CPF/CNPJ values may contain 11 or 14 digits, may include punctuation, and spreadsheet numeric cells may lose a leading zero. Prefer a candidate that explicitly names the compatible identifier over a generic document-number field. When candidates are otherwise close, prefer the header with the same semantic role and no unrelated extra qualifier. CFOP may appear as four digits (5102) or with an ERP suffix (5102/AA); those formats are compatible. Do not choose a candidate merely because both are numeric. A profile whose evidence_quality is empty or all_zero provides little or no row evidence: zeros neither confirm a mapping nor contradict a strong name match. When row evidence is weak, keep final_confidence close to the relevant name_confidence. Return null when the data does not support a mapping. final_confidence must reflect both the name and data evidence. Keep the reason to one sentence.",
+    "model": "gpt-4o-mini",
+    "store": false,
+    "temperature": 0,
+    "text_format": "invoice_mapper.DataMappingDecision"
+   }
+  },
+  "weak_rows_and_line_arithmetic": {
+   "candidate_display_names": [
+    "CBS Value",
+    "Unnamed column 2",
+    "Valor Total Item"
+   ],
+   "parse_kwargs": {
+    "input": "{\"model_column\": {\"name\": \"Valor CBS\", \"profile\": {\"non_empty_count\": 3, \"unique_count\": 1, \"inferred_type\": \"integer\", \"numeric_fraction\": 1.0, \"zero_fraction\": 1.0, \"median_length\": 1.0, \"median_digit_count\": 1.0, \"digit_count_values\": [1], \"digit_fraction\": 1.0, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 0.0, \"numeric_q25\": 0.0, \"numeric_median\": 0.0, \"numeric_q75\": 0.0, \"numeric_max\": 0.0, \"fixed_digit_width\": 1, \"fixed_digit_width_fraction\": 1.0, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"all_zero\", \"samples\": [\"0\"]}}, \"client_candidates\": [{\"client_column_id\": \"column_001\", \"name\": \"CBS Value\", \"column_number\": 1, \"name_confidence\": 0.88, \"semantic_header_conflict\": null, \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [], \"catalog_evidence\": [], \"profile\": {\"non_empty_count\": 3, \"unique_count\": 1, \"inferred_type\": \"integer\", \"numeric_fraction\": 1.0, \"zero_fraction\": 1.0, \"median_length\": 1.0, \"median_digit_count\": 1.0, \"digit_count_values\": [1], \"digit_fraction\": 1.0, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 0.0, \"numeric_q25\": 0.0, \"numeric_median\": 0.0, \"numeric_q75\": 0.0, \"numeric_max\": 0.0, \"fixed_digit_width\": 1, \"fixed_digit_width_fraction\": 1.0, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"all_zero\", \"samples\": [\"0\"]}}, {\"client_column_id\": \"column_002\", \"name\": \"Unnamed column 2\", \"column_number\": 2, \"name_confidence\": 0.41, \"semantic_header_conflict\": null, \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [], \"catalog_evidence\": [], \"profile\": {\"non_empty_count\": 0, \"unique_count\": 0, \"inferred_type\": \"empty\", \"numeric_fraction\": 0.0, \"zero_fraction\": 0.0, \"median_length\": 0.0, \"median_digit_count\": 0.0, \"digit_count_values\": [], \"digit_fraction\": 0.0, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": null, \"numeric_q25\": null, \"numeric_median\": null, \"numeric_q75\": null, \"numeric_max\": null, \"fixed_digit_width\": 0, \"fixed_digit_width_fraction\": 0.0, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"empty\", \"samples\": []}}, {\"client_column_id\": \"column_003\", \"name\": \"Valor Total Item\", \"column_number\": 3, \"name_confidence\": 0.37, \"semantic_header_conflict\": null, \"profile_similarity\": 0.0, \"distinctive_sample_overlap\": 0.0, \"relationship_evidence\": [{\"available\": true, \"rows_tested\": 40, \"eligible_rows\": 40, \"coverage\": 1.0, \"score\": 1.0, \"fit_score\": 1.0, \"median_relative_error\": 0.0, \"degenerate\": false, \"rule\": \"line_value_equals_quantity_times_unit_price\", \"target_role\": \"line_value\"}], \"catalog_evidence\": [], \"profile\": {\"non_empty_count\": 40, \"unique_count\": 40, \"inferred_type\": \"floating\", \"numeric_fraction\": 1.0, \"zero_fraction\": 0.0, \"median_length\": 5.0, \"median_digit_count\": 4.0, \"digit_count_values\": [2, 3, 4, 5], \"digit_fraction\": 0.783, \"alpha_fraction\": 0.0, \"negative_fraction\": 0.0, \"numeric_min\": 9.9, \"numeric_q25\": 47.375, \"numeric_median\": 89.125, \"numeric_q75\": 150.925, \"numeric_max\": 293.25, \"fixed_digit_width\": 4, \"fixed_digit_width_fraction\": 0.45, \"valid_cpf_fraction\": 0.0, \"valid_cnpj_fraction\": 0.0, \"valid_nfe_key_fraction\": 0.0, \"evidence_quality\": \"informative\", \"samples\": [\"9.9\", \"16.15\", \"84.8\"]}}]}",
+    "instructions": "Map one client spreadsheet column to one canonical Brazilian invoice column. The column names and name_confidence remain the primary semantic evidence throughout the decision; compare how close the candidate name scores are and never forget them after inspecting values. A client header can be bogus or misleading, so distinctive content and format evidence may override a weak name; generic numeric similarity alone is not enough. profile_similarity is a generic value-shape retrieval signal, not proof of a mapping. Then use representative values, inferred types, formats, lengths, and numeric scales. Recognize dates, monetary values, tax bases, tax rates, tax amounts, CFOP, NCM, CNPJ/CPF, invoice numbers, series, and 44-digit NF-e keys. First identify the semantic role of each header: a tax situation/code is not a tax base, rate, or amount even when all contain numbers. semantic_header_conflict identifies explicit tax-family or role disagreement; treat it as strong contrary evidence. A conflicting candidate may remain viable only when distinctive row content indicates that its header is bogus or wrong. Most canonical fields may be absent from a client export. Do not choose the best of bad candidates: return null unless the evidence supports the same business meaning. Matching only a broad type, generic numbers, zeros, dates, or strings is not semantic evidence. distinctive_sample_overlap reports exact overlap after excluding zeros and trivial short numbers; a positive value is strong row evidence and should be examined together with the headers. relationship_evidence contains conservative row-wise fiscal checks such as tax value approximately equaling base times rate, or line value approximately equaling quantity times unit price. A high score across many rows is strong evidence; a low score is contrary evidence, but legitimate adjustments, rounding, exemptions, credits, and reversals mean it is not an absolute rule. catalog_evidence reports membership in versioned official Brazilian fiscal-code tables. coverage is the fraction of all nonblank values found in the catalog; score also discounts short, collision-prone domains such as two-digit CST. High coverage in CFOP, NCM, municipality, or cClassTrib is distinctive content evidence. CST values overlap across taxes, especially PIS and COFINS, so use the header and tax-family context to disambiguate them. all_zero_only is not useful evidence. State, municipal, and federal registrations are distinct and cannot be selected only because their values have similar shapes. CPF/CNPJ values may contain 11 or 14 digits, may include punctuation, and spreadsheet numeric cells may lose a leading zero. Prefer a candidate that explicitly names the compatible identifier over a generic document-number field. When candidates are otherwise close, prefer the header with the same semantic role and no unrelated extra qualifier. CFOP may appear as four digits (5102) or with an ERP suffix (5102/AA); those formats are compatible. Do not choose a candidate merely because both are numeric. A profile whose evidence_quality is empty or all_zero provides little or no row evidence: zeros neither confirm a mapping nor contradict a strong name match. When row evidence is weak, keep final_confidence close to the relevant name_confidence. Return null when the data does not support a mapping. final_confidence must reflect both the name and data evidence. Keep the reason to one sentence.",
+    "model": "gpt-4o-mini",
+    "store": false,
+    "temperature": 0,
+    "text_format": "invoice_mapper.DataMappingDecision"
+   }
+  }
+ },
+ "resolver_instructions": "Map one client spreadsheet column to one canonical Brazilian invoice column. The column names and name_confidence remain the primary semantic evidence throughout the decision; compare how close the candidate name scores are and never forget them after inspecting values. A client header can be bogus or misleading, so distinctive content and format evidence may override a weak name; generic numeric similarity alone is not enough. profile_similarity is a generic value-shape retrieval signal, not proof of a mapping. Then use representative values, inferred types, formats, lengths, and numeric scales. Recognize dates, monetary values, tax bases, tax rates, tax amounts, CFOP, NCM, CNPJ/CPF, invoice numbers, series, and 44-digit NF-e keys. First identify the semantic role of each header: a tax situation/code is not a tax base, rate, or amount even when all contain numbers. semantic_header_conflict identifies explicit tax-family or role disagreement; treat it as strong contrary evidence. A conflicting candidate may remain viable only when distinctive row content indicates that its header is bogus or wrong. Most canonical fields may be absent from a client export. Do not choose the best of bad candidates: return null unless the evidence supports the same business meaning. Matching only a broad type, generic numbers, zeros, dates, or strings is not semantic evidence. distinctive_sample_overlap reports exact overlap after excluding zeros and trivial short numbers; a positive value is strong row evidence and should be examined together with the headers. relationship_evidence contains conservative row-wise fiscal checks such as tax value approximately equaling base times rate, or line value approximately equaling quantity times unit price. A high score across many rows is strong evidence; a low score is contrary evidence, but legitimate adjustments, rounding, exemptions, credits, and reversals mean it is not an absolute rule. catalog_evidence reports membership in versioned official Brazilian fiscal-code tables. coverage is the fraction of all nonblank values found in the catalog; score also discounts short, collision-prone domains such as two-digit CST. High coverage in CFOP, NCM, municipality, or cClassTrib is distinctive content evidence. CST values overlap across taxes, especially PIS and COFINS, so use the header and tax-family context to disambiguate them. all_zero_only is not useful evidence. State, municipal, and federal registrations are distinct and cannot be selected only because their values have similar shapes. CPF/CNPJ values may contain 11 or 14 digits, may include punctuation, and spreadsheet numeric cells may lose a leading zero. Prefer a candidate that explicitly names the compatible identifier over a generic document-number field. When candidates are otherwise close, prefer the header with the same semantic role and no unrelated extra qualifier. CFOP may appear as four digits (5102) or with an ERP suffix (5102/AA); those formats are compatible. Do not choose a candidate merely because both are numeric. A profile whose evidence_quality is empty or all_zero provides little or no row evidence: zeros neither confirm a mapping nor contradict a strong name match. When row evidence is weak, keep final_confidence close to the relevant name_confidence. Return null when the data does not support a mapping. final_confidence must reflect both the name and data evidence. Keep the reason to one sentence."
+}

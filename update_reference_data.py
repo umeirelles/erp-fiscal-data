@@ -1,4 +1,8 @@
-"""Download authoritative fiscal-code snapshots into reference_data/."""
+"""Baixa cópias atualizadas das tabelas oficiais de códigos fiscais para reference_data/.
+
+Precisa de acesso à internet e regrava os CSV e o manifest.json do diretório
+de saída.
+"""
 
 from __future__ import annotations
 
@@ -14,6 +18,8 @@ from typing import Sequence
 from urllib.request import Request, urlopen
 
 import pandas as pd
+
+from cli_ptbr import PortugueseArgumentParser
 
 
 NFE_BASE = "https://www.nfe.fazenda.gov.br/portal/exibirArquivo.aspx?conteudo="
@@ -39,7 +45,7 @@ def download(url: str, *, nfe: bool = False) -> bytes:
     with urlopen(request, timeout=90) as response:
         content = response.read()
     if not content:
-        raise RuntimeError(f"Official source returned an empty response: {url}")
+        raise RuntimeError(f"A fonte oficial retornou uma resposta vazia: {url}")
     return content
 
 
@@ -196,10 +202,11 @@ def official_frames() -> tuple[dict[str, pd.DataFrame], dict[str, dict[str, obje
         "ibs_cbs_classification": {
             "width": 6,
             "normalizer": "digits",
-            # Many valid codes begin with zeros (for example 000001), so an
-            # ordinary integer status column can collide after Excel removes
-            # leading zeros. Keep this as strong LLM evidence, not a catalog-only
-            # automatic decision.
+            # Muitos códigos válidos começam com zeros (por exemplo, 000001);
+            # por isso, uma coluna comum de situação com números inteiros pode
+            # coincidir com eles depois que o Excel remove os zeros à esquerda.
+            # Fica como evidência forte para a IA, e não como decisão
+            # automática só pelo catálogo.
             "specificity": 0.85,
             "source_version": "IT 2025.002 v1.60; published 2026-06-23",
             "source_url": IBS_CBS_URL,
@@ -308,7 +315,7 @@ def write_snapshot(output: Path) -> None:
             **metadata[name],
             "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         }
-        print(f"{name}: {len(frame)} codes")
+        print(f"{name}: {len(frame)} códigos")
 
     manifest = {
         "schema_version": 1,
@@ -319,12 +326,20 @@ def write_snapshot(output: Path) -> None:
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-    print(f"Wrote {output / 'manifest.json'}")
+    print(f"Arquivo gravado: {output / 'manifest.json'}")
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", default="reference_data")
+    parser = PortugueseArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--output",
+        default="reference_data",
+        metavar="DIRETORIO",
+        help=(
+            "diretório de saída dos CSV e do manifest.json "
+            "(padrão: reference_data, relativo ao diretório atual)"
+        ),
+    )
     return parser
 
 

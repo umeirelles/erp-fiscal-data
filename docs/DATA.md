@@ -1,592 +1,798 @@
-# Data files and formats
+# Arquivos de dados e formatos
 
-This page describes every data file in the repository and every file the tools write: the base model, the client exports, the de-para files, the mapping reports, the mapped workbooks and the fiscal reference catalogs.
+Esta página descreve cada arquivo de dados do repositório e cada arquivo que as ferramentas gravam: o modelo base, as exportações dos clientes, os de-para, os relatórios de mapeamento, as planilhas mapeadas e os catálogos de referência fiscais. Descreve também o esquema em português desses arquivos e como ler um relatório antigo, gravado no esquema legado em inglês.
 
-Related documents:
+Documentos relacionados:
 
-- [README](../README.md): setup and the main commands.
-- [ARCHITECTURE.md](ARCHITECTURE.md): how the mapper reaches each decision.
-- [EVALUATION.md](EVALUATION.md): how the reports are scored against the keys.
-- [KNOWN_ISSUES.md](KNOWN_ISSUES.md): bugs that affect the files described here.
+- [README](../README.md): instalação e os comandos principais.
+- [ARCHITECTURE.md](ARCHITECTURE.md): como o mapeador chega a cada decisão.
+- [EVALUATION.md](EVALUATION.md): como os relatórios são pontuados contra os gabaritos.
+- [KNOWN_ISSUES.md](KNOWN_ISSUES.md): defeitos que afetam os arquivos descritos aqui.
 
-All counts below were measured on 2026-10-08 against the files on the `organize-and-document` branch.
+Todas as contagens abaixo foram medidas em 2026-10-09 nos arquivos do branch `traducao-pt-br`, depois da migração dos relatórios arquivados para o esquema em português.
 
-## Contents
+Os nomes de aba, coluna, chave e valor aparecem entre crases exatamente como `report_schema.py` os grava. Nomes de arquivo e de pasta, flags da CLI e identificadores do código continuam em inglês.
 
-- [Terms](#terms)
-- [Layout](#layout)
-- [Confidentiality](#confidentiality)
-- [The base model: `data/model.xlsx`](#the-base-model-datamodelxlsx)
-- [Client exports: `data/clients/`](#client-exports-dataclients)
-- [De-para files: `data/keys/`](#de-para-files-datakeys)
-- [Mapping reports: `data/reports/`](#mapping-reports-datareports)
-- [Mapped workbooks: `data/mapped/`](#mapped-workbooks-datamapped)
-- [Reference catalogs: `reference_data/`](#reference-catalogs-reference_data)
-- [Regenerating the outputs](#regenerating-the-outputs)
+## Sumário
 
-## Terms
+- [Termos](#termos)
+- [Onde fica cada arquivo](#onde-fica-cada-arquivo)
+- [Confidencialidade](#confidencialidade)
+- [O modelo base: `data/model.xlsx`](#o-modelo-base-datamodelxlsx)
+- [Exportações dos clientes: `data/clients/`](#exportações-dos-clientes-dataclients)
+- [Arquivos de-para: `data/keys/`](#arquivos-de-para-datakeys)
+- [Relatórios de mapeamento: `data/reports/`](#relatórios-de-mapeamento-datareports)
+- [Planilhas mapeadas: `data/mapped/`](#planilhas-mapeadas-datamapped)
+- [Esquema em português e esquema legado](#esquema-em-português-e-esquema-legado)
+- [Catálogos de referência: `reference_data/`](#catálogos-de-referência-reference_data)
+- [Como regenerar as saídas](#como-regenerar-as-saídas)
 
-| Term | Meaning |
+## Termos
+
+| Termo | Significado |
 |---|---|
-| NF-e | *Nota Fiscal eletrônica*, Brazil's electronic invoice. Each one has a 44-digit access key (*chave de acesso*) that ends in a check digit. |
-| CNPJ / CPF | Taxpayer numbers for companies (14 digits) and individuals (11 digits). Both end in check digits. |
-| CFOP | 4-digit fiscal operation code that describes the nature of a transaction (sale, return, transfer, and so on). |
-| NCM | 8-digit Mercosur product classification code. |
-| CST / CSOSN | Tax situation codes, which say how a tax applies to an invoice line. Each tax has its own CST table. CSOSN is the equivalent table for companies in the Simples Nacional regime. |
-| ICMS, IPI, PIS, COFINS, ISS | The current taxes: ICMS is the state VAT, IPI the federal excise on manufactured goods, PIS and COFINS federal contributions on revenue, and ISS the municipal service tax. |
-| CBS, IBS, IS | The taxes introduced by the consumption-tax reform (Lei Complementar 214/2025). CBS is the federal VAT that replaces PIS and COFINS, IBS is the VAT shared by states and municipalities, and IS (*Imposto Seletivo*) is an excise on specific goods. |
-| de-para | Portuguese for "from-to": a table that says which client column feeds which model column. |
+| NF-e, chave de acesso | A chave de acesso da NF-e tem 44 dígitos e termina num dígito verificador (DV). |
+| CNPJ / CPF | 14 e 11 dígitos, os dois com DV. |
+| CFOP, NCM | Natureza da operação (4 dígitos) e classificação da mercadoria (8 dígitos). |
+| CST / CSOSN | Código de situação tributária, com uma tabela por tributo; CSOSN é a tabela do Simples Nacional. |
+| ICMS, IPI, PIS, COFINS, ISS | Os tributos atuais. |
+| CBS, IBS, IS | Os tributos da reforma (LC 214/2025): a CBS federal, que substitui PIS e COFINS, o IBS de estados e municípios e o Imposto Seletivo. |
+| de-para | Tabela que diz qual coluna do cliente alimenta qual coluna do modelo. |
+| gabarito | De-para escrito pelo cliente e usado como resposta certa pelo `mapeval`. |
+| trio fiscal | Base de cálculo × alíquota = valor do imposto, conferido linha a linha na exportação do cliente. |
 
-## Layout
+## Onde fica cada arquivo
 
-| Path | What it is | Written by | Read by |
+| Caminho | O que é | Quem grava | Quem lê |
 |---|---|---|---|
-| `data/model.xlsx` | The firm's base model: 227 target columns and 209 sample rows | the firm (fixed) | `invoice_mapper.py`, `apply_invoice_mapping.py` |
-| `data/clients/` | Four real client ERP exports | the clients | the mapper, apply, `backfill_mapping_steps.py`, `mapeval` |
-| `data/keys/` | Three client-authored de-para files. Two of them are answer keys. | the clients | `mapeval`, `tests/test_mapeval.py` |
-| `data/reports/mapping_<client>_full.xlsx` | Mapping reports, one per client | `invoice_mapper.py`, then reviewers and `backfill_mapping_steps.py` | `apply_invoice_mapping.py`, `mapeval`, `tests/test_mapeval.py` |
-| `data/mapped/<client>_mapped.xlsx` | Deliverables in the model's column layout | `apply_invoice_mapping.py` | the downstream application, reviewers |
-| `reference_data/` | Snapshot of the official fiscal code tables | `update_reference_data.py` | `reference_catalog.py`, through the mapper |
+| `data/model.xlsx` | O modelo base da consultoria: 227 colunas do modelo e 209 linhas de amostra | a consultoria (fixo) | `invoice_mapper.py`, `apply_invoice_mapping.py`, `migrate_reports.py` |
+| `data/clients/` | Quatro exportações reais de ERP | os clientes | o mapeador, o apply, `backfill_mapping_steps.py`, `migrate_reports.py`, `mapeval` |
+| `data/keys/` | Três de-para escritos pelos clientes. Dois deles são gabaritos. | os clientes | `mapeval`, `tests/test_mapeval.py` |
+| `data/reports/mapping_<cliente>_full.xlsx` | Relatórios de mapeamento, um por cliente | `invoice_mapper.py`, depois os revisores, `backfill_mapping_steps.py` e `migrate_reports.py` | `apply_invoice_mapping.py`, `mapeval`, `tests/test_mapeval.py` |
+| `data/mapped/<cliente>_mapped.xlsx` | Entregáveis no layout de colunas do modelo | `apply_invoice_mapping.py` | a aplicação a jusante, os revisores |
+| `reference_data/` | Retrato das tabelas fiscais oficiais | `update_reference_data.py` | `reference_catalog.py`, pelo mapeador e pelo `migrate_reports.py` |
 
-Every file in `data/` and `reference_data/` is tracked in git. The two SAP exports use an upper-case `.XLSX` extension, so type it exactly in commands.
+Todo arquivo em `data/` e em `reference_data/` é versionado no git. As duas exportações SAP têm a extensão `.XLSX` em maiúsculas; digite-a exatamente assim nos comandos.
 
-`mapeval/cli.py` `CLIENTS` and `tests/test_mapeval.py` `KEYED` hard-code these paths, and both CLIs default `--model` to `data/model.xlsx`. If you rename or move a workbook, update them.
+`mapeval/cli.py` (`CLIENTS`), `tests/test_mapeval.py` (`KEYED`) e `tests/test_migrate_reports.py` fixam esses caminhos no código, e o mapeador, o apply e o `migrate_reports.py` usam `--model data/model.xlsx` por padrão. Se renomear ou mover uma planilha, atualize-os.
 
-## Confidentiality
+## Confidencialidade
 
-The workbooks hold real client data, including CNPJ and CPF numbers, NF-e access keys, partner names and document numbers. That applies to:
+As planilhas têm dados reais de clientes, inclusive CNPJ e CPF, chaves de acesso de NF-e, nomes de parceiros e números de documento. Isso vale para:
 
-- the four exports;
-- the de-para files;
-- the sample rows of `model.xlsx` (91% of its `Nº ID fiscal 1` values are valid CPFs, and all of its `Chave de acesso` values are valid NF-e keys);
-- everything derived from them, including the mapped workbooks and the report sheets that quote sample values.
+- as quatro exportações;
+- os de-para;
+- as linhas de amostra do `model.xlsx` (91% dos valores de `Nº ID fiscal 1` são CPFs válidos, e todos os valores de `Chave de acesso` são chaves de NF-e válidas);
+- tudo o que deriva deles, inclusive as planilhas mapeadas e as abas dos relatórios que citam valores de amostra.
 
-The repository is shared with you on purpose, for internal work only:
+O repositório foi compartilhado com você de propósito, só para uso interno:
 
-- Keep it on machines and git remotes the firm controls. Do not push it to a public or personal host, do not paste values into outside tools, and do not attach workbooks to tickets outside the firm.
-- Everything under `data/` is committed, so it is also in git history. Deleting a file from the working tree does not remove it from a clone.
-- **Online mode sends data to OpenAI.** Without `--offline`, `invoice_mapper.py` sends every model and client header to the embeddings API. For each model column that the header pass cannot settle, it also sends value profiles to the chat model. Each profile includes up to `--sample-size` sample values (default 8), taken from the model column and from every shortlisted client column. Nothing is masked; the chat requests set `store=False`. Confirm that the client permits this before you run online.
-- Offline mapping, apply, `mapeval` and the tests never contact OpenAI. `update_reference_data.py` downloads from government sites but sends no client data.
-- `.env` at the repo root is gitignored, and no code reads it. Online runs need `OPENAI_API_KEY` exported in the shell.
+- Mantenha-o em máquinas e remotos git controlados pela consultoria. Não o envie a um serviço público ou pessoal, não cole valores em ferramentas externas e não anexe planilhas a chamados fora da consultoria.
+- Tudo em `data/` está commitado, portanto também está no histórico do git. Apagar um arquivo da árvore de trabalho não o remove de um clone.
+- **O modo online envia dados à OpenAI.** Sem `--offline`, o `invoice_mapper.py` envia todos os cabeçalhos do modelo e do cliente à API de embeddings. Para cada coluna do modelo da segunda passagem que a decisão por catálogo não resolve, envia também perfis de valores ao resolvedor de IA. Cada perfil inclui até `--sample-size` valores de amostra (padrão 8), tirados da coluna do modelo e de cada coluna do cliente do conjunto de candidatos (até 40). Nada é mascarado; as chamadas ao resolvedor usam `store=False`. Confirme que o cliente permite isso antes de rodar online.
+- O mapeamento offline, o apply, o `mapeval`, o `migrate_reports.py` e os testes nunca acessam a OpenAI. O `update_reference_data.py` baixa arquivos de sites do governo, mas não envia nenhum dado de cliente.
+- O `.env` na raiz do repositório está no `.gitignore`, e nenhum código o lê. Execuções online precisam de `OPENAI_API_KEY` exportada no shell.
 
-## The base model: `data/model.xlsx`
+## O modelo base: `data/model.xlsx`
 
-The model has one sheet, `Sheet1`:
+O modelo tem uma aba, `Sheet1`:
 
-- **Row 1** is the header: 227 columns, A to HS.
-- **Rows 2-210** hold 209 sample rows.
-- An autofilter covers `A1:HS210`. There are no frozen panes and no merged cells.
+- **A linha 1** é o cabeçalho: 227 colunas, de A a HS.
+- **As linhas 2 a 210** são 209 linhas de amostra.
+- Um autofiltro cobre `A1:HS210`. Não há painéis congelados nem células mescladas.
 
-The sample rows matter. In online mode the resolver compares a model column's sample values with those of each candidate client column. 180 model columns have at least one sample value. The other 47 have none, so the resolver gets no example values for them.
+As linhas de amostra importam. No modo online, o resolvedor de IA compara os valores de amostra de uma coluna do modelo com os de cada coluna candidata do cliente. 180 colunas do modelo têm pelo menos um valor de amostra. As outras 47 não têm nenhum, então o resolvedor não recebe valores de exemplo para elas.
 
-### Reform-tax blocks, columns 1-28
+### Blocos dos tributos da reforma, colunas 1 a 28
 
-The model opens with one seven-field block per reform tax:
+O modelo começa com um bloco de sete campos para cada tributo da reforma:
 
-| Columns | Tax |
+| Colunas | Tributo |
 |---|---|
 | 1-7 | CBS |
-| 8-14 | IBSM (from its name, the municipal share of IBS) |
+| 8-14 | IBSM (pelo nome, a parcela municipal do IBS) |
 | 15-21 | IBS |
 | 22-28 | IS |
 
-Every block has the same fields in the same order, with the tax as a suffix (`Base CBS`, `Aliquota IBSM`, `Valor IS`):
+Todo bloco tem os mesmos campos na mesma ordem, com o tributo como sufixo (`Base CBS`, `Aliquota IBSM`, `Valor IS`):
 
-| Position in block | Field | Meaning |
+| Posição no bloco | Campo | Significado |
 |---|---|---|
-| 1 | `Tipo de Imposto` | tax type |
-| 2 | `Base` | tax base |
-| 3 | `Aliquota` | rate |
-| 4 | `Valor` | tax amount (base × rate) |
-| 5 | `Isentas` | exempt amount |
-| 6 | `Outras` | other, non-taxed amount |
-| 7 | `Base Reduzida` | reduced base |
+| 1 | `Tipo de Imposto` | tipo de imposto |
+| 2 | `Base` | base de cálculo |
+| 3 | `Aliquota` | alíquota |
+| 4 | `Valor` | valor do imposto (base × alíquota) |
+| 5 | `Isentas` | isentas |
+| 6 | `Outras` | outras (não tributadas) |
+| 7 | `Base Reduzida` | base reduzida |
 
-In the sample rows the four `Tipo de Imposto` columns (1, 8, 15, 22) are empty, and the other 24 reform-tax fields are 0 on every row.
+Nas linhas de amostra, as quatro colunas `Tipo de Imposto` (1, 8, 15 e 22) estão vazias, e os outros 24 campos dos tributos da reforma valem 0 em todas as linhas.
 
-### Columns 29-227
+### Colunas 29 a 227
 
-These are SAP-style Portuguese headers, in four groups:
+São cabeçalhos em português no estilo do SAP, em quatro grupos:
 
-- **Document fields:** `Data de lançamento`, `Nº de documento`, `Nº da Nota Fiscal`, `Série`, `CFOP`, the partner's `Nome` and `Nº ID fiscal 1`, `Chave de acesso`.
-- **Current taxes:** ICMS, ICMS-ST (ICMS collected in advance under tax substitution), IPI, PIS, COFINS, ISS, FECP (a state poverty-fund surcharge on ICMS) and DIF_ALIQ (the ICMS rate differential on interstate operations), along with further ICMS-related SAP tax types (ICAP, ICEP, ICSP, ICOP). Most of them use the same Tipo/Base/Aliquota/Valor/Isentas/Outras/Base Reduzida fields, though a tax's fields are not always adjacent. ICMS, for example, has `Base ICMS` at 41 and `Aliquota ICMS` at 190.
-- **Item and import fields:** `Material`, `Nº do NCM`, `Quantidade`, `Preço líq.`, customs clearance dates and places.
-- **Code and legal-text columns:**
-  - `CST IPI`, `CST COFINS`, `CST PIS` and `CST ICMS` are columns 219-222.
-  - The IBS/CBS CST and classification code are columns 176-177.
-  - `Texto ICMS`, `Texto IPI`, `Lei COFINS` and `Lei tributária PIS` hold SAP tax-law references.
+- **Campos do documento:** `Data de lançamento`, `Nº de documento`, `Nº da Nota Fiscal`, `Série`, `CFOP`, o `Nome` e o `Nº ID fiscal 1` do parceiro, `Chave de acesso`.
+- **Tributos atuais:** ICMS, ICMS-ST, IPI, PIS, COFINS, ISS, FECP e DIF_ALIQ, além de outros tipos de imposto do SAP ligados ao ICMS (ICAP, ICEP, ICSP, ICOP). A maioria usa os mesmos campos Tipo/Base/Aliquota/Valor/Isentas/Outras/Base Reduzida, mas os campos de um tributo nem sempre ficam lado a lado. O ICMS, por exemplo, tem `Base ICMS` na coluna 41 e `Aliquota ICMS` na 190.
+- **Campos do item e da importação:** `Material`, `Nº do NCM`, `Quantidade`, `Preço líq.`, datas e locais de desembaraço aduaneiro.
+- **Códigos e textos legais:**
+  - `CST IPI`, `CST COFINS`, `CST PIS` e `CST ICMS` são as colunas 219 a 222.
+  - O CST e o código de classificação do IBS/CBS são as colunas 176 e 177.
+  - `Texto ICMS`, `Texto IPI`, `Lei COFINS` e `Lei tributária PIS` guardam referências à legislação no SAP.
 
-### Repeated headers
+### Cabeçalhos repetidos
 
-Two header names repeat:
+Dois cabeçalhos se repetem:
 
-- `Descrição` at columns 35 and 195, with identical text.
-- `Domicílio fiscal` (76) and `Domicílio Fiscal` (154), which differ only in case.
+- `Descrição` nas colunas 35 e 195, com o mesmo texto.
+- `Domicílio fiscal` (76) e `Domicílio Fiscal` (154), que só diferem na caixa.
 
-`SheetTable.from_excel` (invoice_mapper.py) compares normalized headers, so it names the second column of each pair `... (occurrence 2)`. Reports and keys address model columns by number, so the repeats are never ambiguous there. If you read `Mapped Data` with pandas, the second `Descrição` comes back as `Descrição.1`.
+`SheetTable.from_excel` (invoice_mapper.py) compara cabeçalhos normalizados e por isso chama a segunda coluna de cada par de `... (occurrence 2)` em memória. Esse sufixo nunca é gravado para colunas do modelo: relatórios e gabaritos endereçam as colunas do modelo pelo número, e `coluna_modelo` (como `coluna_modelo_mais_proxima` e os cabeçalhos de `Dados Mapeados`) traz o cabeçalho sem sufixo, então ali as repetições nunca são ambíguas. Lendo `Dados Mapeados` com o pandas, o segundo `Descrição` vem como `Descrição.1`.
 
-### Do not change it
+### Não mexa no modelo
 
-`model.xlsx` is fixed for now. Do not trim, reorder, rename or restructure it, and do not propose changes that depend on it changing.
+O `model.xlsx` está fixo por enquanto. Não corte, reordene, renomeie nem reestruture o arquivo, e não proponha mudanças que dependam de ele mudar.
 
-It is a deliberately oversized superset that covers every field any client might send. A run that delivers only part of the model is the expected outcome, not a shortfall.
+Ele é um superconjunto grande de propósito, que cobre todo campo que algum cliente possa enviar. Uma execução que entrega só parte do modelo é o resultado esperado, não uma deficiência.
 
-There are also mechanical reasons to leave it alone:
+Há também razões mecânicas para não mexer nele:
 
-- Every report records `model_sha256`, and `apply_invoice_mapping.py` refuses a report whose model hash differs.
-- Reports, keys and `mapeval` all address model columns by position.
+- Todo relatório registra `sha256_modelo`, e o `apply_invoice_mapping.py` recusa um relatório cujo hash do modelo é diferente.
+- Relatórios, gabaritos e `mapeval` endereçam as colunas do modelo pela posição.
 
-## Client exports: `data/clients/`
+## Exportações dos clientes: `data/clients/`
 
-These are four real ERP exports, one sheet each, with the header on row 1. They are reference examples for learning mapping strategies that transfer to other clients. They are not the product: production will see many clients nobody has seen yet.
+São quatro exportações reais de ERP, cada uma com uma aba e o cabeçalho na linha 1. Elas são exemplos de referência para aprender estratégias de mapeamento que se transfiram para outros clientes, nunca um conjunto de treino. Não são o produto: em produção virão muitos clientes que ninguém viu ainda.
 
-- Do not tune thresholds, vocabulary or rules against these four files.
-- No code may branch on a client name.
-- Validate changes leave-one-client-out (see [EVALUATION.md](EVALUATION.md)).
+- Não ajuste limiares, vocabulário ou regras contra estes quatro arquivos.
+- Nenhum código pode ramificar pelo nome de um cliente.
+- Valide as mudanças deixando um cliente de fora (ver [EVALUATION.md](EVALUATION.md#5-validação-deixando-um-cliente-de-fora)), e prefira evidência que se transfira para um ERP nunca visto.
 
-| File | ERP | Sheet | Data rows | Columns | Notes |
+| Arquivo | ERP | Aba | Linhas de dados | Colunas | Observações |
 |---|---|---|---|---|---|
-| `datasul_maio.xlsx` | Datasul | `datasul` | 6,804 | 348 | Every header is a fixed 12-character field, and 206 of them end in padding spaces (`'Filial      '`). 3 header names repeat. 36 columns hold no values. |
-| `oracle.xlsx` | Oracle | `oracle` | 7,340 | 48 | Upper-case headers (`ORGANIZACAO`, `DATA GL`, `CFO`). 1 column holds no values. |
-| `sap_procosa.XLSX` | SAP | `Sheet1` | 18,209 | 118 | `Direito` appears 3 times. 1 column holds no values. |
-| `sap_terumo.XLSX` | SAP | `Sheet1` | 727 | 365 | English SAP field labels, some in Portuguese. 23 header names repeat (`Reserved` 5 times). 89 columns hold no values. |
+| `datasul_maio.xlsx` | Datasul | `datasul` | 6.804 | 348 | Todo cabeçalho é um campo fixo de 12 caracteres, e 206 deles terminam com espaços de preenchimento (`'Filial      '`). 3 cabeçalhos se repetem exatamente, 4 depois de `normalize_header` (`Aliq. COFINS` e `Aliq. Cofins`). 36 colunas não têm valor nenhum. |
+| `oracle.xlsx` | Oracle | `oracle` | 7.340 | 48 | Cabeçalhos em maiúsculas (`ORGANIZACAO`, `DATA GL`, `CFO`). 1 coluna sem valor nenhum. |
+| `sap_procosa.XLSX` | SAP | `Sheet1` | 18.209 | 118 | `Direito` aparece 3 vezes. 1 coluna sem valor nenhum. |
+| `sap_terumo.XLSX` | SAP | `Sheet1` | 727 | 365 | Rótulos de campo do SAP em inglês, alguns em português. 23 cabeçalhos se repetem exatamente (`Reserved` 5 vezes), 25 depois de `normalize_header`. 89 colunas sem valor nenhum. |
 
-How the tools read an export: `SheetTable.from_excel` loads the sheet with `header=None, dtype=object`, so no value is coerced.
+Como as ferramentas leem uma exportação: `SheetTable.from_excel` carrega a aba com `header=None, dtype=object`, então nenhum valor é convertido.
 
-- Headers lose their surrounding spaces.
-- A blank header becomes `Unnamed column N`.
-- A repeated header gets a ` (occurrence N)` suffix, for example `Name 1 (occurrence 2)` in sap_terumo. Repeats are detected after `normalize_header`, so headers that differ only in case, accents or punctuation count as repeats.
+- Os cabeçalhos perdem os espaços das pontas.
+- Um cabeçalho em branco vira `Unnamed column N` em memória e `Coluna sem nome N` nos arquivos.
+- Um cabeçalho repetido ganha o sufixo ` (occurrence N)` em memória e ` (ocorrência N)` nos arquivos, por exemplo `Name 1 (ocorrência 2)` em sap_terumo. As repetições são detectadas depois de `normalize_header`, então cabeçalhos que só diferem na caixa, nos acentos ou na pontuação contam como repetidos.
 
-That display name is what reports and reviewers use. For an export whose header is not on row 1, pass `--client-header-row` (1-based) to both the mapper and apply.
+A forma em memória é entrada do embedding e do resolvedor de IA e por isso fica em inglês; a forma em português é a que relatórios e revisores usam. O cabeçalho em si é dado do cliente e nunca é traduzido: `Net value` continua `Net value`, só o sufixo muda. Para uma exportação cujo cabeçalho não está na linha 1, passe `--client-header-row` (contada a partir de 1) ao mapeador e ao apply.
 
-Every report stores the SHA-256 of its export (`client_sha256`), and apply refuses an export that differs. Re-saving an export in Excel changes its hash and invalidates its report. All four exports match the hashes recorded in their reports.
+Todo relatório guarda o SHA-256 da sua exportação (`sha256_cliente`), e o apply recusa uma exportação diferente. Salvar a exportação de novo no Excel muda o hash e invalida o relatório. As quatro exportações conferem com os hashes gravados nos seus relatórios.
 
-## De-para files: `data/keys/`
+## Arquivos de-para: `data/keys/`
 
-The clients wrote three de-para files. Only two of them are answer keys.
+Os clientes escreveram três de-para. Só dois deles são gabaritos.
 
-### Answer-key layout (datasul, oracle)
+### Layout dos gabaritos (datasul, oracle)
 
-| Row | Content |
+| Linha | Conteúdo |
 |---|---|
-| 1 | For each model column the client has, free text `Coluna X` naming the export's Excel column letter (`Coluna I` is column 9). The cell is blank for every other model column. Some cells carry trailing spaces (`'Coluna BV '`). |
-| 2 | The 227 model headers, identical to row 1 of `data/model.xlsx`. |
-| 3 onward | The client's data rearranged into the model layout, row by row in step with the export: key row 3 matches export row 2, and so on. |
+| 1 | Para cada coluna do modelo que o cliente tem, o texto livre `Coluna X`, com a letra da coluna na exportação (`Coluna I` é a coluna 9). A célula fica em branco nas demais colunas do modelo. Algumas células têm espaços no fim (`'Coluna BV '`). |
+| 2 | Os 227 cabeçalhos do modelo, idênticos à linha 1 de `data/model.xlsx`. |
+| 3 em diante | Os dados do cliente rearranjados no layout do modelo, linha a linha, em paralelo com a exportação: a linha 3 do gabarito corresponde à linha 2 da exportação, e assim por diante. |
 
-| File | Sheet | Model columns annotated | Data rows | Export data rows |
+| Arquivo | Aba | Colunas do modelo anotadas | Linhas de dados | Linhas de dados da exportação |
 |---|---|---|---|---|
-| `de_para_datasul.xlsx` | `Data Sul` | 30 | 6,804 | 6,804 |
-| `de_para_oracle.xlsx` | `Oracle` | 26 | 7,338 | 7,340 |
+| `de_para_datasul.xlsx` | `Data Sul` | 30 | 6.804 | 6.804 |
+| `de_para_oracle.xlsx` | `Oracle` | 26 | 7.338 | 7.340 |
 
-Both sheets declare a range of `A1:HS7340`, which is larger than their data. Count populated rows instead of trusting `max_row`.
+As duas abas declaram o intervalo `A1:HS7340`, maior do que os dados. Conte as linhas preenchidas em vez de confiar em `max_row`.
 
-`mapeval` reads row 1 only, through `mapeval/truth.py` `load_answer_key` and `mapeval/excel.py` `parse_coluna_annotation`. The two keys together annotate 56 model columns (30 + 26). Those 56 are the only recall denominator; 227 never is. No code reads the data rows. They are what the corrections below were checked against.
+O `mapeval` lê só a linha 1, por `mapeval/truth.py` (`load_answer_key`) e `mapeval/excel.py` (`parse_coluna_annotation`). Os dois gabaritos juntos anotam 56 colunas do modelo (30 + 26). Essas 56 são o único denominador do recall; 227 nunca é. Nenhum código lê as linhas de dados. Foi contra elas que as correções abaixo foram conferidas.
 
-The keys are a regression test, not training data. Never derive rules, vocabulary or thresholds from them.
+Os gabaritos são um teste de regressão, não dado de treino. Nunca derive regras, vocabulário ou limiares deles.
 
-### Four known key defects
+### Quatro defeitos conhecidos nos gabaritos
 
-`KEY_CORRECTIONS` in `mapeval/truth.py` overrides four annotations where the key is wrong and the mapper is right:
+`KEY_CORRECTIONS`, em `mapeval/truth.py`, substitui quatro anotações em que o gabarito está errado e o mapeador está certo:
 
-| Client | Model column | Key names | Corrected to | Why |
+| Cliente | Coluna do modelo | O gabarito diz | Corrigido para | Por quê |
 |---|---|---|---|---|
-| oracle | 213 `Aliquota PIS` | c37 `ALIQ COFINS` | c36 `ALIQ PIS` | the key gives the COFINS rate for the PIS rate |
-| oracle | 220 `CST COFINS` | c39 `CST-PIS` | c40 `CST-COFINS` | the PIS/COFINS pair is transposed in the key |
-| oracle | 221 `CST PIS` | c40 `CST-COFINS` | c39 `CST-PIS` | same transposition |
-| datasul | 184 `Aliquota COFINS` | c99 `Aliq. COFINS` | c188 `Aliq. Cofins` | c99 belongs to another block of the export and does not fit the rest of the key; c188 satisfies base × rate = value with the key's own PIS/COFINS base and value columns (model 52-55) |
+| oracle | 213 `Aliquota PIS` | c37 `ALIQ COFINS` | c36 `ALIQ PIS` | o gabarito dá a alíquota da COFINS no lugar da do PIS |
+| oracle | 220 `CST COFINS` | c39 `CST-PIS` | c40 `CST-COFINS` | o par PIS/COFINS está trocado no gabarito |
+| oracle | 221 `CST PIS` | c40 `CST-COFINS` | c39 `CST-PIS` | a mesma troca |
+| datasul | 184 `Aliquota COFINS` | c99 `Aliq. COFINS` | c188 `Aliq. Cofins` | c99 pertence a outro bloco da exportação e não combina com o resto do gabarito; c188 fecha base × alíquota = valor com as colunas de base e de valor do PIS/COFINS do próprio gabarito (modelo 52 a 55) |
 
-`mapeval` applies the corrections by default. `python -m mapeval --strict-key-only` scores against the raw keys instead. The corrections are worth exactly four columns in both the delivered and the found counts. `tests/test_mapeval.py` (`test_the_four_key_corrections_are_worth_exactly_four_columns`) asserts this for the found count only. See [EVALUATION.md](EVALUATION.md) for the figures.
+O `mapeval` aplica as correções por padrão. `python -m mapeval --strict-key-only` pontua contra os gabaritos crus. As correções valem exatamente quatro colunas, tanto nas entregues quanto nas encontradas. `tests/test_mapeval.py` (`test_the_four_key_corrections_are_worth_exactly_four_columns`) só confere isso nas encontradas. Os números estão em [EVALUATION.md](EVALUATION.md#1-gabaritos-arquivos-de-para).
 
-### `de_para_procosa.xlsx` is not a key
+### `de_para_procosa.xlsx` não é gabarito
 
-- Its sheet, `SAP`, has 226 columns. Row 1 labels each column `ITEM` (155 columns) or `NOTA` (71): whether the field belongs to the invoice line or to the invoice as a whole. There are no `Coluna X` annotations.
-- Row 2 is the model header without its first column (`Tipo de Imposto CBS`), so file column N is model column N+1.
-- File column 31 (model 32, `Nº da Nota Fiscal`) holds a note instead of the header. The note says the NF-e number was placed in column GZ, which is file column 208 and model column 209 (`Número de nota fiscal eletrônica`).
-- It has 99 data rows (rows 3-101), although the sheet declares 209.
-- None of its 97 document numbers occurs anywhere in `sap_procosa.XLSX`, so it was written against a different extract. Its `Chave de acesso` column holds 52 valid NF-e access keys, and the export holds no access keys at all.
+- A aba dele, `SAP`, tem 226 colunas. A linha 1 marca cada coluna como `ITEM` (155 colunas) ou `NOTA` (71): se o campo pertence à linha da nota ou à nota inteira. Não há anotações `Coluna X`.
+- A linha 2 é o cabeçalho do modelo sem a primeira coluna (`Tipo de Imposto CBS`), então a coluna N do arquivo é a coluna N+1 do modelo.
+- A coluna 31 do arquivo (modelo 32, `Nº da Nota Fiscal`) traz uma observação no lugar do cabeçalho. Ela diz que o número da NF-e foi posto na coluna GZ, que é a coluna 208 do arquivo e a 209 do modelo (`Número de nota fiscal eletrônica`).
+- Tem 99 linhas de dados (linhas 3 a 101), embora a aba declare 209.
+- Nenhum dos seus 97 números de documento aparece em `sap_procosa.XLSX`, então ele foi escrito contra outra extração. A coluna `Chave de acesso` dele tem 52 chaves de acesso de NF-e válidas, e a exportação não tem chave de acesso nenhuma.
 
-It documents record granularity, not which export column feeds which model column. That is why `mapeval/cli.py` `CLIENTS` gives sap_procosa no key. sap_terumo has no de-para at all.
+Ele documenta a granularidade do registro, não qual coluna da exportação alimenta qual coluna do modelo. Por isso `CLIENTS`, em `mapeval/cli.py`, não dá gabarito a sap_procosa. sap_terumo não tem de-para nenhum.
 
-For both unkeyed clients, `mapeval` prints only the accept count and checks for accepts onto client columns that hold no values.
+Para os dois clientes sem gabarito, o `mapeval` imprime `SEM GABARITO`, só a contagem de aceitos, e confere se há aceites em colunas do cliente sem valor nenhum (`aceites em coluna vazia`).
 
-## Mapping reports: `data/reports/`
+## Relatórios de mapeamento: `data/reports/`
 
-`invoice_mapper.py` writes one report per run, through `write_results`. The committed reports are named `mapping_<client>_full.xlsx`, where `<client>` is `datasul`, `oracle`, `sap_procosa` or `sap_terumo`.
+O `invoice_mapper.py` grava um relatório por execução, por `write_results`, no esquema em português: `versao_esquema_mapeamento` igual a 3 (`MAPPING_SCHEMA_VERSION`). Os relatórios arquivados se chamam `mapping_<cliente>_full.xlsx`, em que `<cliente>` é `datasul`, `oracle`, `sap_procosa` ou `sap_terumo`. Os quatro foram gravados no esquema legado em inglês e migrados para o português sem reexecutar o mapeador (ver [Migração dos relatórios arquivados](#migração-dos-relatórios-arquivados)).
 
-The mapper's default output is `mapping_<export stem>.xlsx` in the current directory, so pass `--output` explicitly. An output ending in `.csv` writes only the Mappings table; apply cannot read it.
+A saída padrão do mapeador é `mapping_<nome do arquivo do cliente>.xlsx` no diretório atual, então passe `--output` explicitamente. Uma saída terminada em `.csv` grava só a tabela `Mapeamentos`; o apply não consegue lê-la.
 
-> **Reviewer verdicts are easy to destroy.** `write_results` always writes the three reviewer columns blank, and it overwrites its output path without asking. Pointing `--output` at an existing report erases that report's verdicts; today that would erase sap_procosa's 26. Write each new run to a new file name.
+> **Os pareceres do revisor se perdem com facilidade.** O `write_results` grava as três colunas do revisor sempre em branco e sobrescreve o arquivo de saída sem perguntar. Apontar `--output` para um relatório existente apaga os pareceres dele; hoje isso apagaria os 26 de sap_procosa. Grave cada execução nova com um nome de arquivo novo.
 
-### Sheets
+### Abas
 
-The sheets come in this order:
+As abas vêm nesta ordem:
 
-1. **`Mappings`** must stay first. `apply_invoice_mapping.py` (`_ordered_mapping`) reads sheet index 0 without naming it, so a sheet inserted in front breaks apply with a misleading `Mapping report is missing columns` error. If you add a sheet in Excel, put it at the end.
-2. **`Run Metadata`**.
-3. **`Unmatched Client Columns`**.
-4. **`Adjudication Queue`**.
+1. **`Mapeamentos`** precisa continuar em primeiro. O `apply_invoice_mapping.py` (`_read_mapping_report`) lê a aba de índice 0 sem procurá-la pelo nome, então uma aba inserida antes dela quebra o apply com um erro enganoso: `Não foi possível identificar o esquema da aba Mapeamentos: o cabeçalho não tem 'numero_coluna_modelo' ...`. Se acrescentar uma aba no Excel, ponha no fim.
+2. **`Metadados da Execução`**.
+3. **`Colunas do Cliente sem Uso`**.
+4. **`Fila de Revisão`**.
 
-Sheets 3 and 4 are absent from the older sap_procosa report (see [sap_procosa's older report](#sap_procosas-older-report)). A current run writes both sheets even when it has nothing to list, so an absent sheet always means an older report.
+As abas 3 e 4 não existem no relatório antigo de sap_procosa (ver [O relatório antigo de sap_procosa](#o-relatório-antigo-de-sap_procosa)). Uma execução atual grava as duas mesmo sem nada a listar, então uma aba ausente sempre indica um relatório antigo.
 
-### Status counts
+O apply procura `Metadados da Execução` pelo nome, e o `mapeval` faz o mesmo com `Mapeamentos` (é a única aba que ele lê); a comparação ignora maiúsculas, acentos e espaços nas pontas. Um relatório com a mesma aba nos dois esquemas (por exemplo, `Metadados da Execução` e `Run Metadata`) é recusado.
 
-| Report | accepted | review | no_match | Reviewer verdicts |
+### Contagem por situação
+
+| Relatório | `aceito` | `revisao` | `sem_correspondencia` | Pareceres do revisor |
 |---|---|---|---|---|
 | datasul | 19 | 95 | 113 | 0 |
 | oracle | 18 | 37 | 172 | 0 |
 | sap_procosa | 45 | 66 | 116 | 26 |
 | sap_terumo | 67 | 92 | 68 | 0 |
 
-The three statuses mean:
+As três situações significam:
 
-- **accepted**: the row cleared the accept gate and is delivered.
-- **review**: a candidate exists, but the gate withheld it.
-- **no_match**: the mapper found no counterpart. Because the model is a superset, this is often the correct answer: the client does not send that field.
+- **`aceito`**: a linha passou pelo limiar de aceite e é entregue.
+- **`revisao`**: existe uma candidata, mas o limiar a reteve.
+- **`sem_correspondencia`**: o mapeador não achou contrapartida. Como o modelo é um superconjunto, muitas vezes essa é a resposta certa: o cliente não envia aquele campo.
 
-Every review row carries a proposed client column, and no no_match row does.
+Toda linha `revisao` traz uma coluna do cliente proposta, e nenhuma linha `sem_correspondencia` traz.
 
-### `Mappings`
+### `Mapeamentos`
 
-`Mappings` has one row per model column, in model order. These are its columns as a fresh report writes them (`MappingResult` plus `REVIEWER_COLUMNS` in invoice_mapper.py):
+`Mapeamentos` tem uma linha por coluna do modelo, na ordem do modelo. Estas são as colunas como um relatório novo as grava (`MappingResult` seguido de `REVIEWER_COLUMNS`, em invoice_mapper.py, com os cabeçalhos de `report_schema.COLUMNS["mappings"]`):
 
-| Column | Meaning |
+| Coluna | Significado |
 |---|---|
-| `model_column_number` | 1-based position in `data/model.xlsx`. |
-| `model_column` | Model header. Apply checks it against the model, position by position. |
-| `client_column_number` | 1-based export column proposed. Blank on no_match rows. |
-| `client_column` | Its display name. Apply checks it against the export, which catches a report made from a different layout. |
-| `name_confidence` | Header similarity of the chosen column: embeddings online, lexical offline. |
-| `name_runner_up_confidence` | Best header similarity among the other client columns. |
-| `name_margin` | The chosen column's lead over the runner-up. |
-| `data_confidence` | Local score from the values. Blank on pass-1 (header-only) accepts. |
-| `final_confidence` | The score the accept gate tests (`--final-threshold`, default 0.90). |
-| `method` | The branch that produced the row: `name`, `data`, `catalog`, `name_only` (offline review) or `data_error` (the resolver call failed). See "Values of `method`" in [ARCHITECTURE.md](ARCHITECTURE.md). |
-| `status` | `accepted`, `review` or `no_match`. |
-| `reason` | One sentence explaining the row. |
-| `catalog_name` | Reference catalog the column's values matched, if any. |
-| `catalog_coverage` | Share of non-empty rows whose value is a valid code. |
-| `catalog_distinct_coverage` | Share of distinct well-formed codes that are valid. Only the pass-1 audit fills it. |
-| `catalog_confidence` | Catalog score: distinct coverage × catalog specificity × a small-sample factor. |
-| `arithmetic_proof` | Text, set when a base × rate = value trio in the export places this column here. |
-| `supported_by` | Evidence steps that back the chosen column, weakest first, joined with ` + `. |
-| `decided_by` | The strongest of them. |
-| `vetoed_by` | The guard that refused an otherwise viable match: `vacuity` or `family_conflict`. |
-| `llm_data_confidence`, `llm_final_confidence` | The resolver's own scores, kept for audit. The gate does not use them. |
-| `reviewer_status`, `correct_client_column`, `reviewer_note` | Written blank. Reviewers fill them in (see [Reviewer columns](#reviewer-columns)). |
+| `numero_coluna_modelo` | Posição em `data/model.xlsx`, a partir de 1. |
+| `coluna_modelo` | Cabeçalho do modelo. O apply o confere com o modelo, posição a posição. |
+| `numero_coluna_cliente` | Coluna da exportação proposta, a partir de 1. Vazia nas linhas `sem_correspondencia`. |
+| `coluna_cliente` | O nome de exibição dela. O apply o confere com a exportação, o que pega um relatório feito de outro layout. |
+| `confianca_nome` | Semelhança de cabeçalho da coluna escolhida: embeddings online, léxica offline. |
+| `confianca_nome_segunda_melhor` | A melhor semelhança de cabeçalho entre as demais colunas do cliente. |
+| `margem_nome` | A vantagem da coluna escolhida sobre a segunda melhor. |
+| `confianca_dados` | Pontuação local tirada dos valores. Vazia nos aceites da primeira passagem (só cabeçalho). |
+| `confianca_final` | A pontuação que o limiar de aceite testa (`--final-threshold`, padrão 0,90). |
+| `metodo` | O ramo que produziu a linha: `nome`, `dados`, `catalogo`, `somente_nome` (revisão offline) ou `erro_dados` (a chamada ao resolvedor de IA falhou). Ver [Valores de `metodo`](ARCHITECTURE.md#valores-de-metodo) em ARCHITECTURE.md. |
+| `situacao` | `aceito`, `revisao` ou `sem_correspondencia`. |
+| `justificativa` | Uma frase que explica a linha (ver [Frases em português e prosa da IA](#frases-em-português-e-prosa-da-ia)). |
+| `nome_catalogo` | O catálogo de referência que os valores da coluna casaram, se houver. |
+| `cobertura_catalogo` | Fração das linhas não vazias cujo valor é um código válido. |
+| `cobertura_distinta_catalogo` | Fração dos códigos distintos bem formados que são válidos. Só a auditoria da primeira passagem a preenche. |
+| `confianca_catalogo` | Pontuação do catálogo: cobertura distinta × especificidade do catálogo × um fator para amostras pequenas. |
+| `prova_aritmetica` | Texto, preenchido quando um trio fiscal da exportação (base de cálculo × alíquota = valor do imposto) põe esta coluna aqui. |
+| `apoiado_por` | As etapas de evidência que sustentam a coluna escolhida, da mais fraca para a mais forte, unidas por ` + `. |
+| `decidido_por` | A mais forte delas. |
+| `vetado_por` | A trava que recusou uma correspondência que de outro modo seria viável: `coluna_vazia` ou `conflito_tributario`. |
+| `confianca_dados_ia`, `confianca_final_ia` | As pontuações do próprio resolvedor de IA, guardadas para auditoria. O limiar não as usa. |
+| `parecer_revisor`, `coluna_cliente_correta`, `observacao_revisor` | Gravadas em branco. Os revisores as preenchem (ver [Colunas do revisor](#colunas-do-revisor)). |
 
-The confidence values are decision signals, not calibrated probabilities.
+As confianças são sinais de decisão, não probabilidades calibradas.
 
-The step names come from `mapping_steps.py`. These evidence steps are listed from weakest to strongest:
+Os ids de etapa vêm de `mapping_steps.py` e são gravados em português (`report_schema.STEP_IDS`). Estas são as etapas de evidência, da mais fraca para a mais forte:
 
-1. `resolver`
-2. `lexical`
-3. `semantic`
-4. `profile`
-5. `identifier`
-6. `catalog`
-7. `arithmetic`
+1. `resolvedor_ia`
+2. `lexico`
+3. `semantico`
+4. `perfil`
+5. `identificador`
+6. `catalogo`
+7. `aritmetica`
 
-The last four transfer to an unseen ERP, because they rest on tax law, official code tables and check digits rather than on this client's header words. The share of accepts that rest on header-independent evidence is the project's generalization metric. For the keyed clients, `mapeval` prints a narrower version as "header-independent accepts". It counts an accept only when the row carries a decisive `arithmetic_proof` or its `method` is `catalog`, and it does not read the step columns (see [EVALUATION.md](EVALUATION.md#the-generalization-metric) and item 2.4 in [KNOWN_ISSUES.md](KNOWN_ISSUES.md)). "Step attribution" in [ARCHITECTURE.md](ARCHITECTURE.md) explains the rest.
+As quatro últimas se transferem para um ERP desconhecido, porque se apoiam na lei tributária, nas tabelas oficiais de códigos e em dígitos verificadores, e não nas palavras do cabeçalho deste cliente. A fração dos aceites apoiados em evidência independente de cabeçalho é a métrica de generalização do projeto. Para os clientes com gabarito, o `mapeval` imprime uma versão mais estreita como `aceites independentes de cabeçalho`. Ela só conta um aceite quando a linha traz uma `prova_aritmetica` decisiva ou o `metodo` é `catalogo`, e não lê as colunas de etapas (ver [A métrica de generalização](EVALUATION.md#a-métrica-de-generalização) em EVALUATION.md e o item [2.4 de KNOWN_ISSUES.md](KNOWN_ISSUES.md#24-duas-definições-da-métrica-de-generalização)). [Atribuição de etapas](ARCHITECTURE.md#atribuição-de-etapas), em ARCHITECTURE.md, explica o resto.
 
-**All four committed reports got their step columns from a backfill.** `backfill_mapping_steps.py` added them after the runs (commit 88c503b) by rebuilding them from the stored scores. Three consequences:
+#### Frases em português e prosa da IA
 
-- It writes two labels that a fresh run never does:
-  - `unrecorded`: an objective step ran, but the stored scores do not say which.
-  - `catalog (agrees)`: catalog evidence agreed but was too weak to decide.
-- It reads `llm_final_confidence` from a stale position, three cells off. As a result `resolver` never appears in `supported_by` in the datasul, oracle and terumo reports. That includes the 75, 32 and 78 rows (respectively) that have a proposed column and a positive resolver score. See [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
-- The step columns sit in different places in different reports:
+As frases que o mapeador escreve (`justificativa`, `prova_aritmetica`, `detalhe_sinais`, `motivo_retencao` e `divergencia_ia`) são escritas em português na origem, com vírgula decimal, por exemplo `valor = base x alíquota se confirma para ICMS em 453 linhas, com aderência 1,0`.
 
-| Report | Position of the step columns |
+A justificativa escrita pelo resolvedor de IA continua em inglês. O prompt é em inglês, então a IA responde em inglês: isso vale para as 502 justificativas da IA nos relatórios arquivados e para as de execuções futuras. Ninguém as traduz, nem a migração.
+
+Quando o cliente tem mais de um bloco do mesmo tributo, a prova confirma o tributo mas não aponta uma coluna só, e o texto contém o trecho `não distingue esta coluna`. `report_schema.proof_is_decisive` reconhece esse marcador e também o equivalente legado em inglês (`does not single out`), e uma prova assim não conta como evidência aritmética.
+
+#### As colunas de etapas dos relatórios arquivados
+
+**Os quatro relatórios arquivados receberam as colunas de etapas por preenchimento retroativo (backfill).** O `backfill_mapping_steps.py` as acrescentou depois das execuções (commit 88c503b), ainda no esquema legado, reconstruindo-as a partir das pontuações gravadas. Três consequências:
+
+- Ele grava dois valores que uma execução nova nunca grava (aqui com os nomes já migrados):
+  - `nao_registrado`: uma etapa objetiva rodou, mas as pontuações gravadas não dizem qual.
+  - `catalogo (concorda)`: a evidência de catálogo concordou, mas era fraca demais para decidir.
+- Ele lê `llm_final_confidence` (hoje `confianca_final_ia`) de uma posição desatualizada, três células ao lado. Por isso `resolvedor_ia` nunca aparece em `apoiado_por` nos relatórios de datasul, oracle e sap_terumo. Isso inclui as 75, 32 e 78 linhas (respectivamente) que têm coluna proposta e pontuação positiva do resolvedor. Em sap_procosa ele aparece em 60 linhas. Ver o item [1.1 de KNOWN_ISSUES.md](KNOWN_ISSUES.md#11-o-backfill-lê-células-deslocadas-e-resolvedor_ia-não-aparece-em-apoiado_por).
+- As colunas de etapas ficam em lugares diferentes em cada relatório:
+
+| Relatório | Posição das colunas de etapas |
 |---|---|
-| fresh run | after `catalog_confidence`: `arithmetic_proof`, `supported_by`, `decided_by`, `vetoed_by` |
-| datasul, oracle, sap_terumo | before `arithmetic_proof`: `decided_by`, `supported_by`, `vetoed_by`, `arithmetic_proof` |
-| sap_procosa | after `llm_final_confidence`, just before `reviewer_status` (this report has no `arithmetic_proof`) |
+| execução nova | depois de `confianca_catalogo`: `prova_aritmetica`, `apoiado_por`, `decidido_por`, `vetado_por` |
+| datasul, oracle, sap_terumo | antes de `prova_aritmetica`: `decidido_por`, `apoiado_por`, `vetado_por`, `prova_aritmetica` |
+| sap_procosa | depois de `confianca_final_ia`, logo antes de `parecer_revisor` (este relatório não tem `prova_aritmetica`) |
 
-Every tool looks columns up by name, so do the same.
+Todas as ferramentas procuram as colunas pelo nome; faça o mesmo.
 
-### Reviewer columns
+O backfill só se aplica a relatórios legados em inglês, anteriores às colunas de etapas. Diante de um relatório no esquema em português, inclusive os quatro arquivados depois da migração, ele recusa e sai com código 1 sem gravar nada.
 
-Reviewers record their verdicts in `Mappings`, and `apply_invoice_mapping.py` (`_effective_columns`) applies them. Values are case-insensitive.
+### Colunas do revisor
 
-| `reviewer_status` | `correct_client_column` | Effect on the mapped workbook |
+Os revisores registram os pareceres em `Mapeamentos`, e o `apply_invoice_mapping.py` (`_effective_columns`) os aplica.
+
+| `parecer_revisor` | `coluna_cliente_correta` | Efeito na planilha mapeada |
 |---|---|---|
-| blank | blank | The mapper's decision stands: accepted rows are delivered, others are not. |
-| `correct` | blank | The proposed `client_column_number` is delivered. Raises if the row has no proposal. |
-| `incorrect` | required | The column named here is delivered. Give either a 1-based column number or the export header. For a repeated header, use the display name with its ` (occurrence N)` suffix. The bare name silently selects the first occurrence. Text that parses as a number is always read as a column number. |
-| `no_mapping_exists` | blank | Nothing is delivered. This confirms the client does not send the field. |
+| vazio | vazio | A decisão do mapeador vale: as linhas `aceito` são entregues, as outras não. |
+| `correto` | vazio | O `numero_coluna_cliente` proposto é entregue. Recusado se a linha não tem proposta. |
+| `incorreto` | obrigatória | A coluna indicada aqui é entregue. Dê o número da coluna (a partir de 1) ou o cabeçalho da exportação. Para um cabeçalho repetido, use o nome de exibição com o sufixo ` (ocorrência N)`; o nome sozinho seleciona a primeira ocorrência sem avisar. Texto que pode ser lido como número é sempre lido como número de coluna. |
+| `inexistente` | vazio | Nada é entregue. Confirma que o cliente não envia esse campo. |
 
-`reviewer_note` is free text, and it is copied into the mapped workbook's banner.
+`inexistente` não é `sem_correspondencia`: um é o parecer humano de que o cliente não tem o campo, o outro é a situação que o mapeador gravou.
 
-Apply refuses to write a workbook in any of these cases:
+A leitura do parecer (`report_schema.normalize_reviewer_status`) ignora espaços nas pontas, maiúsculas e acentos, e aceita também os valores legados em inglês (`correct`, `incorrect`, `no_mapping_exists`), num relatório de qualquer um dos dois esquemas. `Correto`, ` INCORRETO ` e `correct` valem; um valor desconhecido é recusado e a mensagem mostra o que foi digitado. Em `coluna_cliente_correta`, a comparação com os cabeçalhos ignora maiúsculas, e o sufixo pode vir como `(ocorrência N)`, `(ocorrencia N)` ou o legado `(occurrence N)`; um cabeçalho em branco é `Coluna sem nome N`.
 
-- the status is not one of the values above;
-- `correct_client_column` is set with any status other than `incorrect`;
-- the status is `incorrect` and the correction is blank;
-- the status is `correct` and the row has no proposal;
-- a correction names a column the export does not have;
-- the same client column would be delivered twice.
+`observacao_revisor` é texto livre. É copiada sem tradução para o banner da planilha mapeada.
 
-The Adjudication Queue is a ranked index into these rows, not a second place to write. Record verdicts here.
+O apply se recusa a gravar a planilha em qualquer um destes casos:
 
-### `Run Metadata`
+- o parecer não é um dos valores acima;
+- `coluna_cliente_correta` está preenchida com qualquer parecer que não seja `incorreto`;
+- o parecer é `incorreto` e a correção está em branco;
+- o parecer é `correto` e a linha não tem proposta;
+- uma correção cita uma coluna que a exportação não tem;
+- a mesma coluna do cliente seria entregue duas vezes.
 
-`Run Metadata` has two columns, `key` and `value`, with 19 keys:
+A `Fila de Revisão` é um índice ordenado dessas linhas, não um segundo lugar para escrever. Registre os pareceres aqui, em `Mapeamentos`.
 
-| Key | Meaning | Value in the committed reports |
+### `Metadados da Execução`
+
+`Metadados da Execução` tem duas colunas, `chave` e `valor`. Uma execução nova grava 19 chaves; os quatro relatórios arquivados têm 20, porque a migração acrescentou `migrado_da_versao_esquema`.
+
+| Chave | Significado | Valor nos relatórios arquivados |
 |---|---|---|
-| `mapping_schema_version` | Report schema (`MAPPING_SCHEMA_VERSION`). | 2 |
-| `generated_at_utc` | When the mapper ran. | 2026-08-25 for datasul, oracle and sap_terumo; 2026-08-04 for sap_procosa |
-| `prompt_version` | Version of the resolver prompt. | 2026-08-04.2 |
-| `client_file`, `model_file` | File names only, without a directory. | for example `oracle.xlsx`, `model.xlsx` |
-| `client_sha256`, `model_sha256` | SHA-256 of the inputs. Apply refuses files that differ. | match the files now in `data/` |
-| `client_sheet`, `model_sheet` | Sheet index or name used. | 0 |
-| `client_header_row`, `model_header_row` | 1-based header rows. | 1 |
-| `embedding_model` | Header-embedding model, or `offline`. | `text-embedding-3-large` |
-| `llm_model` | Resolver model, or `offline`. | `gpt-4o-mini` |
-| `name_threshold`, `name_margin`, `final_threshold` | Gate settings. | 0.9, 0.05, 0.9 |
-| `candidate_count` | Size of each pass-2 candidate shortlist per model column (`--candidates`). Online there is one shortlist each by header score, value profile, arithmetic and catalog evidence, and the resolver sees their union. | 10 |
-| `sample_size` | Sample values per column in each profile (`--sample-size`). | 8 |
-| `reference_manifest_sha256` | SHA-256 of `reference_data/manifest.json`, or `disabled`. | `c4e2106d...`, which matches the current manifest |
+| `versao_esquema_mapeamento` | Esquema do relatório (`MAPPING_SCHEMA_VERSION`): 3 é o esquema em português, 2 o legado em inglês. | 3 (era 2 antes da migração) |
+| `gerado_em_utc` | Quando o mapeador rodou. A migração não o altera. | 2026-08-25 para datasul, oracle e sap_terumo; 2026-08-04 para sap_procosa |
+| `versao_prompt` | Versão do prompt do resolvedor de IA. | 2026-08-04.2 |
+| `arquivo_cliente`, `arquivo_modelo` | Só o nome do arquivo, sem a pasta. | por exemplo `oracle.xlsx`, `model.xlsx` |
+| `sha256_cliente`, `sha256_modelo` | SHA-256 das entradas. O apply recusa arquivos diferentes. | conferem com os arquivos atuais em `data/` |
+| `aba_cliente`, `aba_modelo` | Índice ou nome da aba usada. | 0 |
+| `linha_cabecalho_cliente`, `linha_cabecalho_modelo` | Linha do cabeçalho, a partir de 1. | 1 |
+| `modelo_embedding` | Modelo de embedding dos cabeçalhos, ou `offline`. | `text-embedding-3-large` |
+| `modelo_ia` | Modelo do resolvedor de IA, ou `offline`. | `gpt-4o-mini` |
+| `limiar_nome`, `margem_minima_nome`, `limiar_final` | Ajustes dos limiares (`--name-threshold`, `--name-margin`, `--final-threshold`). `margem_minima_nome` é a margem mínima exigida, não a `margem_nome` medida em cada linha. | 0,9, 0,05, 0,9 |
+| `quantidade_candidatos` | Tamanho de cada lista de candidatos da segunda passagem por coluna do modelo (`--candidates`). Online há uma lista por pontuação de cabeçalho, uma por perfil de valores, uma por evidência aritmética e uma por evidência de catálogo, e o resolvedor de IA vê a união delas. | 10 |
+| `tamanho_amostra` | Valores de amostra por coluna em cada perfil (`--sample-size`). | 8 |
+| `sha256_manifesto_referencia` | SHA-256 de `reference_data/manifest.json`, ou `desativado`. | `c4e2106d...`, que confere com o manifesto atual |
+| `migrado_da_versao_esquema` | Só em relatório migrado: a versão de onde ele veio. | 2 |
 
-All four committed reports came from online runs. Apply checks only the two input hashes, and it skips the check silently when the sheet or a key is absent. It does not compare the sheet, header-row or manifest settings.
+Os quatro relatórios arquivados vieram de execuções online. O apply confere só os dois hashes de entrada, e pula a conferência em silêncio quando a aba ou uma das chaves não existe. Não compara aba, linha de cabeçalho nem manifesto. A aba e as chaves são reconhecidas nos dois esquemas, e uma aba com o nome ou os cabeçalhos do outro esquema é recusada (esquema misto), justamente para a conferência de hash não ser pulada.
 
-### `Unmatched Client Columns`
+### `Colunas do Cliente sem Uso`
 
-This sheet lists every export column that no accepted mapping consumed. A long list is normal, because a client sends many fields the model does not hold. The list is how a reviewer spots a real miss.
+Esta aba lista toda coluna da exportação que nenhum mapeamento aceito consumiu. Uma lista longa é normal, porque o cliente envia muitos campos que o modelo não tem. A lista serve para o revisor achar uma perda de verdade.
 
-| Column | Meaning |
+| Coluna | Significado |
 |---|---|
-| `client_column_number`, `client_column` | The export column. |
-| `disposition` | `proposed_not_accepted`: some model row proposed it as review. `never_referenced`: no row did. |
-| `review_priority` | `shortlist` when the column holds informative values (not empty, not all zeros) and either carries a signal or was proposed. `low` otherwise. |
-| `rows_with_value`, `distinct_values` | How much data the column holds. |
-| `signals` | Comma-separated header-independent hints: `arithmetic`, `catalog`, `nfe_key_checkdigit`, `cnpj_checkdigit`, `cpf_checkdigit`, `date`. |
-| `signal_detail` | A sentence per signal, or why the column was set aside. |
-| `closest_model_column`, `closest_name_confidence` | Nearest model header. This is always computed lexically, even in online runs. |
+| `numero_coluna_cliente`, `coluna_cliente` | A coluna da exportação. |
+| `disposicao` | `proposta_nao_aceita`: alguma linha do modelo a propôs em revisão. `nunca_referenciada`: nenhuma linha a propôs. |
+| `prioridade_revisao` | `prioritaria` quando a coluna tem valores informativos (não está vazia nem é só zeros) e traz um sinal ou foi proposta. `baixa` nos demais casos. |
+| `linhas_com_valor`, `valores_distintos` | Quanto dado a coluna tem. |
+| `sinais` | Pistas independentes de cabeçalho, separadas por vírgula: `aritmetica`, `catalogo`, `dv_chave_nfe`, `dv_cnpj`, `dv_cpf`, `data`. |
+| `detalhe_sinais` | Uma frase por sinal, ou o motivo de a coluna ter sido deixada de lado. |
+| `coluna_modelo_mais_proxima`, `confianca_nome_mais_proxima` | O cabeçalho do modelo mais próximo. É sempre calculado de forma léxica, mesmo em execução online. |
 
-Rows are sorted shortlist first, then by client column number.
+As linhas vêm com as prioritárias primeiro, depois pelo número da coluna do cliente.
 
-| Report | Rows | Shortlisted |
+| Relatório | Linhas | `prioritaria` |
 |---|---|---|
 | datasul | 329 | 37 |
 | oracle | 30 | 14 |
 | sap_terumo | 298 | 40 |
 
-The sheet is written when the mapper runs, so later reviewer verdicts do not change it.
+A aba é gravada quando o mapeador roda, então pareceres posteriores não a alteram.
 
-### `Adjudication Queue`
+### `Fila de Revisão`
 
-This sheet lists every model column that has a proposed client column and a `final_confidence` above 0 but was not accepted. In the committed reports that is exactly the review rows.
+Esta aba lista toda coluna do modelo que tem coluna do cliente proposta e `confianca_final` acima de 0, mas não foi aceita. Nos relatórios arquivados, são exatamente as linhas `revisao`.
 
-| Column | Meaning |
+| Coluna | Significado |
 |---|---|
-| `rank` | Position in the queue. |
-| `model_column_number`, `model_column` | The model column. |
-| `proposed_client_column_number`, `proposed_client_column` | The withheld proposal. |
-| `final_confidence` | The score the gate tested. |
-| `gate_distance` | `final_threshold` minus `final_confidence`. |
-| `name_margin` | Header lead over the runner-up. |
-| `rows_with_value` | Populated rows in the proposed column. |
-| `resolver_disagrees` | `resolver scored it X` when the resolver's score is more than 0.10 below `final_confidence`. |
-| `arithmetic_proof` | Copied from Mappings. |
-| `client_sample_values` | Up to 6 values from the proposed column, joined with ` \| `. This is real client data. |
-| `why_held` | One of three reasons, listed below. |
+| `posicao` | Posição na fila. |
+| `numero_coluna_modelo`, `coluna_modelo` | A coluna do modelo. |
+| `numero_coluna_cliente_proposta`, `coluna_cliente_proposta` | A proposta retida. |
+| `confianca_final` | A pontuação que o limiar testou. |
+| `distancia_limiar` | `limiar_final` menos `confianca_final`. |
+| `margem_nome` | A vantagem de cabeçalho sobre a segunda melhor. |
+| `linhas_com_valor` | Linhas preenchidas na coluna proposta. |
+| `divergencia_ia` | `o resolvedor de IA atribuiu confiança X` quando a pontuação do resolvedor fica mais de 0,10 abaixo de `confianca_final`. |
+| `prova_aritmetica` | Copiada de `Mapeamentos`. |
+| `amostra_valores_cliente` | Até 6 valores da coluna proposta, unidos por ` \| `. É dado real do cliente. |
+| `motivo_retencao` | Um dos três motivos abaixo. |
 
-The three `why_held` values:
+Os três valores de `motivo_retencao`:
 
-- `below the accept threshold`
-- `name evidence only - this branch cannot auto-accept however well the headers match`: the row is pinned just under the gate (0.8999).
-- `the proposed column has no populated rows - confirming this would ship a blank column`
+- `abaixo do limiar de aceite`
+- `só há evidência de nome - este caminho não aceita automaticamente, por mais que os cabeçalhos coincidam`: a linha fica no teto de 0,8999, logo abaixo do limiar (ver [O ramo do teto](ARCHITECTURE.md#a-confiança-final-local) em ARCHITECTURE.md).
+- `a coluna proposta não tem linhas preenchidas - confirmá-la entregaria uma coluna em branco`
 
-The ordering comes from `summarize_adjudication_queue` in invoice_mapper.py:
+A ordem vem de `summarize_adjudication_queue`, em invoice_mapper.py:
 
-1. Proposals onto columns that hold data come before proposals onto empty columns.
-2. Higher `final_confidence` comes first, compared in steps of 0.0002.
-3. Within one step, a larger `name_margin` comes first, then more `rows_with_value`.
+1. Propostas para colunas com dados vêm antes das propostas para colunas vazias.
+2. A `confianca_final` maior vem primeiro, comparada em degraus de 0,0002 (`_CLAMPED_BAND`).
+3. Dentro do mesmo degrau, vem primeiro a `margem_nome` maior, depois mais `linhas_com_valor`.
 
-The 0.0002 step exists because many rows share the pinned 0.8999. Inside that band, `name_margin` is what orders them.
+O degrau de 0,0002 existe porque muitas linhas compartilham o teto de 0,8999. Dentro dessa faixa, quem ordena é a `margem_nome`.
 
-| Report | Rows | below threshold | name evidence only | no populated rows |
+| Relatório | Linhas | abaixo do limiar | só evidência de nome | sem linhas preenchidas |
 |---|---|---|---|---|
 | datasul | 95 | 78 | 11 | 6 |
 | oracle | 37 | 35 | 2 | 0 |
 | sap_terumo | 92 | 50 | 31 | 11 |
 
-The accept gate stays at 0.90. Reviewer adjudication is how these rows become delivered columns; [EVALUATION.md](EVALUATION.md) explains why lowering the gate is not the answer.
+O limiar de aceite fica em 0,90. O parecer do revisor é o caminho para essas linhas virarem colunas entregues; [EVALUATION.md](EVALUATION.md#por-que-o-limiar-de-aceite-fica-em-090) explica por que baixar o limiar não é a resposta.
 
-### sap_procosa's older report
+### O relatório antigo de sap_procosa
 
-`mapping_sap_procosa_full.xlsx` was generated on 2026-08-04 with an older schema:
+`mapping_sap_procosa_full.xlsx` foi gerado em 2026-08-04 com um layout mais antigo, e a migração manteve esse layout:
 
-- It has only `Mappings` and `Run Metadata`.
-- `Mappings` has 23 columns. There is no `catalog_distinct_coverage` and no `arithmetic_proof`.
-- The step columns were backfilled later, after `llm_final_confidence`.
+- Tem só `Mapeamentos` e `Metadados da Execução`.
+- `Mapeamentos` tem 23 colunas. Não há `cobertura_distinta_catalogo` nem `prova_aritmetica`.
+- As colunas de etapas foram preenchidas depois, após `confianca_final_ia`.
+- `versao_esquema_mapeamento` diz 3 desde a migração. A versão descreve os nomes (esquema em português), não o layout; antes ela dizia 2, como nos outros relatórios (item [5.1 de KNOWN_ISSUES.md](KNOWN_ISSUES.md#51-os-layouts-dos-relatórios-diferem-e-a-versão-do-esquema-não-diz-qual-é-qual)).
 
-It is also the only report with reviewer verdicts:
+É também o único relatório com pareceres do revisor:
 
-| Mapper status | Reviewer verdict | Rows | Result |
+| Situação do mapeador | Parecer do revisor | Linhas | Resultado |
 |---|---|---|---|
-| review | `correct` | 15 | delivered |
-| no_match | `incorrect` | 2 | delivered from the corrected column: `Nome` from column 6 (`NF Parceiro descrição`), `Nº ID fiscal 1` from column 32 (`CNPJ`) |
-| review | `no_mapping_exists` | 9 | confirmed as not in the export |
+| `revisao` | `correto` | 15 | entregue |
+| `sem_correspondencia` | `incorreto` | 2 | entregue a partir da coluna corrigida: `Nome` (modelo 37) da coluna 6 (`NF Parceiro descrição`), `Nº ID fiscal 1` (modelo 38) da coluna 32 (`CNPJ`) |
+| `revisao` | `inexistente` | 9 | confirmado que não consta na exportação |
 
-All 26 verdicts carry a `reviewer_note`.
+Todos os 26 pareceres têm `observacao_revisor`. As observações foram escritas em inglês pelo revisor e continuam exatamente como foram escritas; a migração só traduziu o parecer (`correct` para `correto` e assim por diante). Em `coluna_cliente_correta`, 6 e 32 continuam números inteiros.
 
-One review session turned 17 rows into delivered columns: 45 accepted plus 17 confirmed makes 62 delivered. That result is why reviewer adjudication of the withheld band is the planned way to lift delivered columns.
+Uma sessão de revisão transformou 17 linhas em colunas entregues: 45 aceitas mais 17 confirmadas (15 `correto` e 2 `incorreto`) dão 62 entregues. Esse resultado é a razão de o parecer do revisor sobre a faixa retida ser o caminho planejado para aumentar as colunas entregues.
 
-Do not regenerate this report; that would erase the 26 verdicts. Apply still accepts it, because it fills the absent optional columns with blanks.
+Não regenere este relatório; isso apagaria os 26 pareceres. O apply continua aceitando o arquivo, porque preenche com vazio as colunas opcionais ausentes.
 
-## Mapped workbooks: `data/mapped/`
+## Planilhas mapeadas: `data/mapped/`
 
-`apply_invoice_mapping.py` (`build_mapped_workbook`) turns an export and its report into a workbook in the model's column layout. It has two sheets, `Mapped Data` and `Coverage`.
+O `apply_invoice_mapping.py` (`build_mapped_workbook`) transforma uma exportação e o seu relatório numa planilha no layout de colunas do modelo. Ela tem duas abas, `Dados Mapeados` e `Cobertura`, sempre em português, qualquer que seja o esquema do relatório lido.
 
-By default it fills a model column only from an accepted row with no reviewer verdict, or from a reviewer-confirmed row (`correct` or `incorrect`). `--include-review` also fills unconfirmed proposals. That output is explicitly unsafe; never deliver it.
+> **Contrato com quem lê a planilha: mudança incompatível.** Até a tradução, as abas se chamavam `Mapped Data` e `Coverage`, a célula A1 era `__mapping_info__`, os rótulos do banner e os cabeçalhos da cobertura eram os nomes em inglês, e os valores também (`accepted`, `delivered` ...). As quatro planilhas de `data/mapped/` foram regeneradas no esquema novo. Um leitor a jusante que procure a aba, a célula A1 ou um rótulo pelo nome antigo quebra; atualize-o com a [tabela de nomes legados](#nomes-legados-em-inglês). Não mudaram: a posição das colunas (A, depois as 227 colunas do modelo de B a HT), os cabeçalhos do modelo, a linha 23 como primeira linha de dados, os valores das células de dados (valor, tipo e formato), as colunas ocultas e o painel congelado.
 
-### `Mapped Data`
+Por padrão, uma coluna do modelo só é preenchida a partir de uma linha `aceito` sem parecer ou de uma linha confirmada pelo revisor (`correto` ou `incorreto`). `--include-review` preenche também as propostas não confirmadas. Essa saída é explicitamente insegura; nunca a entregue.
 
-| Excel rows | Content |
+Com um relatório legado em inglês, o apply grava a planilha em português do mesmo jeito, mas copia a justificativa e a prova aritmética como estão, em inglês, e imprime um aviso de uma linha que recomenda migrar o relatório com `migrate_reports.py`.
+
+### `Dados Mapeados`
+
+| Linhas do Excel | Conteúdo |
 |---|---|
-| 1 | Header. `A1` is `__mapping_info__`, and columns B to HT are the 227 model headers in model order. Repeated headers are kept as they are. |
-| 2-22 | A 21-row metadata banner. Column A holds the label, and each model column holds that row's value from the report. |
-| 23 onward | Client data, one row per export data row, in export order. Column A is blank. |
+| 1 | Cabeçalho. `A1` é `__info_mapeamento__`, e as colunas B a HT são os 227 cabeçalhos do modelo, na ordem do modelo. Cabeçalhos repetidos ficam como estão. |
+| 2-22 | Um banner de metadados com 21 linhas. A coluna A traz o rótulo, e cada coluna do modelo traz o valor daquela linha no relatório. |
+| 23 em diante | Dados do cliente, uma linha por linha de dados da exportação, na ordem da exportação. A coluna A fica vazia. |
 
-**Client data starts at Excel row 23.** Older notes said row 20; that is out of date. The constant is `FIRST_DATA_EXCEL_ROW = len(MAPPING_METADATA) + 2` (apply_invoice_mapping.py:47). It has moved before, so import it rather than hard-coding a number. Panes are frozen at `B23`.
+**Os dados do cliente começam na linha 23 do Excel.** Notas antigas dizem linha 20; isso está desatualizado. A constante é `FIRST_DATA_EXCEL_ROW = len(MAPPING_METADATA) + 2` (apply_invoice_mapping.py:78). Ela já mudou antes, então importe-a em vez de fixar um número. Os painéis estão congelados em `B23`.
 
-The banner rows, as listed in `MAPPING_METADATA`:
+As linhas do banner, na ordem de `MAPPING_METADATA`:
 
-| Excel rows | Labels |
+| Linhas do Excel | Rótulos |
 |---|---|
-| 2-3 | `client_column_number`, `client_column`: the column actually delivered, after reviewer decisions. `correct_client_column` itself is not shown. |
-| 4-5 | `status`, `method`: the mapper's values, not the reviewer's. |
-| 6-15 | `name_confidence`, `name_runner_up_confidence`, `name_margin`, `data_confidence`, `llm_data_confidence`, `llm_final_confidence`, `catalog_name`, `catalog_coverage`, `catalog_confidence`, `final_confidence` |
-| 16-19 | `decided_by`, `supported_by`, `vetoed_by`, `arithmetic_proof` |
-| 20-22 | `reason`, `reviewer_status`, `reviewer_note` |
+| 2-3 | `numero_coluna_cliente`, `coluna_cliente`: a coluna de fato entregue, depois dos pareceres do revisor. `coluna_cliente_correta` não aparece. |
+| 4-5 | `situacao`, `metodo`: os valores do mapeador, não os do revisor. |
+| 6-15 | `confianca_nome`, `confianca_nome_segunda_melhor`, `margem_nome`, `confianca_dados`, `confianca_dados_ia`, `confianca_final_ia`, `nome_catalogo`, `cobertura_catalogo`, `confianca_catalogo`, `confianca_final` |
+| 16-19 | `decidido_por`, `apoiado_por`, `vetado_por`, `prova_aritmetica` |
+| 20-22 | `justificativa`, `parecer_revisor`, `observacao_revisor` |
 
-The confidence rows are stored as numbers and displayed as percentages. In sap_procosa the `arithmetic_proof` row is blank, because its report has no such column. Its two `incorrect` rows show status `no_match` even though they are delivered.
+Os rótulos são os mesmos cabeçalhos da aba `Mapeamentos`. As confianças são gravadas como número e exibidas como porcentagem. Os valores de máquina (situação, método, etapas, trava, catálogo, parecer) saem em português, e o parecer sai na grafia canônica (`correto`, `incorreto`, `inexistente`) mesmo que o revisor tenha digitado `Correct`. A justificativa, a prova aritmética e a observação do revisor são copiadas como estão no relatório. Em sap_procosa a linha `prova_aritmetica` fica em branco, porque o relatório não tem essa coluna, e as duas linhas `incorreto` mostram a situação `sem_correspondencia`, embora sejam entregues.
 
-Values are copied unchanged. The export is read with `dtype=object`, and the only re-typing is that `datetime.time` values are written back as Excel time cells (`hh:mm:ss`).
+Os valores do cliente são copiados sem alteração. A exportação é lida com `dtype=object`, e a única conversão de tipo é que valores `datetime.time` voltam a ser células de hora do Excel (`hh:mm:ss`).
 
-Formatting:
+Formatação:
 
-- The banner has a light-blue fill.
-- Delivered headers have a green fill.
-- Every model column without a delivered client column is hidden, not deleted, so the delivered columns sit side by side. One click unhides them, and programmatic readers see all 228 columns.
+- O banner tem preenchimento azul-claro.
+- Os cabeçalhos entregues têm preenchimento verde.
+- Toda coluna do modelo sem coluna do cliente entregue fica oculta, não apagada, para as colunas entregues ficarem lado a lado. Um clique as reexibe, e quem lê por programa vê as 228 colunas.
 
-| Workbook | Data rows (Excel rows) |
+| Planilha | Linhas de dados (linhas do Excel) |
 |---|---|
-| `datasul_mapped.xlsx` | 6,804 (23-6,826) |
-| `oracle_mapped.xlsx` | 7,340 (23-7,362) |
-| `sap_procosa_mapped.xlsx` | 18,209 (23-18,231) |
-| `sap_terumo_mapped.xlsx` | 727 (23-749) |
+| `datasul_mapped.xlsx` | 6.804 (23 a 6.826) |
+| `oracle_mapped.xlsx` | 7.340 (23 a 7.362) |
+| `sap_procosa_mapped.xlsx` | 18.209 (23 a 18.231) |
+| `sap_terumo_mapped.xlsx` | 727 (23 a 749) |
 
-Reading the data with pandas, from the repo root:
+Para ler os dados e a cobertura com o pandas, rode da raiz do repositório (no interpretador interativo ou com `python -`), porque o trecho importa `apply_invoice_mapping`:
 
 ```python
 import pandas as pd
 from apply_invoice_mapping import FIRST_DATA_EXCEL_ROW
 
-df = pd.read_excel(
-    "data/mapped/sap_terumo_mapped.xlsx",
-    sheet_name="Mapped Data",
-    skiprows=range(1, FIRST_DATA_EXCEL_ROW - 1),  # keep the header, drop the banner
+arquivo = "data/mapped/sap_terumo_mapped.xlsx"
+
+dados = pd.read_excel(
+    arquivo,
+    sheet_name="Dados Mapeados",
+    skiprows=range(1, FIRST_DATA_EXCEL_ROW - 1),  # mantém o cabeçalho, descarta o banner
 )
-# 727 rows x 228 columns; the second 'Descrição' arrives as 'Descrição.1'
+# 727 linhas x 228 colunas; a primeira é '__info_mapeamento__',
+# e o segundo 'Descrição' chega como 'Descrição.1'
+
+banner = pd.read_excel(
+    arquivo,
+    sheet_name="Dados Mapeados",
+    nrows=FIRST_DATA_EXCEL_ROW - 2,  # as 21 linhas do banner
+    index_col=0,
+)
+# banner.loc["situacao", "CFOP"] == "aceito"
+
+cobertura = pd.read_excel(arquivo, sheet_name="Cobertura")
+entregues = cobertura[cobertura["situacao_cobertura"] == "entregue"]
+# 67 linhas
 ```
 
-### `Coverage`
+### `Cobertura`
 
-`Coverage` has one row per model column and says where each one stands. Read it first, because `Mapped Data` cannot show what is not there. Its columns:
+`Cobertura` tem uma linha por coluna do modelo e diz em que pé cada uma está. Leia esta aba primeiro, porque `Dados Mapeados` não consegue mostrar o que não está lá. As colunas:
 
-| Column | Meaning |
+| Coluna | Significado |
 |---|---|
-| `state` | One of the three states below. |
-| `model_column_number`, `model_column` | The model column. |
-| `excel_column` | Its letter in `Mapped Data` (model column 1 is B). |
-| `client_column_number` | The proposal on rows that were not delivered. Blank on delivered rows (see [KNOWN_ISSUES.md](KNOWN_ISSUES.md)). |
-| `client_column` | The delivered column, or else the proposal. |
-| `final_confidence` | From the report, shown as a percentage. |
-| `reason` | From the report. |
+| `situacao_cobertura` | Um dos três estados abaixo. |
+| `numero_coluna_modelo`, `coluna_modelo` | A coluna do modelo. |
+| `coluna_excel` | A letra dela em `Dados Mapeados` (a coluna 1 do modelo é B). |
+| `numero_coluna_cliente` | A proposta, nas linhas não entregues. Vazia nas linhas entregues (item [1.3 de KNOWN_ISSUES.md](KNOWN_ISSUES.md#13-a-cobertura-deixa-numero_coluna_cliente-em-branco-nas-linhas-entregues)). |
+| `coluna_cliente` | A coluna entregue ou, se não houver, a proposta. |
+| `confianca_final` | Do relatório, exibida como porcentagem. |
+| `justificativa` | Do relatório, copiada como está. |
 
-The three states:
+Os três estados:
 
-- **delivered**: apply put a client column here.
-- **awaiting decision**: nothing was delivered and the mapper's status is review. These are the Adjudication Queue rows, and the only ones that are anyone's work.
-- **not in this client's export**: everything else (no_match). This is a complete and correct answer, not a defect.
+- **`entregue`**: o apply pôs uma coluna do cliente aqui.
+- **`aguardando decisão`**: nada foi entregue e a situação do mapeador é `revisao`. São as linhas da `Fila de Revisão`, e as únicas que são trabalho de alguém.
+- **`não consta na exportação do cliente`**: todo o resto (`sem_correspondencia`). É uma resposta completa e correta, não um defeito.
 
-Rows are sorted by state in that order, then by model column number. The header is frozen and has an autofilter.
+As linhas vêm ordenadas por estado, nessa ordem, e depois pelo número da coluna do modelo. O cabeçalho fica congelado e tem autofiltro.
 
-| Client | delivered | awaiting decision | not in this client's export |
+| Cliente | `entregue` | `aguardando decisão` | `não consta na exportação do cliente` |
 |---|---|---|---|
 | datasul | 19 | 95 | 113 |
 | oracle | 18 | 37 | 172 |
 | sap_procosa | 62 | 51 | 114 |
 | sap_terumo | 67 | 92 | 68 |
 
-Two caveats (see [KNOWN_ISSUES.md](KNOWN_ISSUES.md)):
+Duas ressalvas:
 
-- The state comes from the mapper's status, not from `reviewer_status`. sap_procosa's 9 `no_mapping_exists` rows therefore show as awaiting decision, so only 42 of its 51 are actually pending.
-- With `--include-review`, unconfirmed proposals are labelled delivered.
+- O estado vem da situação do mapeador, não de `parecer_revisor`. Por isso as 9 linhas `inexistente` de sap_procosa aparecem como `aguardando decisão`, e só 42 das 51 estão de fato pendentes (item [1.2 de KNOWN_ISSUES.md](KNOWN_ISSUES.md#12-a-cobertura-mostra-como-aguardando-decisão-linhas-que-o-revisor-marcou-inexistente)).
+- Com `--include-review`, as propostas não confirmadas aparecem como `entregue` (item [3.7](KNOWN_ISSUES.md#37-problemas-menores-na-leitura-das-entradas-do-apply)).
 
-Treat `data/mapped/` as build output: regenerate it rather than editing it by hand.
+Trate `data/mapped/` como saída de build: regenere em vez de editar à mão.
 
-## Reference catalogs: `reference_data/`
+## Esquema em português e esquema legado
 
-This directory holds a snapshot of official code tables. The mapper uses them as header-independent evidence: a column whose values are valid CFOP codes is a CFOP column whatever its header says.
+### O que está em português e o que continua em inglês
 
-| File | Catalog | Codes | Width | Normalizer | Specificity | Source (`source_version`) |
-|---|---|---|---|---|---|---|
-| `cfop.csv` | CFOP | 619 | 4 | `cfop` | 1.0 | NF-e portal, IT 2023.002 v1.00; effective 2023-04-24 |
-| `ncm.csv` | NCM | 10,515 | 8 | `punctuated_digits` | 1.0 | Siscomex Portal Único, "Vigente em 04/08/2026" |
-| `ibge_municipality.csv` | IBGE municipality code | 5,571 | 7 | `digits` | 1.0 | NF-e portal municipality table published 2025-02-18 |
-| `ibs_cbs_classification.csv` | IBS/CBS classification (cClassTrib) | 164 | 6 | `digits` | 0.85 | NF-e portal, IT 2025.002 v1.60; published 2026-06-23 |
-| `ibs_cbs_cst.csv` | IBS/CBS CST | 18 | 3 | `digits` | 0.75 | same publication |
-| `cst_icms.csv` | ICMS CST (origin digit + treatment) | 99 | 3 | `digits` | 0.75 | EFD ICMS/IPI Guia Prático 3.2.2, table 4.3.1 |
-| `csosn.csv` | CSOSN | 10 | 3 | `digits` | 0.75 | same, table 4.3.1 |
-| `cst_icms_taxation.csv` | ICMS CST treatment digits only | 11 | 2 | `digits` | 0.50 | same, table 4.3.1 |
-| `cst_ipi.csv` | IPI CST | 14 | 2 | `digits` | 0.55 | same, table 4.3.2 |
-| `cst_pis_cofins.csv` | PIS/COFINS CST | 33 | 2 | `digits` | 0.55 | EFD-Contribuições CST tables II and III |
+`report_schema.py` é a fronteira. Em memória o código usa o vocabulário interno em inglês (a situação `accepted`, ids de etapa como `semantic`, os ids de catálogo, o nome de exibição `Nome (occurrence 2)`); esses valores viram português só na gravação e voltam ao vocabulário interno na leitura. Tudo o que uma pessoa lê num arquivo está em português: nomes de aba, cabeçalhos, chaves de metadados, valores enumerados, ids de etapa e de trava, o sufixo de ocorrência e as frases do mapeador.
 
-Every CSV has the columns `code,description,valid_from,valid_to`. Only `code` is read (`reference_catalog.py` `ReferenceCatalogs.from_directory`). Before lookup a cell is normalized to the catalog's width:
+Continuam em inglês, de propósito:
 
-- Leading zeros that Excel dropped are restored.
-- `cfop` also accepts the form `5102/XX`.
-- `punctuated_digits` strips `.`, `-`, `/` and spaces (so `8471.30.12` works).
+- nomes de arquivo e de pasta (`mapping_<cliente>_full.xlsx`, `<cliente>_mapped.xlsx`, `data/reports/`), flags da CLI e identificadores do código;
+- os ids de catálogo dentro de `reference_data/` (nomes dos CSV, `manifest.json` e checksums não mudaram);
+- a entrada dos modelos de IA, que não aparece nos arquivos (ver [Entrada dos modelos](ARCHITECTURE.md#entrada-dos-modelos-inglês-byte-a-byte) em ARCHITECTURE.md);
+- a justificativa escrita pelo resolvedor de IA: as 502 dos relatórios arquivados e as futuras, porque o prompt é em inglês;
+- as 26 observações do revisor de sap_procosa, como foram escritas;
+- os dados do cliente: cabeçalhos da exportação (`Net value`, `Document Number`), valores de amostra e células de dados. Os cabeçalhos do modelo já são em português e não mudam.
 
-Specificity measures how much a match proves. CFOP, NCM and IBGE codes come from large, nationally unique domains (1.0). Short CST domains collide across taxes, so they are discounted. At the default `--final-threshold` of 0.90, only the specificity-1.0 catalogs can decide a mapping on their own. "Reference catalogs" in [ARCHITECTURE.md](ARCHITECTURE.md) covers the rules.
+O apply e o `mapeval` leem os dois esquemas: o em português (versão 3) e o legado em inglês (versão 2). O esquema é detectado pelo cabeçalho da primeira aba (`numero_coluna_modelo` ou `model_column_number`, em `report_schema.detect_schema`), e os nomes e valores são convertidos para o vocabulário interno antes de qualquer comparação, então o mesmo relatório dá as mesmas decisões, a mesma planilha (fora o texto livre, copiado como está) e os mesmos números nos dois esquemas. O `backfill_mapping_steps.py` só aceita o esquema legado.
 
-`manifest.json` holds:
+Um arquivo com nomes dos dois esquemas é recusado com uma mensagem `Esquema misto` que diz o que renomear: por exemplo, uma aba `Run Metadata` ao lado de `Mapeamentos`, ou um cabeçalho `reviewer_status` num relatório em português. Lido pela metade, um arquivo assim faria a conferência de hash ser pulada ou os pareceres serem ignorados em silêncio.
+
+### Migração dos relatórios arquivados
+
+Os quatro relatórios de `data/reports/` foram gravados no esquema legado em inglês (versão 2) e migrados para o esquema em português (versão 3) pelo `migrate_reports.py`, sem reexecutar o mapeador (commit 09ebda9). As planilhas de `data/mapped/` foram então regeneradas pelo apply a partir dos relatórios migrados.
+
+```bash
+python migrate_reports.py RELATORIO EXPORTACAO [--model data/model.xlsx] [--reference-data reference_data] [--dry-run]
+```
+
+O que a migração fez, célula a célula, com o openpyxl:
+
+- Renomeou as abas, os cabeçalhos e as chaves de metadados, e traduziu os valores enumerados, as etapas (inclusive os legados `unrecorded`, que virou `nao_registrado`, e o sufixo ` (agrees)`, que virou ` (concorda)`), o sentinela `disabled` (nenhum dos quatro o tinha) e o sufixo de ocorrência dos nomes de exibição (38 células com `(ocorrência N)` nos quatro relatórios).
+- Reescreveu as frases do mapeador (justificativa, prova aritmética, detalhe dos sinais, motivo de retenção e divergência da IA) com o `legacy_reports.py`. Ele reconhece cada frase pelo modelo em inglês que a produziu, copiado de `invoice_mapper.py` no commit 2ae4b6d, e a reescreve com a constante em português que o mapeador usa hoje. A frase migrada é exatamente a que o mapeador atual gravaria para os mesmos valores. O que não casa com nenhum modelo passa intacto.
+- Mudou `versao_esquema_mapeamento` de 2 para 3 e acrescentou `migrado_da_versao_esquema` = 2. `gerado_em_utc` não mudou.
+
+Passou intacto: a prosa escrita pela IA, as observações do revisor, `coluna_modelo`, os valores de amostra do cliente, os nomes de coluna do cliente (fora o sufixo) e todos os números, com o tipo (os inteiros 6 e 32 de `coluna_cliente_correta` continuam inteiros, e as células de texto vazio continuam texto vazio). A ordem das colunas e a formatação também não mudaram, e nenhuma aba ou coluna foi acrescentada: sap_procosa manteve o layout antigo.
+
+Antes de traduzir, a ferramenta regenera as partes derivadas (as provas aritméticas pelos trios fiscais, `Colunas do Cliente sem Uso` e `Fila de Revisão`) e as compara com o arquivado, quando os hashes gravados permitem; depois de traduzir, verifica o resultado antes de substituir o original. O mecanismo, inclusive o que acontece quando os hashes não conferem, está em [ARCHITECTURE.md](ARCHITECTURE.md#relatórios-legados-legacy_reports-e-migrate_reports). Nos quatro relatórios arquivados:
+
+| Relatório | Conferência por regeneração | Frases do mapeador traduzidas | Justificativas da IA mantidas em inglês |
+|---|---|---|---|
+| datasul | sem divergência | 569 | 119 |
+| oracle | sem divergência | 146 | 160 |
+| sap_procosa | não feita: o relatório não tem prova aritmética nem as abas derivadas | 114 | 113 |
+| sap_terumo | sem divergência | 545 | 110 |
+| total | | 1.374 | 502 |
+
+A contagem por situação, os 26 pareceres e as 26 observações de sap_procosa ficaram iguais. O `mapeval` imprime a mesma saída, byte a byte, de antes da migração (ENTREGUES 32/56, encontrados 43/56, fabricações 0), e o apply entrega as mesmas 19, 18, 62 e 67 colunas, com as células de dados idênticas às da planilha em inglês.
+
+Para migrar um relatório legado que você tenha, rode o comando acima com ele e a exportação que o gerou; `--dry-run` faz tudo num arquivo temporário, sem alterar o relatório. O [README](../README.md#comandos-do-dia-a-dia) traz um exemplo com uma cópia legada do relatório de oracle tirada do histórico do git.
+
+### Nomes legados em inglês
+
+Para quem tem um relatório ou uma planilha antiga, ou código que lê os nomes antigos. A fonte é `report_schema.py` (`SHEETS`, `COLUMNS`, `METADATA_KEYS`, `METADATA_SENTINELS`, `STEP_IDS`, `GUARD_IDS`, `LEGACY_STEP_IDS`, `ENUMS` e as constantes `AGREES_SUFFIX_*`, `OCCURRENCE_SUFFIX_*` e `UNNAMED_COLUMN_*`); se esta tabela e o código divergirem, vale o código. Os nomes de coluna, as chaves e os valores enumerados que o código usa em memória são os próprios nomes legados; as exceções são `motivo_retencao` e `situacao_cobertura`, cujas frases já são escritas em português na origem.
+
+**Abas e célula A1**
+
+| Legado | Português | Arquivo |
+|---|---|---|
+| `Mappings` | `Mapeamentos` | relatório |
+| `Run Metadata` | `Metadados da Execução` | relatório |
+| `Unmatched Client Columns` | `Colunas do Cliente sem Uso` | relatório |
+| `Adjudication Queue` | `Fila de Revisão` | relatório |
+| `Mapped Data` | `Dados Mapeados` | planilha mapeada |
+| `Coverage` | `Cobertura` | planilha mapeada |
+| `__mapping_info__` (A1) | `__info_mapeamento__` (A1) | planilha mapeada, `Dados Mapeados` |
+
+**Colunas e rótulos do banner.** Legenda da última coluna: M = `Mapeamentos`, B = banner de `Dados Mapeados`, U = `Colunas do Cliente sem Uso`, F = `Fila de Revisão`, C = `Cobertura`.
+
+| Legado | Português | Onde |
+|---|---|---|
+| `model_column_number` | `numero_coluna_modelo` | M, F, C |
+| `model_column` | `coluna_modelo` | M, F, C |
+| `client_column_number` | `numero_coluna_cliente` | M, B, U, C |
+| `client_column` | `coluna_cliente` | M, B, U, C |
+| `name_confidence` | `confianca_nome` | M, B |
+| `name_runner_up_confidence` | `confianca_nome_segunda_melhor` | M, B |
+| `name_margin` | `margem_nome` | M, B, F |
+| `data_confidence` | `confianca_dados` | M, B |
+| `final_confidence` | `confianca_final` | M, B, F, C |
+| `method` | `metodo` | M, B |
+| `status` | `situacao` | M, B |
+| `reason` | `justificativa` | M, B, C |
+| `catalog_name` | `nome_catalogo` | M, B |
+| `catalog_coverage` | `cobertura_catalogo` | M, B |
+| `catalog_distinct_coverage` | `cobertura_distinta_catalogo` | M |
+| `catalog_confidence` | `confianca_catalogo` | M, B |
+| `arithmetic_proof` | `prova_aritmetica` | M, B, F |
+| `supported_by` | `apoiado_por` | M, B |
+| `decided_by` | `decidido_por` | M, B |
+| `vetoed_by` | `vetado_por` | M, B |
+| `llm_data_confidence` | `confianca_dados_ia` | M, B |
+| `llm_final_confidence` | `confianca_final_ia` | M, B |
+| `reviewer_status` | `parecer_revisor` | M, B |
+| `correct_client_column` | `coluna_cliente_correta` | M |
+| `reviewer_note` | `observacao_revisor` | M, B |
+| `key`, `value` | `chave`, `valor` | `Metadados da Execução` |
+| `disposition` | `disposicao` | U |
+| `review_priority` | `prioridade_revisao` | U |
+| `rows_with_value` | `linhas_com_valor` | U, F |
+| `distinct_values` | `valores_distintos` | U |
+| `signals` | `sinais` | U |
+| `signal_detail` | `detalhe_sinais` | U |
+| `closest_model_column` | `coluna_modelo_mais_proxima` | U |
+| `closest_name_confidence` | `confianca_nome_mais_proxima` | U |
+| `rank` | `posicao` | F |
+| `proposed_client_column_number` | `numero_coluna_cliente_proposta` | F |
+| `proposed_client_column` | `coluna_cliente_proposta` | F |
+| `gate_distance` | `distancia_limiar` | F |
+| `resolver_disagrees` | `divergencia_ia` | F |
+| `client_sample_values` | `amostra_valores_cliente` | F |
+| `why_held` | `motivo_retencao` | F |
+| `state` | `situacao_cobertura` | C |
+| `excel_column` | `coluna_excel` | C |
+
+**Chaves de `Metadados da Execução`**
+
+| Legado | Português |
+|---|---|
+| `mapping_schema_version` | `versao_esquema_mapeamento` |
+| `generated_at_utc` | `gerado_em_utc` |
+| `prompt_version` | `versao_prompt` |
+| `client_file` | `arquivo_cliente` |
+| `client_sha256` | `sha256_cliente` |
+| `model_file` | `arquivo_modelo` |
+| `model_sha256` | `sha256_modelo` |
+| `client_sheet` | `aba_cliente` |
+| `model_sheet` | `aba_modelo` |
+| `client_header_row` | `linha_cabecalho_cliente` |
+| `model_header_row` | `linha_cabecalho_modelo` |
+| `embedding_model` | `modelo_embedding` |
+| `llm_model` | `modelo_ia` |
+| `name_threshold` | `limiar_nome` |
+| `name_margin` | `margem_minima_nome` |
+| `final_threshold` | `limiar_final` |
+| `candidate_count` | `quantidade_candidatos` |
+| `sample_size` | `tamanho_amostra` |
+| `reference_manifest_sha256` | `sha256_manifesto_referencia` |
+| (não existe no legado) | `migrado_da_versao_esquema` |
+
+A chave legada `name_margin` tem a mesma grafia da coluna `name_margin`, mas são coisas diferentes; em português elas se separam em `margem_minima_nome` (o limiar) e `margem_nome` (a margem medida).
+
+**Valores enumerados**
+
+| Campo | Legado → português |
+|---|---|
+| `situacao` | `accepted` → `aceito`; `review` → `revisao`; `no_match` → `sem_correspondencia` |
+| `metodo` | `name` → `nome`; `data` → `dados`; `catalog` → `catalogo`; `name_only` → `somente_nome`; `data_error` → `erro_dados` |
+| `parecer_revisor` | `correct` → `correto`; `incorrect` → `incorreto`; `no_mapping_exists` → `inexistente` (os legados continuam aceitos na leitura) |
+| `vetado_por` | `vacuity` → `coluna_vazia`; `family_conflict` → `conflito_tributario` |
+| `apoiado_por`, `decidido_por` | `resolver` → `resolvedor_ia`; `lexical` → `lexico`; `semantic` → `semantico`; `profile` → `perfil`; `identifier` → `identificador`; `catalog` → `catalogo`; `arithmetic` → `aritmetica`; `unrecorded` → `nao_registrado`; sufixo ` (agrees)` → ` (concorda)` |
+| `nome_catalogo` | `ibge_municipality` → `municipio_ibge`; `ibs_cbs_classification` → `cclasstrib`; `ibs_cbs_cst` → `cst_ibs_cbs`; `cst_icms_taxation` → `cst_icms_tributacao`. Os outros seis (`cfop`, `ncm`, `cst_icms`, `csosn`, `cst_ipi`, `cst_pis_cofins`) não mudam. |
+| `disposicao` | `proposed_not_accepted` → `proposta_nao_aceita`; `never_referenced` → `nunca_referenciada` |
+| `prioridade_revisao` | `shortlist` → `prioritaria`; `low` → `baixa` |
+| `sinais` | `arithmetic` → `aritmetica`; `catalog` → `catalogo`; `nfe_key_checkdigit` → `dv_chave_nfe`; `cnpj_checkdigit` → `dv_cnpj`; `cpf_checkdigit` → `dv_cpf`; `date` → `data` |
+| `motivo_retencao` | `below the accept threshold` → `abaixo do limiar de aceite`; `name evidence only - this branch cannot auto-accept however well the headers match` → `só há evidência de nome - este caminho não aceita automaticamente, por mais que os cabeçalhos coincidam`; `the proposed column has no populated rows - confirming this would ship a blank column` → `a coluna proposta não tem linhas preenchidas - confirmá-la entregaria uma coluna em branco` |
+| `situacao_cobertura` | `delivered` → `entregue`; `awaiting decision` → `aguardando decisão`; `not in this client's export` → `não consta na exportação do cliente` |
+| `sha256_manifesto_referencia` | `disabled` → `desativado` |
+| `modelo_embedding`, `modelo_ia` | `offline` continua `offline` |
+| nomes de exibição | `X (occurrence N)` → `X (ocorrência N)`; `Unnamed column N` → `Coluna sem nome N` |
+
+As outras duas travas de `mapping_steps.py`, `underspecified` (`cabecalho_generico`) e `exclusivity` (`coluna_ja_consumida`), também têm id em português, mas nunca são gravadas em `vetado_por` (item [2.1 de KNOWN_ISSUES.md](KNOWN_ISSUES.md#21-vetado_por-só-registra-duas-das-quatro-travas)).
+
+## Catálogos de referência: `reference_data/`
+
+Esta pasta guarda um retrato das tabelas oficiais de códigos. O mapeador as usa como evidência independente de cabeçalho: uma coluna cujos valores são CFOPs válidos é uma coluna de CFOP, diga o cabeçalho o que disser.
+
+| Arquivo | Catálogo | Valor em `nome_catalogo` | Códigos | Largura | Normalizador | Especificidade | Fonte (`source_version`) |
+|---|---|---|---|---|---|---|---|
+| `cfop.csv` | CFOP | `cfop` | 619 | 4 | `cfop` | 1,0 | Portal da NF-e, IT 2023.002 v1.00; vigência 2023-04-24 |
+| `ncm.csv` | NCM | `ncm` | 10.515 | 8 | `punctuated_digits` | 1,0 | Portal Único Siscomex, "Vigente em 04/08/2026" |
+| `ibge_municipality.csv` | código de município do IBGE | `municipio_ibge` | 5.571 | 7 | `digits` | 1,0 | tabela de municípios do Portal da NF-e publicada em 2025-02-18 |
+| `ibs_cbs_classification.csv` | cClassTrib do IBS/CBS | `cclasstrib` | 164 | 6 | `digits` | 0,85 | Portal da NF-e, IT 2025.002 v1.60; publicada em 2026-06-23 |
+| `ibs_cbs_cst.csv` | CST do IBS/CBS | `cst_ibs_cbs` | 18 | 3 | `digits` | 0,75 | mesma publicação |
+| `cst_icms.csv` | CST do ICMS (dígito de origem + tributação) | `cst_icms` | 99 | 3 | `digits` | 0,75 | Guia Prático da EFD ICMS/IPI 3.2.2, tabela 4.3.1 |
+| `csosn.csv` | CSOSN | `csosn` | 10 | 3 | `digits` | 0,75 | idem, tabela 4.3.1 |
+| `cst_icms_taxation.csv` | CST do ICMS, só os dígitos de tributação | `cst_icms_tributacao` | 11 | 2 | `digits` | 0,50 | idem, tabela 4.3.1 |
+| `cst_ipi.csv` | CST do IPI | `cst_ipi` | 14 | 2 | `digits` | 0,55 | idem, tabela 4.3.2 |
+| `cst_pis_cofins.csv` | CST do PIS/COFINS | `cst_pis_cofins` | 33 | 2 | `digits` | 0,55 | tabelas II e III de CST da EFD-Contribuições |
+
+Os ids de catálogo, os nomes dos arquivos e o `manifest.json` continuam em inglês; só o valor gravado em `nome_catalogo` muda, e só nos ids com palavras em inglês.
+
+Todo CSV tem as colunas `code,description,valid_from,valid_to`. Só `code` é lida (`reference_catalog.py`, `ReferenceCatalogs.from_directory`). Antes da consulta, a célula é normalizada para a largura do catálogo:
+
+- Os zeros à esquerda que o Excel tirou são restaurados.
+- `cfop` também aceita a forma `5102/XX`.
+- `punctuated_digits` remove `.`, `-`, `/` e espaços (então `8471.30.12` funciona).
+
+A especificidade mede o quanto um casamento prova. CFOP, NCM e códigos do IBGE vêm de domínios grandes e únicos no país (1,0). Os domínios curtos de CST colidem entre tributos e por isso são descontados. Com o limiar padrão (`--final-threshold 0.90`), só os catálogos de especificidade 1,0 conseguem decidir um mapeamento sozinhos. A seção [Catálogos de referência](ARCHITECTURE.md#catálogos-de-referência) de ARCHITECTURE.md cobre as regras.
+
+O `manifest.json` guarda:
 
 - `schema_version`: 1.
 - `generated_at`: `2026-08-04T22:14:31.359847+00:00`.
-- `catalogs`: one entry per catalog with `file`, `width`, `normalizer`, `specificity`, `source_version`, `source_url` and `sha256`.
+- `catalogs`: uma entrada por catálogo, com `file`, `width`, `normalizer`, `specificity`, `source_version`, `source_url` e `sha256`.
 
-On load, each CSV's SHA-256 must match its manifest entry, or the mapper stops and suggests `update_reference_data.py` or `--no-reference-data`. Every report records the manifest's own hash as `reference_manifest_sha256`. `--reference-data` defaults to the `reference_data` directory next to `invoice_mapper.py`, so the mapper finds it from any working directory.
+Na carga, o SHA-256 de cada CSV precisa conferir com a sua entrada no manifesto, ou o mapeador para e sugere `update_reference_data.py` ou `--no-reference-data`. Todo relatório registra o hash do próprio manifesto em `sha256_manifesto_referencia`. `--reference-data` usa por padrão a pasta `reference_data` ao lado de `invoice_mapper.py`, então o mapeador a encontra de qualquer diretório de trabalho.
 
-Two quirks:
+Duas peculiaridades:
 
-- `ibs_cbs_cst.csv` has 19 rows but 18 codes. One row has a blank code, which the loader drops.
-- In `ibs_cbs_classification.csv`, codes 220001-220003 have `valid_to` 2026-01-01 but still count as valid, because dates are not read.
+- `ibs_cbs_cst.csv` tem 19 linhas, mas 18 códigos. Uma linha tem o código em branco, e o carregador a descarta.
+- Em `ibs_cbs_classification.csv`, os códigos 220001 a 220003 têm `valid_to` 2026-01-01, mas continuam contando como válidos, porque as datas não são lidas.
 
-**Refreshing.** `update_reference_data.py` needs network access, and it overwrites files:
+**Atualização.** O `update_reference_data.py` precisa de acesso à rede e sobrescreve arquivos:
 
-- It downloads CFOP, NCM, the municipality table and the IBS/CBS workbook (which yields two CSVs).
-- It writes the five CST/CSOSN tables from lists in the script itself.
-- It rewrites every CSV and `manifest.json`. `--output` defaults to `reference_data` relative to the current directory, so a run from the repo root replaces the snapshot in place.
+- Baixa o CFOP, o NCM, a tabela de municípios e a planilha do IBS/CBS (que gera dois CSV).
+- Grava as cinco tabelas de CST/CSOSN a partir de listas no próprio script.
+- Regrava todos os CSV e o `manifest.json`. `--output` usa `reference_data` relativo ao diretório atual por padrão, então uma execução a partir da raiz do repositório substitui o retrato no lugar.
 
-The IBS/CBS sheet names are hard-coded to the 2026-06-01 publication, so a newer publication will probably need a code change. To refresh, write to a scratch directory first, compare, then copy across and commit the CSVs and the manifest together:
+Os nomes das abas do IBS/CBS estão fixos no código para a publicação de 2026-06-01 (`CST 2026-06-01 Pub` e `cClass 2026-06-01 Pub`), então uma publicação mais nova provavelmente vai exigir mudança no código. Para atualizar, grave primeiro numa pasta temporária, compare, depois copie e commite os CSV e o manifesto juntos:
 
 ```bash
 python update_reference_data.py --output /tmp/reference_data_new
 diff -r reference_data /tmp/reference_data_new
 ```
 
-A new snapshot changes `reference_manifest_sha256` in future reports. Apply does not check that hash, so existing reports still apply.
+Um retrato novo muda `sha256_manifesto_referencia` nos relatórios futuros. O apply não confere esse hash, então os relatórios existentes continuam aplicáveis. O `migrate_reports.py` o confere: com outro manifesto, ele não faz a conferência por regeneração e só avisa.
 
-## Regenerating the outputs
+## Como regenerar as saídas
 
-Run these from the repo root. Offline mapping, apply and `mapeval` never contact OpenAI.
+Rode os comandos da raiz do repositório. O mapeamento offline, o apply, o `mapeval` e o `migrate_reports.py` nunca acessam a OpenAI.
 
-To rebuild the four deliverables from the committed reports, run the commands below. They print `mapped_columns=19`, `18`, `62` and `67` respectively, which matches the committed workbooks:
+Para reconstruir os quatro entregáveis a partir dos relatórios arquivados, rode os comandos abaixo. Eles imprimem `colunas_mapeadas=19`, `18`, `62` e `67`, respectivamente (cada um numa linha `colunas_modelo=227 linhas_cliente=... colunas_mapeadas=...`), o que confere com as planilhas commitadas. Para conferir sem tocar em `data/mapped/`, troque o `--output` por um caminho em `/tmp`.
 
 ```bash
 python apply_invoice_mapping.py data/clients/datasul_maio.xlsx data/reports/mapping_datasul_full.xlsx --output data/mapped/datasul_mapped.xlsx
@@ -595,24 +801,24 @@ python apply_invoice_mapping.py data/clients/sap_procosa.XLSX data/reports/mappi
 python apply_invoice_mapping.py data/clients/sap_terumo.XLSX data/reports/mapping_sap_terumo_full.xlsx --output data/mapped/sap_terumo_mapped.xlsx
 ```
 
-To produce a header-only report without OpenAI:
+Para produzir um relatório só de cabeçalhos, sem a OpenAI (imprime `aceito=47 revisao=180 sem_correspondencia=0`):
 
 ```bash
 python invoice_mapper.py data/clients/sap_terumo.XLSX --offline --output /tmp/mapping_sap_terumo_offline.xlsx
 ```
 
-Offline reports are a degenerate regime. Every unresolved model column becomes review with `method` `name_only`, so there are no no_match rows while unused client columns remain. They are not comparable with the committed online reports, and their figures are never the product figure.
+Relatórios offline são um regime degenerado. Toda coluna do modelo não resolvida vira `revisao` com `metodo` `somente_nome`, então não há linhas `sem_correspondencia` enquanto sobrar coluna do cliente sem uso. Eles não são comparáveis com os relatórios online arquivados, e os números deles nunca são o número do produto.
 
-An online run sends data to OpenAI (see [Confidentiality](#confidentiality)) and needs `OPENAI_API_KEY`:
+Uma execução online envia dados à OpenAI (ver [Confidencialidade](#confidencialidade)) e precisa de `OPENAI_API_KEY`:
 
 ```bash
 python invoice_mapper.py data/clients/oracle.xlsx --output data/reports/mapping_oracle_rerun.xlsx
 ```
 
-Write online runs to a new name. Overwriting a committed report has three effects:
+Grave as execuções online com um nome novo. Sobrescrever um relatório arquivado tem três efeitos:
 
-- It erases any reviewer verdicts in that report.
-- It moves the `mapeval` baseline that `tests/test_mapeval.py` pins, because the resolver is not deterministic.
-- It needs a matching regenerated workbook in `data/mapped/`.
+- Apaga os pareceres do revisor daquele relatório.
+- Move a linha de base do `mapeval` que o `tests/test_mapeval.py` fixa, porque o resolvedor de IA não é determinístico.
+- Exige uma planilha regenerada correspondente em `data/mapped/`.
 
-The tests in `tests/test_mapeval.py` that need the workbooks skip when `data/keys/de_para_oracle.xlsx` is absent, so the rest of the suite runs without the data.
+Os testes de `tests/test_mapeval.py` que precisam das planilhas são pulados quando `data/keys/de_para_oracle.xlsx` não existe, então o resto da suíte roda sem os dados. A suíte, inclusive as provas `lento` que refazem a migração sobre os dados reais, está descrita em [EVALUATION.md](EVALUATION.md#suíte-de-testes).

@@ -1,3 +1,11 @@
+"""Testes dos catálogos de referência (``reference_catalog.py``).
+
+Cobrem a escolha dos catálogos pelo cabeçalho do modelo, a normalização dos
+códigos, a carga de ``reference_data/`` e o efeito da evidência de catálogo no
+mapeamento. As justificativas dos resolvedores falsos ficam em inglês porque
+fazem o papel da resposta da IA, que continua em inglês.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -176,8 +184,8 @@ def test_short_overlapping_cst_domain_does_not_bypass_resolver() -> None:
 
 
 def test_distinct_coverage_ignores_how_often_a_code_repeats() -> None:
-    # Two codes, one official and one not, but the unofficial one dominates
-    # the rows. Row coverage collapses; distinct coverage does not.
+    # Dois códigos, um oficial e outro não, mas o não oficial domina as
+    # linhas. A cobertura por linha despenca; a cobertura distinta, não.
     catalogs = ReferenceCatalogs.from_directory(REFERENCE_DATA)
     series = pd.Series(["5102"] * 2 + ["9999"] * 98)
     analysis = catalogs.analyze(series, "cfop")

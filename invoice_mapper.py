@@ -1,8 +1,22 @@
-"""Two-pass mapper from a client's invoice spreadsheet to model.xlsx columns."""
+"""Mapeador em duas passagens das colunas da planilha de notas fiscais do cliente para as colunas do model.xlsx.
+
+O código pensa em inglês nos valores de máquina (situação ``accepted``, ids de
+etapa como ``semantic``, nome de exibição ``Nome (occurrence 2)``) e escreve
+em português todas as frases que uma pessoa lê: justificativa, prova
+aritmética, detalhe dos sinais, motivo de retenção e mensagens. A tradução dos
+nomes de aba, cabeçalhos, valores enumerados e chaves de metadados acontece só
+na gravação, em ``report_schema``.
+
+O que é entrada dos modelos de IA continua em inglês, idêntico byte a byte: o
+prompt do ``OpenAIDataResolver``, o prefixo do embedding, o esquema
+``DataMappingDecision``, o payload enviado ao resolvedor, o texto de
+``semantic_header_conflict`` e ``ColumnRef.name`` / ``ColumnRef.display_name``.
+Mudar qualquer um deles mudaria as decisões online; o teste
+``tests/test_model_input_golden.py`` garante que isso não acontece.
+"""
 
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
 import os
@@ -20,6 +34,8 @@ import pandas as pd
 from openai import OpenAI
 from pydantic import BaseModel, Field
 
+import report_schema
+from cli_ptbr import PortugueseArgumentParser
 from mapping_steps import deciding_step, format_steps
 from reference_catalog import ReferenceCatalogs, best_catalog_evidence, expected_catalogs
 
@@ -27,8 +43,12 @@ from reference_catalog import ReferenceCatalogs, best_catalog_evidence, expected
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large"
 DEFAULT_LLM_MODEL = "gpt-4o-mini"
 SEMANTIC_EQUIVALENCE_SCORE = 0.98
-MAPPING_SCHEMA_VERSION = 2
+#: Versão do formato do relatório. A 3 é o esquema em português (abas,
+#: cabeçalhos, valores e chaves de metadados); a 2 é o legado em inglês.
+MAPPING_SCHEMA_VERSION = 3
 PROMPT_VERSION = "2026-08-04.2"
+#: Colunas que o revisor preenche na aba de mapeamentos. Os nomes são os
+#: internos; o cabeçalho em português sai de ``report_schema`` na gravação.
 REVIEWER_COLUMNS = ["reviewer_status", "correct_client_column", "reviewer_note"]
 
 _HEADER_STOPWORDS = {
@@ -113,27 +133,27 @@ def normalize_header(value: object) -> str:
 
 
 def semantic_header_signature(value: object) -> frozenset[str]:
-    """Normalize reusable Portuguese/English terms without client-layout rules."""
+    """Normaliza termos reutilizáveis em português e inglês, sem regras do layout de um cliente."""
     normalized = normalize_header(value)
-    # CST is the standard Brazilian abbreviation for tax-situation code. This
-    # replacement is domain vocabulary, not a mapping learned from a client file.
+    # CST é a abreviação brasileira padrão do código de situação tributária.
+    # Esta troca é vocabulário do domínio, não um de-para aprendido de um cliente.
     normalized = re.sub(r"\btax\s+situation\b", "cst", normalized)
     normalized = re.sub(r"\bsituacao\s+tributaria\b", "cst", normalized)
-    # In the Livro Registro de Entradas/Saidas - and SPED EFD registro C100
-    # field VL_DOC - "valor contabil" IS the total value of the fiscal
-    # document. Model columns 40-51 are that register's value block, so this
-    # states what the canonical model means, not what one client calls it. The
-    # value word is load-bearing: it is what leaves "Conta Contabil",
-    # "Lancamento Contabil" and "Data Contabil" alone, since each keeps a
-    # surviving token that the model column does not have.
+    # No Livro Registro de Entradas/Saídas - e no campo VL_DOC do registro
+    # C100 da EFD ICMS/IPI - "valor contábil" É o valor total do documento
+    # fiscal. As colunas 40 a 51 do modelo são o bloco de valores desse livro,
+    # então isto diz o que o modelo base significa, não como um cliente o
+    # chama. A palavra de valor é essencial: é ela que deixa de fora "Conta
+    # Contábil", "Lançamento Contábil" e "Data Contábil", porque cada um
+    # mantém uma palavra que a coluna do modelo não tem.
     normalized = re.sub(r"\b(?:valor|vlr|val|vl)\s+contab\w*", "valor total nf", normalized)
     tokens = []
     for token in normalized.split():
         if token in _HEADER_STOPWORDS:
             continue
         tokens.append(_HEADER_TOKEN_ALIASES.get(token, token))
-    # Some ERP headers truncate PIS to PI. Only expand it when CST/tax-situation
-    # context makes the meaning unambiguous.
+    # Alguns ERPs truncam PIS para PI nos cabeçalhos. Só expande quando o
+    # contexto de CST (situação tributária) deixa o sentido inequívoco.
     if "cst" in tokens:
         tokens = ["pis" if token == "pi" else token for token in tokens]
     return frozenset(tokens)
@@ -145,11 +165,12 @@ def semantically_equivalent_headers(left: object, right: object) -> bool:
 
 
 def underspecified_header_match(model_header: object, client_header: object) -> bool:
-    """Return whether the client header drops all but one model concept.
+    """Diz se o cabeçalho do cliente perde todos os conceitos do modelo, menos um.
 
-    A single generic word such as ``Centro`` is useful as a proposal for
-    ``Centro custo``, but it is not enough for automatic acceptance. Distinctive
-    row or catalog evidence can still promote the proposal in the second pass.
+    Uma palavra genérica sozinha, como ``Centro``, serve como proposta para
+    ``Centro custo``, mas não basta para o aceite automático. Evidência
+    distintiva nas linhas ou no catálogo ainda pode promover a proposta na
+    segunda passagem.
     """
     model_signature = semantic_header_signature(model_header)
     client_signature = semantic_header_signature(client_header)
@@ -188,7 +209,7 @@ _TAX_FAMILIES = {
 
 
 def header_tax_families(value: object) -> frozenset[str]:
-    """Return explicit tax families found in a header using domain vocabulary."""
+    """Famílias de tributo citadas explicitamente num cabeçalho, pelo vocabulário do domínio."""
     families = {
         _TAX_FAMILY_ALIASES.get(token, token)
         for token in semantic_header_signature(value)
@@ -196,21 +217,22 @@ def header_tax_families(value: object) -> frozenset[str]:
     return frozenset(families & _TAX_FAMILIES)
 
 
-#: Role words grouped by the concept they name. Every ERP truncates headers -
-#: SAP to about 20 characters, Datasul to 12 - so the role word arrives cut
-#: short far more often than not: "Vlr Isen ICM", "Vlr Outr IPI".
+#: Palavras de papel agrupadas pelo conceito que nomeiam. Todo ERP trunca os
+#: cabeçalhos - o SAP em cerca de 20 caracteres, o Datasul em 12 -, então a
+#: palavra de papel chega cortada na maioria das vezes: "Vlr Isen ICM",
+#: "Vlr Outr IPI".
 #:
-#: These groups are prefix-unambiguous: measured over lengths 2 to 6, no prefix
-#: of any word here reaches two different concepts. That is what makes
-#: expansion safe by construction rather than by tuning, and it is asserted by
-#: a test so a future addition cannot quietly break it.
+#: Estes grupos não têm prefixo ambíguo: medido nos tamanhos de 2 a 6, nenhum
+#: prefixo de palavra daqui alcança dois conceitos diferentes. É isso que torna
+#: a expansão segura por construção, e não por ajuste fino; um teste verifica a
+#: propriedade, para que um acréscimo futuro não a quebre sem ninguém notar.
 _ROLE_CONCEPT_WORDS: dict[str, frozenset[str]] = {
     "other": frozenset({"outra", "outras", "outro", "outros", "other"}),
     "exempt": frozenset({"isenta", "isentas", "isento", "isentos", "exempt"}),
     "reduced": frozenset({"reduzida", "reduzido", "reduced"}),
 }
 
-#: Shorter than this and a token is noise rather than a truncation.
+#: Abaixo deste tamanho, uma palavra é ruído, não truncamento.
 _MIN_ROLE_PREFIX = 3
 
 
@@ -236,13 +258,13 @@ _ROLE_CANONICAL = {
 
 
 def expand_truncated_role_words(tokens: set[str]) -> set[str]:
-    """Add the full role word for tokens that are truncations of one.
+    """Acrescenta a palavra de papel completa às palavras que são truncamentos dela.
 
-    A prefix only expands when it reaches exactly one concept, so this cannot
-    turn an "outbound" into an "outras" by reaching two meanings at once - it
-    can only be wrong if a token that is not a truncation happens to prefix a
-    role word and nothing else. Expansion is additive: the original token stays,
-    so nothing that already worked stops working.
+    Um prefixo só se expande quando alcança exatamente um conceito, então isto
+    não transforma um "outbound" em "outras" por alcançar dois sentidos ao
+    mesmo tempo - só erra se uma palavra que não é truncamento por acaso for
+    prefixo de uma palavra de papel e de mais nenhuma. A expansão é aditiva: a
+    palavra original fica, então nada que já funcionava deixa de funcionar.
     """
     known = {word for words in _ROLE_CONCEPT_WORDS.values() for word in words}
     expanded = set(tokens)
@@ -256,7 +278,7 @@ def expand_truncated_role_words(tokens: set[str]) -> set[str]:
 
 
 def header_semantic_role(value: object) -> str | None:
-    """Return an explicit tax-value role without guessing from row values."""
+    """Papel fiscal explícito no cabeçalho, sem adivinhar pelos valores das linhas."""
     normalized = normalize_header(value)
     padded = f" {normalized} "
     raw_tokens = set(normalized.split())
@@ -279,13 +301,14 @@ def header_semantic_role(value: object) -> str | None:
         or re.search(r"\btipo\s+(?:de\s+|do\s+)?imposto\b", normalized)
     ):
         return "tax_status"
-    # A tax-family name can smuggle a rate signal into the signature: DIF_ALIQ
-    # tokenises to include ``aliq``, which the alias table expands to
-    # ``aliquota``, so every column of that block - Base, Valor, Isentas,
-    # Outras, Base Reduzida - reported role ``rate`` before this guard. When
-    # the header also states an explicit slot, the explicit word wins; the
-    # rate reading survives wherever it is the only role evidence, which is
-    # what keeps abbreviations like ``Aliq. PIS`` and ``Alíq. ICMS`` working.
+    # O nome de uma família de tributo pode contrabandear um sinal de alíquota
+    # para a assinatura: DIF_ALIQ gera a palavra ``aliq``, que a tabela de
+    # sinônimos expande para ``aliquota``, então toda coluna desse bloco -
+    # Base, Valor, Isentas, Outras, Base Reduzida - tinha papel ``rate`` antes
+    # desta proteção. Quando o cabeçalho também diz uma posição explícita, a
+    # palavra explícita vence; a leitura como alíquota sobrevive onde é a única
+    # evidência de papel, e é isso que mantém funcionando abreviações como
+    # ``Aliq. PIS`` e ``Alíq. ICMS``.
     explicit_slot = (
         {"outra", "outras", "outro", "other"} & tokens
         or {"isenta", "isentas", "isento", "exempt"} & tokens
@@ -293,9 +316,10 @@ def header_semantic_role(value: object) -> str | None:
         or {"base", "basis"} & tokens
         or {"valor", "value", "amount"} & tokens
     )
-    # ...but only when the rate reading rests on the abbreviation alone. A
-    # header that states a full rate word keeps it even beside a slot word,
-    # which is what leaves sap_terumo's "Tax rate (Tax/Base)" a rate.
+    # ...mas só quando a leitura como alíquota depende apenas da abreviação.
+    # Um cabeçalho que traz a palavra de alíquota por extenso continua sendo
+    # alíquota mesmo ao lado de uma palavra de posição; é isso que mantém
+    # "Tax rate (Tax/Base)" do sap_terumo como alíquota.
     rate_is_abbreviation_only = not (
         {"aliquota", "rate", "taxa", "tximp"} & raw_tokens
         or " tx imposto " in padded
@@ -314,10 +338,10 @@ def header_semantic_role(value: object) -> str | None:
         return "exempt"
     if {"reduzida", "reduzido", "reduced"} & tokens and {"base", "basis"} & tokens:
         return "reduced_base"
-    # SAP commonly abbreviates the taxable amount/base as ``Mont.`` or
-    # ``Monta`` in a tax-family column (for example, PIS Mont. beside PIS
-    # Taxa and Valor do PIS). Outside tax-family context, ``mont.`` retains
-    # its ordinary amount/value meaning.
+    # O SAP costuma abreviar o montante tributável (a base de cálculo) como
+    # ``Mont.`` ou ``Monta`` numa coluna de tributo (por exemplo, PIS Mont. ao
+    # lado de PIS Taxa e Valor do PIS). Fora do contexto de uma família de
+    # tributo, ``mont.`` mantém o sentido comum de montante (valor).
     if header_tax_families(value) and {"mont", "monta", "montante"} & tokens:
         return "base"
     if {"base", "basis"} & tokens:
@@ -375,20 +399,24 @@ def header_semantic_role(value: object) -> str | None:
     return None
 
 
-def semantic_header_conflict(left: object, right: object) -> str | None:
-    """Describe an explicit tax-family or semantic-role conflict between headers.
+def _header_conflict_parts(
+    left: object, right: object
+) -> tuple[str, tuple[str, ...], tuple[str, ...]] | None:
+    """Conflito explícito entre dois cabeçalhos, em forma estruturada.
 
-    This is deliberately conservative: an absent or bogus header has no explicit
-    signature and therefore is not rejected. Explicit conflicts remain viable for
-    human review because distinctive row content can show that a header is wrong.
+    Devolve ``(tipo, lado_esquerdo, lado_direito)``, com ``tipo`` igual a
+    ``"family"`` (família de tributo), ``"qualifier"`` (qualificador do
+    tributo, ST ou normal) ou ``"role"`` (papel semântico), e cada lado como
+    ids internos ordenados; ``None`` quando não há conflito.
+
+    É a fonte única de ``semantic_header_conflict`` (texto em inglês, que é
+    entrada da IA) e de ``describe_header_conflict_pt`` (o mesmo conflito em
+    português, para pessoas), para que os dois nunca discordem.
     """
     left_families = header_tax_families(left)
     right_families = header_tax_families(right)
     if left_families and right_families and left_families.isdisjoint(right_families):
-        return (
-            "tax-family conflict "
-            f"({', '.join(sorted(left_families))} vs {', '.join(sorted(right_families))})"
-        )
+        return "family", tuple(sorted(left_families)), tuple(sorted(right_families))
 
     left_qualifiers = set(normalize_header(left).split()) & {"st"}
     right_qualifiers = set(normalize_header(right).split()) & {"st"}
@@ -398,20 +426,83 @@ def semantic_header_conflict(left: object, right: object) -> str | None:
         and not left_families.isdisjoint(right_families)
         and left_qualifiers != right_qualifiers
     ):
+        # Sem qualificador, o tributo é o normal (ICMS normal x ICMS ST).
         return (
-            "tax-qualifier conflict "
-            f"({', '.join(sorted(left_qualifiers)) or 'regular'} vs "
-            f"{', '.join(sorted(right_qualifiers)) or 'regular'})"
+            "qualifier",
+            tuple(sorted(left_qualifiers)) or ("regular",),
+            tuple(sorted(right_qualifiers)) or ("regular",),
         )
 
     left_role = header_semantic_role(left)
     right_role = header_semantic_role(right)
     if left_role is not None and right_role is not None and left_role != right_role:
-        return f"semantic-role conflict ({left_role} vs {right_role})"
+        return "role", (left_role,), (right_role,)
     return None
 
 
+def semantic_header_conflict(left: object, right: object) -> str | None:
+    """Descreve, em inglês, um conflito explícito de família de tributo ou de papel entre cabeçalhos.
+
+    É deliberadamente conservador: um cabeçalho ausente ou sem sentido não tem
+    assinatura explícita e por isso não é recusado. Conflitos explícitos
+    continuam disponíveis para revisão humana, porque o conteúdo distintivo das
+    linhas pode mostrar que um cabeçalho está errado.
+
+    O texto fica em inglês, byte a byte: ele vai no payload do resolvedor de IA
+    (campo ``semantic_header_conflict``) e o prompt cita esse campo. Para
+    mostrar o conflito a uma pessoa, use ``describe_header_conflict_pt``.
+    """
+    parts = _header_conflict_parts(left, right)
+    if parts is None:
+        return None
+    kind, left_side, right_side = parts
+    if kind == "family":
+        return f"tax-family conflict ({', '.join(left_side)} vs {', '.join(right_side)})"
+    if kind == "qualifier":
+        return f"tax-qualifier conflict ({', '.join(left_side)} vs {', '.join(right_side)})"
+    return f"semantic-role conflict ({left_side[0]} vs {right_side[0]})"
+
+
+#: O conflito de cabeçalho em português, para frases lidas por pessoas. Os
+#: lados chegam prontos: famílias em maiúsculas unidas por ", " (``ICMS``),
+#: qualificadores e papéis pelos rótulos de ``report_schema.TEXT_LABELS``
+#: (``ST``/``normal``; ``base de cálculo``, ``alíquota`` ...).
+HEADER_CONFLICT_FAMILY_PT = "conflito de família de tributo ({left} vs {right})"
+HEADER_CONFLICT_QUALIFIER_PT = "conflito de qualificador do tributo ({left} vs {right})"
+HEADER_CONFLICT_ROLE_PT = "conflito de papel semântico ({left} vs {right})"
+
+
+def describe_header_conflict_pt(left: object, right: object) -> str | None:
+    """O mesmo conflito de ``semantic_header_conflict``, escrito em português.
+
+    Calculado a partir das mesmas entradas estruturadas, então existe
+    exatamente quando o texto em inglês existe e aponta o mesmo tipo de
+    conflito. Serve só para pessoas (justificativa do relatório); o texto em
+    inglês continua sendo o que vai para a IA.
+    """
+    parts = _header_conflict_parts(left, right)
+    if parts is None:
+        return None
+    kind, left_side, right_side = parts
+    if kind == "family":
+        template, labels = HEADER_CONFLICT_FAMILY_PT, None
+    elif kind == "qualifier":
+        template, labels = HEADER_CONFLICT_QUALIFIER_PT, report_schema.TEXT_LABELS["tax_qualifier"]
+    else:
+        template, labels = HEADER_CONFLICT_ROLE_PT, report_schema.TEXT_LABELS["header_role"]
+
+    def side(values: tuple[str, ...]) -> str:
+        # Siglas de tributo em maiúsculas; qualificadores e papéis pelo rótulo.
+        return ", ".join(
+            value.upper() if labels is None else labels.get(value, value) for value in values
+        )
+
+    return template.format(left=side(left_side), right=side(right_side))
+
+
 def _header_text(value: object, index: int) -> str:
+    # Fica em inglês: o nome vai para o embedding e para o payload da IA. Nas
+    # células do relatório ele sai como "Coluna sem nome N" (report_schema).
     if pd.isna(value) or not str(value).strip():
         return f"Unnamed column {index + 1}"
     return str(value).strip()
@@ -419,6 +510,15 @@ def _header_text(value: object, index: int) -> str:
 
 @dataclass(frozen=True)
 class ColumnRef:
+    """Uma coluna de planilha: id estável, posição (a partir de 0), cabeçalho e ocorrência.
+
+    ``name`` e ``display_name`` ficam em inglês em memória (``Unnamed column
+    N``, ``(occurrence N)``): o nome é entrada da IA e o nome de exibição é
+    comparado pelo ``apply``. A forma em português (``Coluna sem nome N``,
+    ``(ocorrência N)``) é aplicada só nas células gravadas, por
+    ``report_schema.display_name_to_external``.
+    """
+
     id: str
     index: int
     name: str
@@ -432,6 +532,8 @@ class ColumnRef:
 
 @dataclass
 class SheetTable:
+    """Uma aba lida do Excel: as colunas (``ColumnRef``) e os dados abaixo do cabeçalho."""
+
     columns: list[ColumnRef]
     data: pd.DataFrame
 
@@ -444,10 +546,10 @@ class SheetTable:
     ) -> "SheetTable":
         raw = pd.read_excel(path, sheet_name=sheet_name, header=None, dtype=object)
         if raw.empty:
-            raise ValueError(f"Spreadsheet has no rows: {path}")
+            raise ValueError(f"A planilha não tem linhas: {path}")
         if header_row < 0 or header_row >= len(raw):
             raise ValueError(
-                f"Header row {header_row + 1} is outside spreadsheet rows: {path}"
+                f"A linha de cabeçalho {header_row + 1} está fora das linhas da planilha: {path}"
             )
 
         headers = [
@@ -522,7 +624,7 @@ def _sample_sort_key(text: str) -> tuple[int, float | str, str]:
 
 
 def sample_values(series: pd.Series, limit: int = 8) -> list[str]:
-    """Return stable, representative values independent of spreadsheet row order."""
+    """Valores representativos e estáveis, independentes da ordem das linhas da planilha."""
     if limit < 1:
         return []
     texts = [
@@ -541,8 +643,9 @@ def sample_values(series: pd.Series, limit: int = 8) -> list[str]:
         if value not in selected and len(selected) < limit:
             selected.append(value)
 
-    # Frequent values represent the dominant distribution, while evenly spaced
-    # values expose range and format differences. Both selections are stable.
+    # Os valores frequentes representam a distribuição dominante, e os valores
+    # espaçados por igual mostram a faixa e as diferenças de formato. As duas
+    # seleções são estáveis.
     for value in sorted(counts, key=lambda item: (-counts[item], _sample_sort_key(item)))[:2]:
         add(value)
     if len(ordered_unique) == 1:
@@ -694,7 +797,7 @@ def summarize_values(series: pd.Series, limit: int = 8) -> dict[str, object]:
 def profile_similarity(
     left: dict[str, object], right: dict[str, object]
 ) -> float:
-    """Compare generic value shape without encoding any invoice-field mapping."""
+    """Compara o formato genérico dos valores, sem embutir nenhum de-para de campo da nota."""
     if (
         left["evidence_quality"] != "informative"
         or right["evidence_quality"] != "informative"
@@ -734,7 +837,7 @@ def profile_similarity(
 
 
 def _distinctive_samples(profile: dict[str, object]) -> set[str]:
-    """Return normalized sample values unlikely to match by accident."""
+    """Valores de amostra normalizados que dificilmente coincidem por acaso."""
     distinctive: set[str] = set()
     for value in profile["samples"]:
         normalized = normalize_header(value)
@@ -757,7 +860,7 @@ def _distinctive_samples(profile: dict[str, object]) -> set[str]:
 def distinctive_sample_overlap(
     left: dict[str, object], right: dict[str, object]
 ) -> float:
-    """Measure exact overlap of nontrivial samples, excluding zeros and short IDs."""
+    """Mede a coincidência exata de amostras não triviais, sem zeros nem identificadores curtos."""
     left_samples = _distinctive_samples(left)
     right_samples = _distinctive_samples(right)
     if not left_samples or not right_samples:
@@ -777,7 +880,7 @@ def distinctive_sample_overlap_count(
 def identifier_match_score(
     left: dict[str, object], right: dict[str, object]
 ) -> float:
-    """Return strong content evidence only for validated Brazilian identifiers."""
+    """Evidência forte de conteúdo, só para identificadores brasileiros validados (CPF, CNPJ, chave de acesso)."""
     scores = []
     for key in (
         "valid_cpf_fraction",
@@ -794,7 +897,7 @@ def identifier_match_score(
 def distinctive_profile_match(
     left: dict[str, object], right: dict[str, object]
 ) -> bool:
-    """Return whether rows carry evidence stronger than a generic type match."""
+    """Diz se as linhas trazem evidência mais forte do que a simples coincidência de tipo."""
     if (
         left["evidence_quality"] != "informative"
         or right["evidence_quality"] != "informative"
@@ -806,7 +909,7 @@ def distinctive_profile_match(
 
 
 def numeric_series(series: pd.Series) -> pd.Series:
-    """Parse ordinary and Brazilian-formatted numbers without changing row order."""
+    """Converte números no formato comum e no brasileiro, sem mudar a ordem das linhas."""
     if pd.api.types.is_numeric_dtype(series):
         return pd.to_numeric(series, errors="coerce").astype(float)
     return series.map(_numeric_value).astype(float)
@@ -819,11 +922,11 @@ def tax_calculation_evidence(
     *,
     minimum_rows: int = 5,
 ) -> dict[str, object]:
-    """Score the row-wise relationship value ~= base * rate.
+    """Pontua, linha a linha, a relação valor ~= base x alíquota.
 
-    Both common rate representations are tested: percentage points (18) and a
-    decimal fraction (0.18). The score is the fraction of usable rows within a
-    2% relative or two-cent absolute tolerance.
+    As duas representações comuns de alíquota são testadas: pontos
+    percentuais (18) e fração decimal (0.18). A pontuação é a fração de linhas
+    utilizáveis dentro da tolerância de 2% relativos ou de dois centavos.
     """
     frame = pd.concat(
         [
@@ -892,7 +995,7 @@ def tax_calculation_evidence(
 
 
 def tax_calculation_scope(value: object) -> tuple[str, tuple[str, ...]] | None:
-    """Return a tax family and reusable qualifiers for calculation fields."""
+    """Família de tributo e qualificadores reutilizáveis (ST, DIF ...) de um campo de cálculo."""
     families = header_tax_families(value)
     if len(families) != 1:
         return None
@@ -906,7 +1009,7 @@ def tax_calculation_scope(value: object) -> tuple[str, tuple[str, ...]] | None:
 
 
 def line_calculation_role(value: object) -> str | None:
-    """Identify the conservative quantity * unit-price = line-value trio."""
+    """Identifica, de forma conservadora, o trio quantidade x preço unitário = valor do item."""
     tokens = semantic_header_signature(value)
     normalized = normalize_header(value)
     if {"quantidade", "quantity", "qtd"} & set(normalized.split()):
@@ -929,7 +1032,7 @@ def line_calculation_evidence(
     *,
     minimum_rows: int = 5,
 ) -> dict[str, object]:
-    """Score quantity * unit price ~= line value with fiscal-report tolerance."""
+    """Pontua quantidade x preço unitário ~= valor do item, com a tolerância de um relatório fiscal."""
     frame = pd.concat(
         [
             numeric_series(quantity).rename("quantity"),
@@ -986,11 +1089,11 @@ def line_calculation_evidence(
 
 class HeaderScorer(Protocol):
     def scores(self, model_headers: Sequence[str], client_headers: Sequence[str]) -> np.ndarray:
-        """Return a matrix with shape (model headers, client headers)."""
+        """Matriz com formato (cabeçalhos do modelo, cabeçalhos do cliente)."""
 
 
 class LexicalHeaderScorer:
-    """Offline scorer used for tests and local dry runs."""
+    """Avaliador de cabeçalhos offline, usado nos testes e nas execuções locais (--offline)."""
 
     def scores(self, model_headers: Sequence[str], client_headers: Sequence[str]) -> np.ndarray:
         matrix = np.zeros((len(model_headers), len(client_headers)), dtype=float)
@@ -1013,6 +1116,12 @@ class LexicalHeaderScorer:
 
 
 class OpenAIEmbeddingHeaderScorer:
+    """Avaliador de cabeçalhos por embeddings da OpenAI (similaridade de cosseno).
+
+    O prefixo enviado com cada cabeçalho fica em inglês, byte a byte: é entrada
+    do modelo, e mudá-lo mudaria os vetores e as pontuações de nome.
+    """
+
     def __init__(
         self,
         client: OpenAI,
@@ -1043,12 +1152,13 @@ class OpenAIEmbeddingHeaderScorer:
         model_norms = np.linalg.norm(model_vectors, axis=1, keepdims=True)
         client_norms = np.linalg.norm(client_vectors, axis=1, keepdims=True)
         if np.any(model_norms == 0) or np.any(client_norms == 0):
-            raise ValueError("OpenAI returned a zero-length embedding")
+            raise ValueError("A OpenAI retornou um embedding de comprimento zero")
         similarities = (model_vectors / model_norms) @ (client_vectors / client_norms).T
         similarities = np.clip(similarities, 0.0, 1.0)
 
-        # Reusable translated, abbreviated, or reordered terms can strengthen the
-        # embedding score, but do not receive a fabricated probability of 1.0.
+        # Termos reutilizáveis traduzidos, abreviados ou em outra ordem podem
+        # reforçar a pontuação do embedding, mas não ganham uma probabilidade
+        # inventada de 1.0.
         for i, target in enumerate(model_headers):
             for j, source in enumerate(client_headers):
                 if normalize_header(target) == normalize_header(source):
@@ -1079,10 +1189,19 @@ class DataResolver(Protocol):
         relationship_evidence: dict[str, list[dict[str, object]]] | None = None,
         catalog_evidence: dict[str, list[dict[str, object]]] | None = None,
     ) -> DataMappingDecision:
-        """Resolve one low-confidence model column against client candidates."""
+        """Decide uma coluna do modelo de baixa confiança entre os candidatos do cliente."""
 
 
 class OpenAIDataResolver:
+    """Resolvedor de IA: pede à OpenAI uma decisão estruturada (``DataMappingDecision``).
+
+    O prompt (``instructions``), o payload em JSON e o esquema de saída ficam
+    em inglês, byte a byte: são entrada do modelo, e o teste dourado
+    (``tests/test_model_input_golden.py``) falha se qualquer um deles mudar. Por
+    isso a justificativa que o modelo escreve (``reason``) também chega em
+    inglês e passa intacta para o relatório.
+    """
+
     def __init__(self, client: OpenAI, model: str = DEFAULT_LLM_MODEL) -> None:
         self.client = client
         self.model = model
@@ -1186,7 +1305,7 @@ class OpenAIDataResolver:
             text_format=DataMappingDecision,
         )
         if response.output_parsed is None:
-            raise RuntimeError("OpenAI returned no parsed mapping decision")
+            raise RuntimeError("A OpenAI não retornou uma decisão de mapeamento interpretável")
         decision = response.output_parsed
         selected = next(
             (
@@ -1218,11 +1337,12 @@ def _supporting_step_ids(
     arithmetic_proof: str | None = None,
     resolver_ran: bool = False,
 ) -> list[str]:
-    """Which named steps actually supported this mapping.
+    """Quais etapas nomeadas de fato sustentaram este mapeamento.
 
-    Read from the same scores the decision was made on, so the report cannot
-    claim evidence the pipeline did not use. A step is listed when it produced
-    a positive signal for the chosen column, not merely when it ran.
+    Lidas das mesmas pontuações em que a decisão foi tomada, para que o
+    relatório não alegue evidência que o processo não usou. Uma etapa entra na
+    lista quando produziu um sinal positivo para a coluna escolhida, e não
+    apenas porque rodou.
     """
     steps: list[str] = []
     if resolver_ran:
@@ -1235,16 +1355,26 @@ def _supporting_step_ids(
         steps.append("identifier")
     if catalog_score > 0.0:
         steps.append("catalog")
-    # A proof that cannot single out a column corroborates the tax scope, not
-    # this mapping, so it is not evidence for it. See _trio_proof_text.
-    proof_is_decisive = bool(arithmetic_proof) and "does not single out" not in arithmetic_proof
-    if relationship_score > 0.0 or proof_is_decisive:
+    # Uma prova que não distingue uma coluna confirma o escopo do tributo, não
+    # este mapeamento, então não é evidência para ele. Ver _trio_proof_text.
+    # report_schema.proof_is_decisive reconhece o marcador em português e o
+    # legado em inglês.
+    if relationship_score > 0.0 or report_schema.proof_is_decisive(arithmetic_proof):
         steps.append("arithmetic")
     return steps
 
 
 @dataclass
 class MappingResult:
+    """Uma linha da aba Mapeamentos: a decisão para uma coluna do modelo.
+
+    Os valores de máquina ficam no vocabulário interno (``status`` igual a
+    ``accepted``, ``review`` ou ``no_match``; ``method``, etapas e vetos com os
+    ids de ``mapping_steps``); ``report_schema`` os traduz na gravação. As
+    frases (``reason`` e ``arithmetic_proof``) já são escritas em português,
+    exceto a justificativa escrita pela IA, que passa intacta em inglês.
+    """
+
     model_column_number: int
     model_column: str
     client_column_number: int | None
@@ -1259,16 +1389,18 @@ class MappingResult:
     reason: str
     catalog_name: str | None = None
     catalog_coverage: float | None = None
-    #: Coverage over distinct codes. catalog_coverage stays row-weighted so the
-    #: reported column keeps its meaning; the gates use this one, because it is
-    #: what catalog_confidence is now computed from.
+    #: Cobertura sobre os códigos distintos. catalog_coverage continua
+    #: ponderada pelas linhas, para que a coluna do relatório mantenha o
+    #: sentido; as travas usam esta, porque é dela que catalog_confidence é
+    #: calculada hoje.
     catalog_distinct_coverage: float | None = None
     catalog_confidence: float | None = None
-    #: Set when a client-side arithmetic trio independently places this column
-    #: here. Header-independent, so it is what tells a reviewer - and the eval
-    #: harness - that this mapping would survive an unfamiliar ERP.
+    #: Preenchida quando um trio aritmético do próprio cliente põe esta coluna
+    #: aqui de forma independente. Não depende do cabeçalho, então é o que diz
+    #: ao revisor - e à avaliação - que este mapeamento sobreviveria a um ERP
+    #: desconhecido.
     arithmetic_proof: str | None = None
-    #: The named analysis steps behind this row - see mapping_steps.py.
+    #: As etapas nomeadas da análise por trás desta linha - ver mapping_steps.py.
     supported_by: str = ""
     decided_by: str = ""
     vetoed_by: str = ""
@@ -1278,6 +1410,8 @@ class MappingResult:
 
 @dataclass(frozen=True)
 class MapperConfig:
+    """Limiares e tamanhos da execução (os mesmos das opções da linha de comando)."""
+
     name_threshold: float = 0.90
     name_margin_threshold: float = 0.05
     final_threshold: float = 0.90
@@ -1343,7 +1477,7 @@ def _candidate_relationship_evidence(
     results: dict[int, MappingResult],
     numeric_client_series: dict[int, pd.Series] | None = None,
 ) -> dict[int, list[dict[str, object]]]:
-    """Evaluate reusable row relationships against already accepted anchors."""
+    """Avalia relações reutilizáveis entre linhas contra as âncoras já aceitas."""
     evidence: dict[int, list[dict[str, object]]] = {
         index: [] for index in candidate_indices
     }
@@ -1478,7 +1612,7 @@ def _audit_accepted_catalog_matches(
     reference_catalogs: ReferenceCatalogs | None,
     analysis_cache: dict[tuple[str, int], dict[str, object]],
 ) -> None:
-    """Attach catalog evidence and reopen clear pass-one contradictions."""
+    """Anexa a evidência de catálogo e reabre as contradições claras da primeira passagem."""
     if reference_catalogs is None:
         return
     for target_index, result in list(results.items()):
@@ -1520,27 +1654,29 @@ def _audit_accepted_catalog_matches(
             low_confidence_targets.append(target_index)
 
 
-#: Floor for catalog evidence from a nationally-unique code domain.
+#: Piso para a evidência de catálogo de um domínio de códigos único no país.
 #:
-#: Measured over 348 scored column-catalog pairs across the four sample
-#: clients: for the specificity-1.0 catalogs (CFOP, NCM, IBGE municipality)
-#: the six true code columns score 0.8824-1.0000 while all 1,301 other pairs
-#: score 0.0000-0.0137 - a 64x empty gap. Any floor inside that gap separates
-#: perfectly and survives leave-one-client-out; 0.90 does not, because it sits
-#: at the top edge of the code cluster rather than in the gap, which is why a
-#: textbook CFOP column with 15 of 17 official codes was rejected.
+#: Medido em 348 pares coluna-catálogo pontuados nos quatro clientes de
+#: amostra: nos catálogos de especificidade 1.0 (CFOP, NCM, município do IBGE)
+#: as seis colunas de código verdadeiras pontuam de 0.8824 a 1.0000, enquanto
+#: todos os outros 1.301 pares pontuam de 0.0000 a 0.0137 - um intervalo vazio
+#: de 64 vezes. Qualquer piso dentro desse intervalo separa perfeitamente e
+#: resiste à validação deixando um cliente de fora; 0.90 não, porque fica na
+#: borda de cima do grupo dos códigos e não no intervalo, e é por isso que uma
+#: coluna de CFOP de manual, com 15 dos 17 códigos oficiais, era recusada.
 #:
-#: The floor is deliberately NOT applied to lower-specificity catalogs. Those
-#: are small closed domains - cst_ipi has 14 codes, cst_pis_cofins 33 - and
-#: any column of small integers matches them: at 0.50 the same corpus admits
-#: 123 pairs instead of 6, including 'Means of Transport' against cst_ipi and
-#: 'Valor Frete' against cst_icms. For those catalogs there is no gap at all,
-#: so the existing threshold stands and they remain LLM evidence rather than
-#: accepting evidence.
+#: O piso NÃO se aplica, de propósito, aos catálogos de especificidade menor.
+#: São domínios pequenos e fechados - cst_ipi tem 14 códigos, cst_pis_cofins
+#: 33 - e qualquer coluna de inteiros pequenos casa com eles: com 0.50 o mesmo
+#: corpus admite 123 pares em vez de 6, entre eles 'Means of Transport' contra
+#: cst_ipi e 'Valor Frete' contra cst_icms. Nesses catálogos não existe
+#: intervalo nenhum, então o limiar atual continua valendo e eles seguem como
+#: evidência para a IA, não como evidência de aceite.
 DISTINCTIVE_CATALOG_FLOOR = 0.50
 
-#: A nationally-unique domain still needs enough distinct codes to be evidence:
-#: two matching values prove nothing however official the table.
+#: Mesmo um domínio único no país precisa de códigos distintos suficientes
+#: para ser evidência: dois valores coincidentes não provam nada, por mais
+#: oficial que seja a tabela.
 DISTINCTIVE_CATALOG_MIN_CODES = 5
 
 
@@ -1549,7 +1685,7 @@ def catalog_evidence_is_distinctive(
     *,
     final_threshold: float,
 ) -> bool:
-    """Whether catalog evidence is strong enough to decide a mapping alone."""
+    """Diz se a evidência de catálogo é forte o bastante para decidir um mapeamento sozinha."""
     if evidence is None:
         return False
     specificity = float(evidence["specificity"])
@@ -1566,6 +1702,21 @@ def catalog_evidence_is_distinctive(
     return score >= final_threshold
 
 
+def _catalog_label(catalog: object) -> str:
+    """Nome legível de um catálogo de reference_data para frases (``cfop`` -> ``CFOP``)."""
+    return report_schema.CATALOG_LABELS.get(str(catalog), str(catalog))
+
+
+#: Justificativa da decisão local por catálogo. ``catalog`` é o nome legível
+#: (``_catalog_label``); ``distinct_coverage`` e ``coverage`` chegam formatados
+#: com ``report_schema.format_percent_br`` (``88,2%``).
+REASON_CATALOG_DECISION = (
+    "A tabela oficial versionada de {catalog} cobre {distinct_coverage} dos "
+    "{unique_formatted_count} códigos distintos usados ({coverage} das linhas) e "
+    "identifica este candidato de forma única entre as colunas disponíveis."
+)
+
+
 def _unique_distinctive_catalog_decision(
     *,
     candidates: Sequence[tuple[ColumnRef, pd.Series, float]],
@@ -1573,7 +1724,10 @@ def _unique_distinctive_catalog_decision(
     minimum_score: float = 0.90,
     minimum_lead: float = 0.10,
 ) -> DataMappingDecision | None:
-    """Resolve only distinctive, high-coverage official-code domains locally."""
+    """Decide localmente só os domínios de códigos oficiais distintivos e de alta cobertura.
+
+    A decisão não passa pela IA; a justificativa é escrita aqui, em português.
+    """
     ranked: list[tuple[float, float, ColumnRef, dict[str, object]]] = []
     for column, _, name_score in candidates:
         best = best_catalog_evidence(catalog_evidence.get(column.index, []))
@@ -1594,12 +1748,13 @@ def _unique_distinctive_catalog_decision(
         client_column_id=column.id,
         data_confidence=round(catalog_score, 4),
         final_confidence=round(final_confidence, 4),
-        reason=(
-            f"Versioned official {evidence['catalog']} codes cover "
-            f"{float(evidence.get('distinct_coverage', evidence['coverage'])):.1%} "
-            f"of the {int(evidence['unique_formatted_count'])} distinct codes used "
-            f"({float(evidence['coverage']):.1%} of rows) and uniquely "
-            "identify this candidate among the available columns."
+        reason=REASON_CATALOG_DECISION.format(
+            catalog=_catalog_label(evidence["catalog"]),
+            distinct_coverage=report_schema.format_percent_br(
+                float(evidence.get("distinct_coverage", evidence["coverage"]))
+            ),
+            unique_formatted_count=int(evidence["unique_formatted_count"]),
+            coverage=report_schema.format_percent_br(float(evidence["coverage"])),
         ),
     )
 
@@ -1615,7 +1770,7 @@ def _demote_inconsistent_tax_header_matches(
     numeric_client_series: dict[int, pd.Series],
     minimum_relationship_score: float = 0.90,
 ) -> None:
-    """Reopen one clear tax-trio outlier when an informative alternative fits."""
+    """Reabre um ponto fora da curva claro de um trio fiscal quando uma alternativa informativa se encaixa."""
     scopes = {
         scope
         for column in model_table.columns
@@ -1691,8 +1846,8 @@ def _demote_inconsistent_tax_header_matches(
             if improvement < 0.50:
                 continue
         elif strong_contradiction:
-            # Reopen the weakest of the three anchors. It will pass through the
-            # row-data stage, where the contradiction prevents silent acceptance.
+            # Reabre a mais fraca das três âncoras. Ela passa pela etapa dos
+            # dados das linhas, onde a contradição impede o aceite silencioso.
             target_index = min(
                 role_targets.values(),
                 key=lambda index: (
@@ -1733,11 +1888,12 @@ def _rank_header_compatible(
     client_columns: Sequence[ColumnRef],
     limit: int,
 ) -> list[tuple[int, float]]:
-    """Prefer explicit semantic compatibility during header-only matching.
+    """Prefere a compatibilidade semântica explícita no casamento só por cabeçalho.
 
-    Conflicting headers still enter the row-data pass, where distinctive content
-    can demonstrate that a client header is bogus. They are not valid runner-ups
-    for automatic header-only acceptance.
+    Cabeçalhos em conflito ainda entram na passagem dos dados das linhas, onde
+    o conteúdo distintivo pode mostrar que um cabeçalho do cliente está
+    errado. Eles não valem como segunda melhor opção para o aceite automático
+    só por cabeçalho.
     """
     ranked = _rank_available(target_index, similarities, available, len(available))
     compatible = [
@@ -1761,7 +1917,7 @@ def _rank_name_and_profile_candidates(
     relationship_evidence: dict[int, list[dict[str, object]]] | None = None,
     catalog_evidence: dict[int, list[dict[str, object]]] | None = None,
 ) -> list[tuple[int, float]]:
-    """Union the strongest header, row-shape, relationship, and catalog candidates."""
+    """Une os candidatos mais fortes por cabeçalho, formato das linhas, relação fiscal e catálogo."""
     name_ranked = _rank_available(target_index, similarities, available, limit)
     profile_ranked = sorted(
         (
@@ -1808,7 +1964,7 @@ def _name_score_context(
     ranked: Sequence[tuple[int, float]],
     chosen_index: int | None = None,
 ) -> tuple[float, float, float]:
-    """Return selected score, strongest alternative, and the gap between them."""
+    """Pontuação escolhida, a da alternativa mais forte e a diferença entre elas."""
     if not ranked:
         return 0.0, 0.0, 0.0
     if chosen_index is None:
@@ -1835,7 +1991,7 @@ def _review_proposal_is_supported(
     same_explicit_role: bool,
     config: MapperConfig,
 ) -> bool:
-    """Reject forced fallbacks while retaining plausible review candidates."""
+    """Recusa as escolhas forçadas e mantém os candidatos plausíveis para revisão."""
     near_name_threshold = max(
         0.0, config.name_threshold - config.name_margin_threshold
     )
@@ -1883,35 +2039,52 @@ def _review_proposal_is_supported(
     )
 
 
-#: A discovered trio must clear these to count as proof. The fit bar is high
-#: because the identity is exact arithmetic, not a correlation, and the row bar
-#: exists because a perfect fit over a handful of rows proves nothing - the
-#: corpus contains 12-row degenerate fits that look identical to real ones.
+#: Um trio descoberto precisa passar destes limites para valer como prova. A
+#: barra de aderência é alta porque a identidade é aritmética exata, não uma
+#: correlação, e a barra de linhas existe porque um encaixe perfeito em
+#: poucas linhas não prova nada - o corpus tem encaixes degenerados de 12
+#: linhas idênticos aos verdadeiros.
 TRIO_MIN_FIT = 0.97
 TRIO_MIN_ROWS = 30
 
+#: Prova aritmética (coluna prova_aritmetica). ``tax_scope`` é a sigla do
+#: tributo em maiúsculas (``PIS``); ``fit_score`` chega com vírgula decimal
+#: (``report_schema.format_decimal_br``: ``0,998``).
+PROOF_TEXT = (
+    "valor = base x alíquota se confirma para {tax_scope} em {rows_tested} linhas, "
+    "com aderência {fit_score}"
+)
+#: Complemento da prova quando o cliente tem mais de um bloco do mesmo tributo.
+#: Termina com o marcador ``report_schema.PROOF_NOT_DECISIVE_PT``, que é o que
+#: ``report_schema.proof_is_decisive`` procura, em memória e no arquivo.
+PROOF_NOT_DECISIVE_SUFFIX = (
+    " - mas este cliente tem {alternatives} blocos disjuntos de {tax_scope} que "
+    "satisfazem a equação, portanto ela " + report_schema.PROOF_NOT_DECISIVE_PT
+)
+
 
 def _trio_proof_text(trio: dict[str, object] | None) -> str | None:
-    """A reviewer-checkable sentence, or nothing.
+    """Uma frase que o revisor consegue conferir, ou nada.
 
-    The identity corroborates a *scope*, not a column. Where a client carries
-    two disjoint blocks for one tax - an apuracao block and an escrituracao
-    block, say - both satisfy valor = base x aliquota, so the proof is true of
-    either and discriminates between them not at all. Saying so is the whole
-    point: an unqualified proof on the losing block reads as an endorsement,
-    and that is how datasul m213 came to carry one.
+    A identidade confirma um *escopo*, não uma coluna. Quando um cliente tem
+    dois blocos disjuntos para um mesmo tributo - um bloco de apuração e um de
+    escrituração, por exemplo -, os dois satisfazem valor = base x alíquota,
+    então a prova vale para qualquer um e não distingue nenhum deles. Dizer
+    isso é o ponto central: uma prova sem ressalva no bloco errado parece um
+    aval, e foi assim que o m213 do datasul acabou com uma.
     """
     if trio is None:
         return None
-    text = (
-        f"valor = base x aliquota holds for {trio['tax_scope']} on "
-        f"{trio['rows_tested']} rows at fit {trio['fit_score']}"
+    tax_scope = str(trio["tax_scope"]).upper()
+    text = PROOF_TEXT.format(
+        tax_scope=tax_scope,
+        rows_tested=trio["rows_tested"],
+        fit_score=report_schema.format_decimal_br(trio["fit_score"]),
     )
     alternatives = int(trio.get("alternatives", 1))
     if alternatives > 1:
-        text += (
-            f" - but this client has {alternatives} disjoint {trio['tax_scope']} "
-            "blocks that each satisfy it, so this does not single out this column"
+        text += PROOF_NOT_DECISIVE_SUFFIX.format(
+            alternatives=alternatives, tax_scope=tax_scope
         )
     return text
 
@@ -1919,28 +2092,30 @@ def _trio_proof_text(trio: dict[str, object] | None) -> str | None:
 def discover_client_tax_trios(
     client_table: SheetTable,
 ) -> dict[tuple[str, tuple[str, ...]], list[dict[str, object]]]:
-    """Find base/rate/value trios that satisfy valor = base x aliquota.
+    """Encontra os trios base/alíquota/valor que satisfazem valor = base x alíquota.
 
-    Runs over the client's own columns alone - no model, no prior acceptance,
-    no vocabulary beyond the family and role words already needed elsewhere.
-    That is the point: ``valor = base x aliquota`` is Brazilian tax law rather
-    than a property of any one export, so a trio proven here is evidence that
-    transfers to an ERP nobody has seen.
+    Roda só sobre as colunas do próprio cliente - sem modelo, sem aceite
+    anterior, sem vocabulário além das palavras de família e de papel que já
+    são necessárias em outros pontos. É essa a ideia: ``valor = base x
+    alíquota`` é legislação tributária brasileira, e não uma propriedade de
+    uma exportação, então um trio comprovado aqui é evidência que vale para um
+    ERP que ninguém viu.
 
-    The existing relationship evidence cannot do this. It asks
-    _accepted_tax_anchors for two already-ACCEPTED roles in the same scope, so
-    it can only confirm what header matching already settled; measured on the
-    four sample clients it unlocks nothing that acceptance had not unlocked
-    first.
+    A evidência de relação que já existia não faz isso. Ela pede a
+    _accepted_tax_anchors dois papéis já ACEITOS no mesmo escopo, então só
+    confirma o que o casamento de cabeçalhos já resolveu; medida nos quatro
+    clientes de amostra, ela não destrava nada que o aceite não tivesse
+    destravado antes.
 
-    Returns EVERY qualifying trio per scope, best first, keyed exactly like
-    tax_calculation_scope. Keeping only the argmax was wrong: a client may run
-    two disjoint blocks for one tax - datasul carries both an apuracao block
-    (Base PIS Ap x Aliq. PIS = Vlr PIS Ap, fit 0.9996 over 5,501 rows) and an
-    escrituracao block (Base Pis x Aliq. PIS = Valor Pis, fit 0.9857 over 70)
-    - and the larger one is not automatically the one the model's slots want.
-    Each trio carries ``alternatives``: how many mutually disjoint blocks the
-    scope holds, which is what tells a reader whether the proof discriminates.
+    Devolve TODOS os trios qualificados de cada escopo, o melhor primeiro, com
+    a mesma chave de tax_calculation_scope. Guardar só o melhor estava errado:
+    um cliente pode ter dois blocos disjuntos para um tributo - o datasul tem
+    um bloco de apuração (Base PIS Ap x Aliq. PIS = Vlr PIS Ap, aderência
+    0.9996 em 5.501 linhas) e um de escrituração (Base Pis x Aliq. PIS = Valor
+    Pis, aderência 0.9857 em 70) - e o maior não é automaticamente o que as
+    posições do modelo querem. Cada trio traz ``alternatives``: quantos blocos
+    mutuamente disjuntos o escopo tem, que é o que diz ao leitor se a prova
+    distingue a coluna.
     """
     by_scope: dict[tuple[str, tuple[str, ...]], dict[str, list[int]]] = {}
     for index, column in enumerate(client_table.columns):
@@ -1995,10 +2170,11 @@ def discover_client_tax_trios(
             continue
         found.sort(key=lambda item: (item[0], item[1]), reverse=True)
         trios = [item[2] for item in found]
-        # Two trios that share a column are the same block described twice -
-        # sap_terumo names every rate twice, as 'ICMS Taxa' and 'Tax rate
-        # ICMS', and both close on the same base and value. Only blocks that
-        # share nothing are rival readings of the model's slots.
+        # Dois trios que compartilham uma coluna são o mesmo bloco descrito
+        # duas vezes - o sap_terumo nomeia cada alíquota duas vezes, como
+        # 'ICMS Taxa' e 'Tax rate ICMS', e as duas fecham com a mesma base e o
+        # mesmo valor. Só blocos sem nada em comum são leituras rivais das
+        # posições do modelo.
         disjoint = _disjoint_trio_count(trios)
         for trio in trios:
             trio["alternatives"] = disjoint
@@ -2007,7 +2183,7 @@ def discover_client_tax_trios(
 
 
 def _disjoint_trio_count(trios: Sequence[dict[str, object]]) -> int:
-    """How many mutually column-disjoint blocks these trios represent."""
+    """Quantos blocos sem colunas em comum estes trios representam."""
     blocks: list[set[int]] = []
     for trio in trios:
         columns = {int(trio["base"]), int(trio["rate"]), int(trio["value"])}
@@ -2022,7 +2198,7 @@ def trio_corroboration(
     model_column_name: str,
     client_index: int,
 ) -> dict[str, object] | None:
-    """Whether a proven trio independently places this client column here."""
+    """O trio comprovado que, de forma independente, põe esta coluna do cliente aqui, se houver."""
     role = header_semantic_role(model_column_name)
     if role not in {"base", "rate", "value"}:
         return None
@@ -2036,14 +2212,15 @@ def trio_corroboration(
 
 
 def client_column_is_vacuous(table: SheetTable, column: ColumnRef) -> bool:
-    """Whether a client column has no populated cell at all.
+    """Diz se uma coluna do cliente não tem nenhuma célula preenchida.
 
-    Deliberately narrower than ``evidence_quality == "all_zero"``. A column of
-    zeros is ordinary fiscal data - an exempt operation has a zero base, and
-    six of oracle's all-zero columns are client-authored ground truth - while a
-    column with nothing in it cannot be any model column's counterpart. An
-    accepted mapping onto one reaches the customer looking mapped and silently
-    blank, which is the one failure that costs more than a missing column.
+    Deliberadamente mais estreito que ``evidence_quality == "all_zero"``. Uma
+    coluna de zeros é dado fiscal comum - uma operação isenta tem base zero, e
+    seis das colunas zeradas do oracle estão no gabarito escrito pelo cliente
+    -, enquanto uma coluna vazia não pode ser a correspondente de nenhuma
+    coluna do modelo. Um mapeamento aceito para ela chega ao cliente parecendo
+    mapeado e silenciosamente em branco, que é a única falha mais cara do que
+    uma coluna faltando.
     """
     series = table.series(column)
     return int(series.notna().sum()) == 0 or not any(
@@ -2053,15 +2230,18 @@ def client_column_is_vacuous(table: SheetTable, column: ColumnRef) -> bool:
 
 @dataclass
 class UnmatchedColumn:
-    """A client column whose data does not reach the base model.
+    """Uma coluna do cliente cujos dados não chegam ao modelo base (aba Colunas do Cliente sem Uso).
 
-    Unmatched means NOT CONSUMED BY AN ACCEPTED MAPPING, which is what decides
-    whether the data actually lands: apply_invoice_mapping populates accepted
-    and reviewer-confirmed rows only. Defining it as "never referenced by any
-    row" instead would hide the majority of real misses - measured against the
-    client answer keys, that definition surfaces 10 of 21 unconsumed truths,
-    and four of the hidden ones are unreachable from a model-indexed view at
-    all because no row ever offers them for their true concept.
+    Sem uso quer dizer NÃO CONSUMIDA POR UM MAPEAMENTO ACEITO, que é o que
+    decide se o dado de fato chega: o apply_invoice_mapping só preenche as
+    linhas aceitas e as confirmadas pelo revisor. Definir como "nunca citada
+    por nenhuma linha" esconderia a maioria das perdas reais - medida contra os
+    gabaritos dos clientes, essa definição mostra 10 de 21 respostas certas não
+    consumidas, e quatro das escondidas nem aparecem numa visão indexada pelo
+    modelo, porque nenhuma linha as oferece para o conceito verdadeiro.
+
+    ``signals`` guarda ids de sinal internos separados por vírgula (traduzidos
+    na gravação); ``signal_detail`` já é escrito em português.
     """
 
     client_column_number: int
@@ -2076,6 +2256,25 @@ class UnmatchedColumn:
     closest_name_confidence: float
 
 
+#: Frases da coluna detalhe_sinais, unidas por "; ". ``slot``, ``catalog`` e
+#: ``kind`` chegam como rótulos legíveis (``report_schema.TEXT_LABELS``);
+#: ``distinct_coverage`` e ``fraction``, formatados com
+#: ``report_schema.format_percent_br`` (``88,2%``).
+SIGNAL_TRIO = "participa como {slot} de um trio comprovado de valor = base x alíquota"
+SIGNAL_CATALOG = (
+    "{distinct_coverage} dos seus {unique_formatted_count} códigos distintos são "
+    "válidos na tabela oficial de {catalog}"
+)
+SIGNAL_CHECKDIGIT = "{fraction} dos valores passam na validação do dígito verificador de {kind}"
+SIGNAL_DATES = "contém datas"
+SIGNAL_EMPTY = "Esta coluna não tem valores."
+SIGNAL_ALL_ZERO = "Todos os valores desta coluna são zero."
+SIGNAL_NO_SIGNAL = (
+    "Contém dados, mas nenhum sinal foi identificado. Listada apenas para que a "
+    "relação fique completa."
+)
+
+
 def _unmatched_signals(
     *,
     column: ColumnRef,
@@ -2084,18 +2283,22 @@ def _unmatched_signals(
     reference_catalogs: ReferenceCatalogs | None,
     trio_slots: dict[int, str],
 ) -> tuple[list[str], str]:
-    """Reasons a leftover column might matter, from universal evidence only.
+    """Motivos pelos quais uma coluna que sobrou pode importar, só por evidência universal.
 
-    Every signal here is a property of Brazilian fiscal data rather than of any
-    client's vocabulary: membership of an official code table, a check digit,
-    participation in valor = base x aliquota. That is deliberate. A ranking
-    built from the sample clients' header words would rank the next client's
-    columns by how much they resemble these four, which is exactly backwards.
+    Todo sinal aqui é uma propriedade do dado fiscal brasileiro, e não do
+    vocabulário de um cliente: pertencer a uma tabela oficial de códigos, ter
+    dígito verificador, participar de valor = base x alíquota. É de propósito.
+    Uma ordenação montada com as palavras dos cabeçalhos dos clientes de
+    amostra ordenaria as colunas do próximo cliente pela semelhança com estes
+    quatro, que é exatamente o contrário do que se quer.
 
-    Two vocabulary-based cuts were tested and rejected: requiring a fiscal
-    token destroys datasul 'Cod. Produto' and oracle 'ORGANIZACAO', and a
-    bookkeeping blocklist destroys datasul 'Vlr Contabil', which is a real
-    answer. Nothing is filtered on words.
+    Dois cortes por vocabulário foram testados e recusados: exigir uma palavra
+    fiscal elimina 'Cod. Produto' do datasul e 'ORGANIZACAO' do oracle, e uma
+    lista de bloqueio de termos contábeis elimina 'Vlr Contabil' do datasul,
+    que é uma resposta certa. Nada é filtrado por palavra.
+
+    Devolve os ids de sinal (internos, traduzidos na gravação) e o detalhe já
+    em português.
     """
     signals: list[str] = []
     details: list[str] = []
@@ -2104,7 +2307,7 @@ def _unmatched_signals(
     if slot is not None:
         signals.append("arithmetic")
         details.append(
-            f"participates in a proven valor = base x aliquota trio as the {slot}"
+            SIGNAL_TRIO.format(slot=report_schema.TEXT_LABELS["trio_slot"].get(slot, slot))
         )
 
     if reference_catalogs is not None:
@@ -2119,30 +2322,39 @@ def _unmatched_signals(
         ):
             signals.append("catalog")
             details.append(
-                f"{float(evidence['distinct_coverage']):.1%} of its "
-                f"{int(evidence['unique_formatted_count'])} distinct codes are valid "
-                f"{evidence['catalog']}"
+                SIGNAL_CATALOG.format(
+                    distinct_coverage=report_schema.format_percent_br(
+                        float(evidence["distinct_coverage"])
+                    ),
+                    unique_formatted_count=int(evidence["unique_formatted_count"]),
+                    catalog=_catalog_label(evidence["catalog"]),
+                )
             )
 
     for kind in ("nfe_key", "cnpj", "cpf"):
         fraction = float(profile.get(f"valid_{kind}_fraction", 0.0) or 0.0)
         if fraction >= 0.80:
             signals.append(f"{kind}_checkdigit")
-            details.append(f"{fraction:.1%} of values pass the {kind} check digit")
+            details.append(
+                SIGNAL_CHECKDIGIT.format(
+                    fraction=report_schema.format_percent_br(fraction),
+                    kind=report_schema.TEXT_LABELS["identifier_kind"].get(kind, kind),
+                )
+            )
             break
 
     if profile.get("inferred_type") == "datetime":
         signals.append("date")
-        details.append("holds dates")
+        details.append(SIGNAL_DATES)
 
     if not signals:
         quality = profile.get("evidence_quality")
         if quality == "empty":
-            details.append("No values in this column.")
+            details.append(SIGNAL_EMPTY)
         elif quality == "all_zero":
-            details.append("Every value in this column is zero.")
+            details.append(SIGNAL_ALL_ZERO)
         else:
-            details.append("Carries data, but no signal matched. Listed for completeness.")
+            details.append(SIGNAL_NO_SIGNAL)
     return signals, "; ".join(details)
 
 
@@ -2156,22 +2368,25 @@ def summarize_unmatched_columns(
     client_tax_trios: dict[tuple[str, tuple[str, ...]], list[dict[str, object]]],
     sample_size: int,
 ) -> list[UnmatchedColumn]:
-    """Every client column whose data does not reach the base model.
+    """Todas as colunas do cliente cujos dados não chegam ao modelo base.
 
-    Nothing is omitted. A shortlist is marked, because 294 rows is not a report
-    anybody reads, but the rest are still written with a sentence saying why
-    they were set aside - two candidate cut rules were each measured to destroy
-    a real answer, so demotion is as far as this goes.
+    Nada é omitido. Uma lista prioritária é marcada, porque 294 linhas não é
+    um relatório que alguém leia, mas as demais continuam gravadas com uma
+    frase dizendo por que ficaram de lado - duas regras de corte candidatas
+    foram medidas e cada uma eliminava uma resposta certa, então o máximo que
+    se faz aqui é rebaixar a prioridade.
 
-    A long list here is NOT a defect signal. The base model is a deliberate
-    superset and a client legitimately supplies only a minority of it, so most
-    of a client's own columns having no model counterpart is the ordinary case.
+    Uma lista longa aqui NÃO é sinal de defeito. O modelo base é um
+    superconjunto de propósito, e um cliente legitimamente fornece só uma
+    minoria dele, então a maioria das colunas do cliente não ter
+    correspondente no modelo é o caso normal.
 
-    One caveat on reading the shortlist: --offline is a degenerate regime for
-    it. With no resolver every unresolved column becomes a review rather than a
-    no_match, so "was proposed" carries no information and almost everything is
-    shortlisted - 28 of oracle's 30, against 15 of 30 on the same client with
-    the resolver enabled. Judge a shortlist from a full run.
+    Uma ressalva ao ler a lista prioritária: --offline é um regime degenerado
+    para ela. Sem resolvedor, toda coluna não resolvida vira revisão em vez de
+    sem correspondência, então "foi proposta" não traz informação e quase tudo
+    entra na lista prioritária - 28 das 30 do oracle, contra 15 de 30 no mesmo
+    cliente com o resolvedor ligado. Avalie a lista prioritária numa execução
+    completa.
     """
     consumed: set[int] = set()
     referenced: set[int] = set()
@@ -2206,9 +2421,9 @@ def summarize_unmatched_columns(
         disposition = (
             "proposed_not_accepted" if index in referenced else "never_referenced"
         )
-        # A proposal needs no signal: the mapper already produced evidence for
-        # it, there are few of them, and gating them on the detectors was
-        # measured to drop recall of known truths from 21/21 to 18/21.
+        # Uma proposta não precisa de sinal: o mapeador já produziu evidência
+        # para ela, são poucas, e condicioná-las aos detectores derrubou, na
+        # medição, a recuperação das respostas conhecidas de 21/21 para 18/21.
         shortlist = informative and (
             bool(signals) or disposition == "proposed_not_accepted"
         )
@@ -2231,6 +2446,66 @@ def summarize_unmatched_columns(
     return rows
 
 
+#: Justificativas escritas pelo próprio mapeador (coluna justificativa). A
+#: justificativa que a IA escreve (``DataMappingDecision.reason``) passa
+#: intacta, em inglês, porque o prompt continua em inglês.
+REASON_NO_UNUSED = "Não restam colunas do cliente disponíveis."
+REASON_PASS_ONE_ACCEPTED = (
+    "Aceito pela semelhança do cabeçalho, com vantagem clara sobre a segunda melhor opção."
+)
+REASON_OFFLINE = (
+    "A pontuação do cabeçalho ou a margem sobre a segunda melhor opção foi insuficiente; "
+    "a comparação de dados estava desativada."
+)
+#: ``exc_type`` é o nome da classe da exceção; ``exc``, a mensagem dela.
+REASON_DATA_ERROR = "A comparação de dados falhou: {exc_type}: {exc}"
+REASON_UNIQUE_RELATIONSHIP = (
+    "Uma relação fiscal única e de alta cobertura sustenta esta coluna frente às "
+    "alternativas (por exemplo, base de cálculo vezes alíquota reproduz o valor)."
+)
+REASON_OVERLAP = (
+    "Valores de amostra distintivos e diferentes de zero coincidem exatamente com este "
+    "candidato, e não com as colunas concorrentes."
+)
+REASON_JOINT = (
+    "O cabeçalho e uma relação fiscal verificada linha a linha sustentam juntos esta "
+    "coluna, com vantagem clara sobre as alternativas."
+)
+REASON_NULL_FALLBACK = (
+    "O resolvedor de IA encontrou evidências favoráveis, mas não escolheu nenhuma coluna; "
+    "o candidato com o cabeçalho mais forte fica para revisão."
+)
+REASON_PRESERVE_BEST = (
+    "O candidato com o cabeçalho mais forte tem evidência fraca nas linhas; o mapeamento "
+    "por nome é mantido para revisão, em vez de ser trocado por uma coluna que só tem "
+    "formato de valores parecido."
+)
+REASON_UNSUPPORTED_NO_MATCH = (
+    "Nenhum candidato reuniu evidência suficiente de cabeçalho e de linhas distintivas; "
+    "a exportação do cliente pode não conter este campo do modelo."
+)
+#: ``header_conflict`` é o conflito em português (``describe_header_conflict_pt``).
+REASON_CONFLICT_REVIEW = (
+    "Os cabeçalhos apresentam {header_conflict}; esta proposta fica para revisão porque "
+    "o conteúdo das linhas traz evidência distintiva de que o cabeçalho do cliente pode "
+    "estar errado."
+)
+REASON_CONTRADICTION = (
+    "Uma equação fiscal de alta cobertura contradiz fortemente esta proposta; ela fica "
+    "para revisão em vez de ser aceita automaticamente."
+)
+REASON_AMBIGUOUS_EMPTY = (
+    "A correspondência de cabeçalho é ambígua e as amostras das linhas estão vazias ou "
+    "zeradas; este mapeamento fica para revisão."
+)
+#: ``client_column`` é o nome de exibição já em português
+#: (``report_schema.display_name_to_external``); sai entre aspas, por ``!r``.
+REASON_VACUITY = (
+    "{client_column!r} não tem linhas preenchidas, portanto não pode ser a origem desta "
+    "coluna, por mais que os cabeçalhos coincidam. Não aceito."
+)
+
+
 def map_columns(
     model_table: SheetTable,
     client_table: SheetTable,
@@ -2239,10 +2514,19 @@ def map_columns(
     config: MapperConfig = MapperConfig(),
     reference_catalogs: ReferenceCatalogs | None = None,
 ) -> list[MappingResult]:
-    if not client_table.columns:
-        raise ValueError("Client spreadsheet has no columns")
+    """Mapeia cada coluna do modelo para uma coluna do cliente, em duas passagens.
 
-    # Which header step ran is a property of the scorer, not of any column.
+    A primeira passagem aceita só pelo cabeçalho, quando a pontuação e a
+    vantagem sobre a segunda melhor opção são claras. A segunda revisita as
+    colunas de baixa confiança com os dados das linhas: relações fiscais,
+    catálogos oficiais, coincidência de amostras e, online, o resolvedor de
+    IA. Devolve um ``MappingResult`` por coluna do modelo, na ordem do modelo.
+    """
+    if not client_table.columns:
+        raise ValueError("A planilha do cliente não tem colunas")
+
+    # Qual etapa de cabeçalho rodou é uma propriedade do avaliador, não de
+    # uma coluna.
     header_step = "lexical" if isinstance(header_scorer, LexicalHeaderScorer) else "semantic"
     similarities = header_scorer.scores(
         [column.name for column in model_table.columns],
@@ -2250,10 +2534,13 @@ def map_columns(
     )
     expected_shape = (len(model_table.columns), len(client_table.columns))
     if similarities.shape != expected_shape:
-        raise ValueError(f"Header scorer returned {similarities.shape}, expected {expected_shape}")
+        raise ValueError(
+            f"O avaliador de cabeçalhos retornou {similarities.shape}; esperado {expected_shape}"
+        )
 
-    # Discovered once, from the client's own columns. Independent of the model,
-    # of acceptance order, and of any header vocabulary beyond family and role.
+    # Descobertos uma vez, das colunas do próprio cliente. Independem do
+    # modelo, da ordem de aceite e de qualquer vocabulário de cabeçalho além de
+    # família e papel.
     client_tax_trios = discover_client_tax_trios(client_table)
 
     available = set(range(len(client_table.columns)))
@@ -2261,7 +2548,8 @@ def map_columns(
     low_confidence_targets: list[int] = []
     catalog_analysis_cache: dict[tuple[str, int], dict[str, object]] = {}
 
-    # Pass 1: walk model columns from left to right using names only.
+    # Primeira passagem: percorre as colunas do modelo da esquerda para a
+    # direita usando só os nomes.
     for target_index, model_column in enumerate(model_table.columns):
         ranked = _rank_header_compatible(
             target_index,
@@ -2284,7 +2572,7 @@ def map_columns(
                 final_confidence=0.0,
                 method="name",
                 status="no_match",
-                reason="No unused client columns remain.",
+                reason=REASON_NO_UNUSED,
             )
             continue
 
@@ -2315,7 +2603,7 @@ def map_columns(
                 final_confidence=round(name_confidence, 4),
                 method="name",
                 status="accepted",
-                reason="Accepted from header similarity with a clear lead over the runner-up.",
+                reason=REASON_PASS_ONE_ACCEPTED,
                 arithmetic_proof=(proof := _trio_proof_text(
                     trio_corroboration(client_tax_trios, model_column.name, client_column.index)
                 )),
@@ -2367,7 +2655,8 @@ def map_columns(
         if data_resolver is not None
         else {}
     )
-    # Pass 2: revisit only low-confidence model columns using names and row profiles.
+    # Segunda passagem: revisita só as colunas do modelo de baixa confiança,
+    # usando os nomes e os perfis das linhas.
     for target_index in low_confidence_targets:
         model_column = model_table.columns[target_index]
         target_profile = summarize_values(
@@ -2424,7 +2713,7 @@ def map_columns(
                 final_confidence=0.0,
                 method="data",
                 status="no_match",
-                reason="No unused client columns remain.",
+                reason=REASON_NO_UNUSED,
             )
             continue
 
@@ -2455,7 +2744,7 @@ def map_columns(
                 final_confidence=round(best_name_confidence, 4),
                 method="name_only",
                 status="review",
-                reason="Header score or runner-up margin was insufficient; data comparison was disabled.",
+                reason=REASON_OFFLINE,
             )
             continue
 
@@ -2489,7 +2778,7 @@ def map_columns(
                     if any(column.index == index for column, _, _ in candidates)
                 },
             )
-        except Exception as exc:  # Continue the report even if one API decision fails.
+        except Exception as exc:  # Segue com o relatório mesmo que uma decisão da API falhe.
             results[target_index] = MappingResult(
                 model_column_number=model_column.index + 1,
                 model_column=model_column.name,
@@ -2502,7 +2791,7 @@ def map_columns(
                 final_confidence=round(best_name_confidence, 4),
                 method="data_error",
                 status="review",
-                reason=f"Data comparison failed: {type(exc).__name__}: {exc}",
+                reason=REASON_DATA_ERROR.format(exc_type=type(exc).__name__, exc=exc),
             )
             continue
 
@@ -2566,10 +2855,7 @@ def map_columns(
                             if same_candidate
                             else relational_final_confidence
                         ),
-                        "reason": (
-                            "A unique high-coverage fiscal relationship supports this column "
-                            "over alternatives (for example, base times rate reproduces value)."
-                        ),
+                        "reason": REASON_UNIQUE_RELATIONSHIP,
                     }
                 )
         if not relationship_is_unique:
@@ -2632,18 +2918,16 @@ def map_columns(
                         "client_column_id": overlap_column.id,
                         "data_confidence": round(overlap_data_confidence, 4),
                         "final_confidence": round(overlap_final_confidence, 4),
-                        "reason": (
-                            "Distinctive non-zero sample values overlap exactly with this "
-                            "candidate and not with the competing columns."
-                        ),
+                        "reason": REASON_OVERLAP,
                     }
                 )
 
-        # A fiscal equation can also be persuasive when more than one numeric
-        # column happens to fit it. In that case, combine the relationship with
-        # the header score and require a clear lead in the combined score. This
-        # avoids discarding a strong base/rate/value mapping merely because a
-        # broad total column coincidentally produces similar arithmetic.
+        # Uma equação fiscal também pode convencer quando mais de uma coluna
+        # numérica por acaso se encaixa nela. Nesse caso, combina a relação com
+        # a pontuação do cabeçalho e exige vantagem clara na pontuação
+        # combinada. Isso evita descartar um bom mapeamento de base, alíquota
+        # ou valor só porque uma coluna de total amplo produz, por
+        # coincidência, uma aritmética parecida.
         if chosen is not None:
             selected_relationship_score = _relationship_score(
                 candidate_relationships.get(chosen.index, [])
@@ -2691,10 +2975,7 @@ def map_columns(
                                 decision.final_confidence,
                                 round(selected_joint_score, 4),
                             ),
-                            "reason": (
-                                "The header and a row-wise fiscal relationship jointly "
-                                "support this column with a clear lead over alternatives."
-                            ),
+                            "reason": REASON_JOINT,
                         }
                     )
         best_same_explicit_role = (
@@ -2727,10 +3008,7 @@ def map_columns(
                 update={
                     "client_column_id": best_client.id,
                     "final_confidence": best_name_confidence,
-                    "reason": (
-                        "The resolver found supporting evidence but did not commit to a column; "
-                        "retain the strongest header candidate for review."
-                    ),
+                    "reason": REASON_NULL_FALLBACK,
                 }
             )
         best_profile = client_profiles[best_client_index]
@@ -2761,11 +3039,7 @@ def map_columns(
                     "client_column_id": best_client.id,
                     "data_confidence": 0.0,
                     "final_confidence": best_name_confidence,
-                    "reason": (
-                        "The strongest header candidate has weak row evidence; preserve the "
-                        "name-based mapping for review instead of replacing it with a merely "
-                        "similar value shape."
-                    ),
+                    "reason": REASON_PRESERVE_BEST,
                 }
             )
         if chosen is None or decision.final_confidence == 0.0:
@@ -2818,9 +3092,10 @@ def map_columns(
             if selected_catalog is not None
             else 0.0
         )
-        # The gates read distinct coverage - the statistic catalog_confidence
-        # is computed from - while the reported catalog_coverage column keeps
-        # its original row-weighted meaning so existing reports stay readable.
+        # As travas leem a cobertura distinta - a estatística da qual
+        # catalog_confidence é calculada -, enquanto a coluna catalog_coverage
+        # do relatório mantém o sentido original, ponderado pelas linhas, para
+        # que os relatórios existentes continuem legíveis.
         selected_catalog_distinct_coverage = (
             float(selected_catalog.get("distinct_coverage", selected_catalog["coverage"]))
             if selected_catalog is not None
@@ -2935,29 +3210,21 @@ def map_columns(
                 final_confidence=0.0,
                 method="data",
                 status="no_match",
-                reason=(
-                    "No candidate had enough combined header and distinctive row evidence; "
-                    "the client export may not contain this model field."
-                ),
+                reason=REASON_UNSUPPORTED_NO_MATCH,
                 llm_data_confidence=llm_data_confidence,
                 llm_final_confidence=llm_final_confidence,
             )
             continue
         if header_conflict is not None:
-            reason = (
-                f"Explicit {header_conflict}; keep this proposal for review because the "
-                "row content provides distinctive evidence that the client header may be bogus."
+            # header_conflict (inglês) decide; a frase mostra o mesmo conflito
+            # em português, calculado das mesmas entradas.
+            reason = REASON_CONFLICT_REVIEW.format(
+                header_conflict=describe_header_conflict_pt(model_column.name, chosen.name)
             )
         elif relationship_contradiction:
-            reason = (
-                "A high-coverage fiscal equation strongly contradicts this proposal; "
-                "keep it for review instead of accepting it automatically."
-            )
+            reason = REASON_CONTRADICTION
         elif final_confidence >= config.final_threshold and not accepted:
-            reason = (
-                "The header match is ambiguous and the row samples are empty or all-zero; "
-                "keep this mapping for review."
-            )
+            reason = REASON_AMBIGUOUS_EMPTY
         accepted_but_for_vacuity = (
             not accepted
             and final_confidence >= config.final_threshold
@@ -2966,13 +3233,11 @@ def map_columns(
             and not relationship_contradiction
         )
         if accepted_but_for_vacuity:
-            # Say so plainly. Everything else about this proposal may look
-            # strong, and a reviewer told only that the header score was
-            # insufficient would go looking for the wrong problem.
-            reason = (
-                f"{chosen.display_name!r} has no populated rows, so it cannot be "
-                "this column's source however well the headers match. "
-                "Not accepted."
+            # Diz isso com todas as letras. Todo o resto desta proposta pode
+            # parecer forte, e um revisor informado só de que a pontuação do
+            # cabeçalho foi insuficiente iria procurar o problema errado.
+            reason = REASON_VACUITY.format(
+                client_column=report_schema.display_name_to_external(chosen.display_name)
             )
         results[target_index] = MappingResult(
             model_column_number=model_column.index + 1,
@@ -3033,6 +3298,7 @@ def map_columns(
 
 
 def file_sha256(path: str | Path) -> str:
+    """SHA-256 do arquivo, lido em blocos de 1 MiB."""
     digest = hashlib.sha256()
     with Path(path).open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
@@ -3042,21 +3308,23 @@ def file_sha256(path: str | Path) -> str:
 
 @dataclass
 class AdjudicationRow:
-    """A model column that got a real candidate the gate would not deliver.
+    """Uma coluna do modelo que recebeu um candidato real que o limiar de aceite não entregou.
 
-    The mirror of UnmatchedColumn. That sheet answers "which of the client's
-    columns never reached the model"; this one answers "which of the model's
-    columns had an answer we declined to ship". Together they cover both sides
-    of the gate, which is where the mapper's remaining losses live: measured
-    against the keys, the mapper finds 42 of 56 and delivers 31, and all 11 of
-    the difference are rows that appear here.
+    O espelho de UnmatchedColumn. Aquela aba responde "quais colunas do
+    cliente nunca chegaram ao modelo"; esta responde "quais colunas do modelo
+    tinham uma resposta que deixamos de entregar". Juntas, elas cobrem os dois
+    lados do limiar, que é onde estão as perdas que restam ao mapeador: medido
+    contra os gabaritos, o mapeador encontra 42 de 56 e entrega 31, e as 11 de
+    diferença são todas linhas que aparecem aqui.
 
-    Deliberately a ranked INDEX, not a second write surface. The reviewer rules
-    in the Mappings sheet's existing reviewer_status / correct_client_column
-    columns, which apply_invoice_mapping already honours and which now raise on
-    the two incoherent inputs that used to pass silently. A second vocabulary
-    would mean two places to write, a merge rule between them, and a new way to
-    disagree with yourself.
+    É de propósito um ÍNDICE ordenado, e não um segundo lugar para escrever. O
+    revisor decide nas colunas parecer_revisor / coluna_cliente_correta que já
+    existem na aba Mapeamentos, que o apply_invoice_mapping já respeita e que
+    agora recusam as duas entradas incoerentes que antes passavam em silêncio.
+    Um segundo vocabulário significaria dois lugares para escrever, uma regra
+    para juntá-los e um jeito novo de discordar de si mesmo.
+
+    ``why_held`` e ``resolver_disagrees`` já são escritos em português.
     """
 
     rank: int
@@ -3074,9 +3342,25 @@ class AdjudicationRow:
     why_held: str
 
 
-#: Rows this far below the gate share a single clamped confidence, so the
-#: confidence column stops ordering them and something else has to.
+#: Linhas tão próximas do limiar compartilham uma única confiança travada,
+#: então a coluna de confiança deixa de ordená-las e outra coisa precisa
+#: fazer isso.
 _CLAMPED_BAND = 0.0002
+
+#: Motivos de retenção (coluna motivo_retencao). São os valores em português
+#: de ``report_schema.ENUMS["why_held"]``, que também traduz os legados.
+WHY_HELD_BELOW_THRESHOLD = "abaixo do limiar de aceite"
+WHY_HELD_NAME_ONLY = (
+    "só há evidência de nome - este caminho não aceita automaticamente, por mais que "
+    "os cabeçalhos coincidam"
+)
+WHY_HELD_VACUOUS = (
+    "a coluna proposta não tem linhas preenchidas - confirmá-la entregaria uma coluna "
+    "em branco"
+)
+#: Coluna divergencia_ia. ``llm_final`` chega com vírgula decimal
+#: (``report_schema.format_decimal_br``: ``0,75``).
+RESOLVER_DISAGREES = "o resolvedor de IA atribuiu confiança {llm_final}"
 
 
 def summarize_adjudication_queue(
@@ -3086,7 +3370,7 @@ def summarize_adjudication_queue(
     final_threshold: float,
     sample_size: int,
 ) -> list[AdjudicationRow]:
-    """Rank the undelivered proposals by how close each came to shipping."""
+    """Ordena as propostas não entregues pela proximidade de cada uma do aceite."""
     rows: list[AdjudicationRow] = []
     for result in results:
         if result.status == "accepted" or result.client_column_number is None:
@@ -3099,22 +3383,23 @@ def summarize_adjudication_queue(
         final = float(result.final_confidence or 0.0)
         if final <= 0.0:
             continue
-        # A proposal onto a column with no data can never be confirmed:
-        # confirming it ships a blank column under a reviewer's signature. It
-        # still belongs in the queue - the reviewer should see that the header
-        # matched and the data did not - but it cannot hold a top slot.
-        # sap_terumo's 'FCI number' matches 'No FCI' at 0.98 and is empty on
-        # all 727 rows, which is enough to rank it first without this.
+        # Uma proposta para uma coluna sem dados nunca pode ser confirmada:
+        # confirmá-la entrega uma coluna em branco com a assinatura do revisor.
+        # Ela continua na fila - o revisor deve ver que o cabeçalho casou e os
+        # dados não -, mas não pode ocupar as primeiras posições. 'FCI number'
+        # do sap_terumo casa com 'No FCI' a 0.98 e está vazia nas 727 linhas,
+        # o que bastaria para pô-la em primeiro sem isto.
         vacuous = client_column_is_vacuous(client_table, column)
         llm_final = result.llm_final_confidence
         disagrees = (
-            f"resolver scored it {llm_final}"
+            RESOLVER_DISAGREES.format(llm_final=report_schema.format_decimal_br(llm_final))
             if llm_final is not None and float(llm_final) < final - 0.10
             else ""
         )
-        # The clamp at the 'no objective data score' branch pins a row just
-        # under the gate whatever its name evidence, so 'held at 0.8999' is a
-        # statement about the branch taken, not about this row's strength.
+        # A trava do ramo 'sem pontuação objetiva de dados' prende a linha logo
+        # abaixo do limiar, qualquer que seja a evidência de nome; então
+        # 'retida em 0.8999' diz algo sobre o ramo seguido, não sobre a força
+        # desta linha.
         clamped = abs(final - (final_threshold - 0.0001)) < 1e-9
         rows.append(
             AdjudicationRow(
@@ -3133,20 +3418,18 @@ def summarize_adjudication_queue(
                     str(value) for value in profile["samples"][:6]
                 ),
                 why_held=(
-                    "the proposed column has no populated rows - confirming "
-                    "this would ship a blank column"
+                    WHY_HELD_VACUOUS
                     if vacuous
-                    else "name evidence only - this branch cannot auto-accept "
-                    "however well the headers match"
+                    else WHY_HELD_NAME_ONLY
                     if clamped
-                    else "below the accept threshold"
+                    else WHY_HELD_BELOW_THRESHOLD
                 ),
             )
         )
-    # Confidence first, then margin - but margin only breaks ties inside the
-    # clamped band. Promoting it generally would be fitting to one client: its
-    # apparent lead is datasul-only and a wash on oracle, and it collapses
-    # toward zero once headers are truncated.
+    # Primeiro a confiança, depois a margem - mas a margem só desempata dentro
+    # da faixa travada. Promovê-la em geral seria ajustar a um cliente: a
+    # vantagem aparente dela só existe no datasul, empata no oracle e cai
+    # para perto de zero quando os cabeçalhos são truncados.
     rows.sort(
         key=lambda row: (
             row.rows_with_value > 0,
@@ -3161,6 +3444,23 @@ def summarize_adjudication_queue(
     return rows
 
 
+def _external_rows(
+    rows: Sequence[UnmatchedColumn] | Sequence[AdjudicationRow],
+    row_type: type,
+    table: str,
+) -> pd.DataFrame:
+    """Linhas de uma aba auxiliar -> quadro no esquema em português.
+
+    Uma lista vazia vira uma única linha em branco, para que a aba saia com os
+    cabeçalhos (já em português) mesmo sem nenhuma linha.
+    """
+    frame = pd.DataFrame(
+        [asdict(row) for row in rows]
+        or [{field: "" for field in row_type.__annotations__}]
+    )
+    return report_schema.to_external_frame(frame, table)
+
+
 def write_results(
     results: Sequence[MappingResult],
     output_path: str | Path,
@@ -3168,117 +3468,238 @@ def write_results(
     unmatched: Sequence[UnmatchedColumn] | None = None,
     queue: Sequence[AdjudicationRow] | None = None,
 ) -> None:
+    """Grava o relatório de mapeamento no esquema em português (``.xlsx`` ou ``.csv``).
+
+    Em memória tudo continua com os nomes e valores internos; a tradução de
+    abas, cabeçalhos, valores enumerados, etapas, nomes de exibição e chaves de
+    metadados acontece aqui, por ``report_schema``. As frases já chegam em
+    português e passam intactas. O ``.csv`` leva só a aba Mapeamentos.
+    """
     output = Path(output_path)
     frame = pd.DataFrame([asdict(result) for result in results])
     for column in REVIEWER_COLUMNS:
         frame[column] = ""
+    frame = report_schema.to_external_frame(frame, "mappings")
     if output.suffix.lower() == ".csv":
         frame.to_csv(output, index=False)
     elif output.suffix.lower() == ".xlsx":
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
-            frame.to_excel(writer, sheet_name="Mappings", index=False)
+            frame.to_excel(writer, sheet_name=report_schema.sheet_name("mappings"), index=False)
             if metadata:
-                pd.DataFrame(
-                    [(key, value) for key, value in metadata.items()],
-                    columns=["key", "value"],
-                ).to_excel(writer, sheet_name="Run Metadata", index=False)
-            # Appended LAST, and on purpose. apply_invoice_mapping reads sheet
-            # index 0 with no name, so anything inserted ahead of "Mappings"
-            # makes it fail with a misleading missing-columns error.
+                report_schema.to_external_metadata(metadata).to_excel(
+                    writer, sheet_name=report_schema.sheet_name("run_metadata"), index=False
+                )
+            # Acrescentadas POR ÚLTIMO, e de propósito. O apply_invoice_mapping
+            # lê a aba de índice 0, sem nome, então qualquer aba inserida antes
+            # de Mapeamentos o faz falhar com um erro enganoso de colunas
+            # faltando.
             #
-            # Written on `is not None` rather than on truthiness: an empty list
-            # states "every column of yours reached the model", which is a
-            # different and stronger claim than an older report that has no
-            # such sheet at all.
+            # Gravadas sempre que a lista `is not None`, mesmo vazia: uma lista
+            # vazia afirma "todas as suas colunas chegaram ao modelo", o que é
+            # diferente, e mais forte, do que um relatório antigo que nem tem
+            # essa aba.
             if unmatched is not None:
-                pd.DataFrame(
-                    [asdict(row) for row in unmatched]
-                    or [{field: "" for field in UnmatchedColumn.__annotations__}]
-                ).to_excel(
-                    writer, sheet_name="Unmatched Client Columns", index=False
+                _external_rows(unmatched, UnmatchedColumn, "unmatched").to_excel(
+                    writer, sheet_name=report_schema.sheet_name("unmatched"), index=False
                 )
             if queue is not None:
-                pd.DataFrame(
-                    [asdict(row) for row in queue]
-                    or [{field: "" for field in AdjudicationRow.__annotations__}]
-                ).to_excel(writer, sheet_name="Adjudication Queue", index=False)
+                _external_rows(queue, AdjudicationRow, "queue").to_excel(
+                    writer, sheet_name=report_schema.sheet_name("queue"), index=False
+                )
     else:
-        raise ValueError("Output must end in .xlsx or .csv")
+        raise ValueError("A saída deve terminar em .xlsx ou .csv")
 
 
 def _sheet_argument(value: str) -> str | int:
+    """Aba indicada na linha de comando: só dígitos é índice (a partir de 0), senão é nome."""
     return int(value) if value.isdigit() else value
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Map client spreadsheet columns to model.xlsx in two passes."
+def build_parser() -> PortugueseArgumentParser:
+    """Linha de comando em português. As flags continuam em inglês."""
+    parser = PortugueseArgumentParser(
+        description=(
+            "Mapeia as colunas da planilha do cliente para as colunas do model.xlsx "
+            "em duas passagens e grava o relatório de mapeamento."
+        )
     )
-    parser.add_argument("client", help="Client .xlsx file")
-    parser.add_argument("--model", default="data/model.xlsx", help="Canonical model workbook")
-    parser.add_argument("--output", help="Mapping report (.xlsx or .csv)")
-    parser.add_argument("--model-sheet", default="0", help="Model sheet index or name")
-    parser.add_argument("--client-sheet", default="0", help="Client sheet index or name")
+    parser.add_argument(
+        "client", metavar="EXPORTACAO", help="exportação .xlsx do cliente"
+    )
+    parser.add_argument(
+        "--model",
+        default="data/model.xlsx",
+        metavar="ARQUIVO",
+        help="planilha do modelo base (padrão: %(default)s)",
+    )
+    parser.add_argument(
+        "--output",
+        metavar="ARQUIVO",
+        help=(
+            "relatório de mapeamento a gravar, .xlsx ou .csv "
+            "(padrão: mapping_<nome do arquivo do cliente>.xlsx)"
+        ),
+    )
+    parser.add_argument(
+        "--model-sheet",
+        default="0",
+        metavar="ABA",
+        help="índice (a partir de 0) ou nome da aba do modelo (padrão: %(default)s)",
+    )
+    parser.add_argument(
+        "--client-sheet",
+        default="0",
+        metavar="ABA",
+        help="índice (a partir de 0) ou nome da aba do cliente (padrão: %(default)s)",
+    )
     parser.add_argument(
         "--model-header-row",
         type=int,
         default=1,
-        help="1-based header row in the model sheet",
+        metavar="LINHA",
+        help="linha do cabeçalho na aba do modelo, contada a partir de 1 (padrão: %(default)s)",
     )
     parser.add_argument(
         "--client-header-row",
         type=int,
         default=1,
-        help="1-based header row in the client sheet",
+        metavar="LINHA",
+        help="linha do cabeçalho na aba do cliente, contada a partir de 1 (padrão: %(default)s)",
     )
-    parser.add_argument("--name-threshold", type=float, default=0.90)
+    parser.add_argument(
+        "--name-threshold",
+        type=float,
+        default=0.90,
+        metavar="VALOR",
+        help=(
+            "pontuação mínima do cabeçalho para o aceite na primeira passagem, "
+            "de 0 a 1 (padrão: %(default)s)"
+        ),
+    )
     parser.add_argument(
         "--name-margin",
         type=float,
         default=0.05,
-        help="Minimum lead over the second-best header candidate for pass-one acceptance",
+        metavar="VALOR",
+        help=(
+            "vantagem mínima sobre o segundo melhor candidato de cabeçalho para o "
+            "aceite na primeira passagem, de 0 a 1 (padrão: %(default)s)"
+        ),
     )
-    parser.add_argument("--final-threshold", type=float, default=0.90)
-    parser.add_argument("--candidates", type=int, default=10)
-    parser.add_argument("--sample-size", type=int, default=8)
+    parser.add_argument(
+        "--final-threshold",
+        type=float,
+        default=0.90,
+        metavar="VALOR",
+        help="limiar de aceite da confiança final, de 0 a 1 (padrão: %(default)s)",
+    )
+    parser.add_argument(
+        "--candidates",
+        type=int,
+        default=10,
+        metavar="N",
+        help=(
+            "quantidade de candidatos por critério na segunda passagem "
+            "(padrão: %(default)s)"
+        ),
+    )
+    parser.add_argument(
+        "--sample-size",
+        type=int,
+        default=8,
+        metavar="N",
+        help=(
+            "quantidade de valores de amostra por coluna em cada perfil "
+            "(padrão: %(default)s)"
+        ),
+    )
     parser.add_argument(
         "--embedding-model",
         default=os.getenv("OPENAI_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL),
+        metavar="MODELO",
+        help=(
+            "modelo de embeddings da OpenAI usado para comparar os cabeçalhos "
+            "(padrão: %(default)s; a variável OPENAI_EMBEDDING_MODEL, se definida, "
+            "substitui o padrão)"
+        ),
     )
-    parser.add_argument("--llm-model", default=os.getenv("OPENAI_MODEL", DEFAULT_LLM_MODEL))
+    parser.add_argument(
+        "--llm-model",
+        default=os.getenv("OPENAI_MODEL", DEFAULT_LLM_MODEL),
+        metavar="MODELO",
+        help=(
+            "modelo de linguagem da OpenAI usado como resolvedor de IA "
+            "(padrão: %(default)s; a variável OPENAI_MODEL, se definida, substitui o "
+            "padrão)"
+        ),
+    )
     parser.add_argument(
         "--reference-data",
         default=str(Path(__file__).with_name("reference_data")),
-        help="Directory containing manifest.json and versioned fiscal-code catalogs",
+        metavar="DIRETORIO",
+        help=(
+            "diretório com o manifest.json e os catálogos versionados de códigos "
+            "fiscais (padrão: a pasta reference_data ao lado deste programa)"
+        ),
     )
     parser.add_argument(
         "--no-reference-data",
         action="store_true",
-        help="Disable official fiscal-code catalog evidence",
+        help="desativa a evidência dos catálogos oficiais de códigos fiscais",
     )
     parser.add_argument(
         "--offline",
         action="store_true",
-        help="Use lexical name matching and skip OpenAI data comparison.",
+        help=(
+            "usa só a comparação léxica dos nomes e dispensa a OpenAI (embeddings e "
+            "comparação de dados)"
+        ),
     )
     return parser
 
 
+def _error_message(exc: ValueError | OSError) -> str:
+    """Mensagem em português para um erro de leitura ou gravação na linha de comando."""
+    if isinstance(exc, FileNotFoundError):
+        return f"Arquivo não encontrado: {exc.filename}"
+    if isinstance(exc, PermissionError):
+        return f"Sem permissão para acessar o arquivo: {exc.filename}"
+    if isinstance(exc, OSError):
+        target = f" {exc.filename}" if exc.filename else ""
+        return f"Não foi possível ler ou gravar o arquivo{target}: {exc.strerror or exc}"
+    return f"Não foi possível gerar o relatório de mapeamento: {exc}"
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    """Ponto de entrada da linha de comando; devolve 0 em caso de sucesso.
+
+    Erros de valor e de arquivo (``ValueError`` e ``OSError``) saem com uma
+    mensagem em português e código de saída 1, sem traceback, como no
+    ``apply_invoice_mapping``.
+    """
     args = build_parser().parse_args(argv)
     if not 0.0 <= args.name_threshold <= 1.0:
-        raise SystemExit("--name-threshold must be between 0 and 1")
+        raise SystemExit("--name-threshold deve estar entre 0 e 1")
     if not 0.0 <= args.name_margin <= 1.0:
-        raise SystemExit("--name-margin must be between 0 and 1")
+        raise SystemExit("--name-margin deve estar entre 0 e 1")
     if not 0.0 <= args.final_threshold <= 1.0:
-        raise SystemExit("--final-threshold must be between 0 and 1")
+        raise SystemExit("--final-threshold deve estar entre 0 e 1")
     if args.candidates < 1 or args.sample_size < 1:
-        raise SystemExit("--candidates and --sample-size must be positive")
+        raise SystemExit("--candidates e --sample-size devem ser positivos")
     if args.model_header_row < 1 or args.client_header_row < 1:
-        raise SystemExit("--model-header-row and --client-header-row must be positive")
+        raise SystemExit("--model-header-row e --client-header-row devem ser positivos")
+    try:
+        return _run(args)
+    except (ValueError, OSError) as exc:
+        raise SystemExit(_error_message(exc)) from exc
 
+
+def _run(args) -> int:
+    """Executa o mapeamento com os argumentos já validados e grava o relatório."""
     model_path = Path(args.model)
     client_path = Path(args.client)
+    # Nomes de arquivo continuam em inglês (mapping_<cliente>.xlsx), como os
+    # dos relatórios em data/reports/.
     output_path = Path(args.output or f"mapping_{client_path.stem}.xlsx")
 
     model_table = SheetTable.from_excel(
@@ -3297,8 +3718,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             reference_catalogs = ReferenceCatalogs.from_directory(args.reference_data)
         except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
             raise SystemExit(
-                f"Could not load reference catalogs from {args.reference_data}: {exc}. "
-                "Run update_reference_data.py or use --no-reference-data."
+                f"Não foi possível carregar os catálogos de referência de "
+                f"{args.reference_data}: {exc}. Execute update_reference_data.py ou "
+                "use --no-reference-data."
             ) from exc
 
     if args.offline:
@@ -3307,7 +3729,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         if not os.getenv("OPENAI_API_KEY"):
             raise SystemExit(
-                "OPENAI_API_KEY is not set. Export a replacement key or use --offline."
+                "OPENAI_API_KEY não está definida. Exporte uma chave válida ou use --offline."
             )
         openai_client = OpenAI()
         header_scorer = OpenAIEmbeddingHeaderScorer(
@@ -3331,6 +3753,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         reference_catalogs=reference_catalogs,
     )
     manifest_path = Path(args.reference_data) / "manifest.json"
+    # Chaves e sentinelas internos (offline, disabled); write_results os grava
+    # em português pela aba Metadados da Execução.
     metadata = {
         "mapping_schema_version": MAPPING_SCHEMA_VERSION,
         "generated_at_utc": datetime.now(UTC).isoformat(),
@@ -3356,9 +3780,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             else "disabled"
         ),
     }
-    # The closest-model-column hint is computed lexically rather than reusing
-    # the run's scorer: it is a reviewer convenience, and recomputing sentence
-    # embeddings for a hint would spend money to no purpose.
+    # A dica da coluna do modelo mais próxima é calculada de forma léxica, em
+    # vez de reutilizar o avaliador da execução: é uma conveniência para o
+    # revisor, e recalcular embeddings só para uma dica gastaria dinheiro à toa.
     unmatched = summarize_unmatched_columns(
         model_table=model_table,
         client_table=client_table,
@@ -3384,8 +3808,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     accepted = sum(result.status == "accepted" for result in results)
     review = sum(result.status == "review" for result in results)
     no_match = sum(result.status == "no_match" for result in results)
-    print(f"Wrote {output_path}")
-    print(f"accepted={accepted} review={review} no_match={no_match}")
+    print(f"Arquivo gravado: {output_path}")
+    # Os rótulos são os valores da coluna situacao no relatório.
+    print(f"aceito={accepted} revisao={review} sem_correspondencia={no_match}")
     return 0
 
 

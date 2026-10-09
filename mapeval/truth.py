@@ -1,8 +1,8 @@
-"""Load the client-authored de-para answer keys.
+"""Carrega os gabaritos de-para escritos pelo cliente.
 
-Only datasul and oracle are keys. de_para_procosa.xlsx is a
-record-granularity spec authored against a different export, and there is no
-key for sap_terumo.
+Só datasul e oracle têm gabarito. O de_para_procosa.xlsx é uma especificação
+no nível de registro, escrita sobre outra exportação, e não existe gabarito
+para sap_terumo.
 """
 
 from __future__ import annotations
@@ -14,39 +14,43 @@ import openpyxl
 
 from mapeval.excel import parse_coluna_annotation
 
-# Four rows where the key itself is wrong and the mapper is right. Each was
-# verified from the client's own data, and each is re-derivable from the
-# row-aligned de-para data channel rather than taken on faith.
+# Quatro linhas em que o próprio gabarito está errado e o mapeador está
+# certo. Cada uma foi verificada nos dados do próprio cliente, e cada uma
+# pode ser derivada de novo pelo canal de dados do de-para, alinhado linha a
+# linha, em vez de ser aceita por confiança.
 #
-# Applying these is the difference between 33/56 and 37/56. A harness that
-# skips them punishes correct behaviour, so --strict-key-only exists purely
-# to prove they are the only thing separating the two figures.
+# Aplicá-las é a diferença entre 33/56 e 37/56. Uma avaliação que as ignora
+# pune o comportamento correto; --strict-key-only existe só para provar que
+# elas são a única coisa que separa os dois números.
+#
+# As justificativas nunca são impressas (a CLI mostra só os números das
+# colunas); ficam aqui como documentação.
 KEY_CORRECTIONS: dict[str, dict[int, tuple[int, str]]] = {
     "oracle": {
-        213: (36, "key names c37 ALIQ COFINS; c36 ALIQ PIS is the PIS rate"),
-        220: (40, "key names c39 CST-PIS; the pair is transposed in the key"),
-        221: (39, "key names c40 CST-COFINS; the pair is transposed in the key"),
+        213: (36, "o gabarito aponta c37 ALIQ COFINS; c36 ALIQ PIS é a alíquota do PIS"),
+        220: (40, "o gabarito aponta c39 CST-PIS; o par está trocado no gabarito"),
+        221: (39, "o gabarito aponta c40 CST-COFINS; o par está trocado no gabarito"),
     },
     "datasul": {
-        184: (188, "key names c99 (block A) but is internally incoherent; "
-                   "c188 is trio-consistent with the key's own m52-m55"),
+        184: (188, "o gabarito aponta c99 (bloco A), mas é incoerente consigo mesmo; "
+                   "c188 fecha o trio fiscal com as colunas m52-m55 do próprio gabarito"),
     },
 }
 
 
 @dataclass(frozen=True)
 class AnswerKey:
-    """The columns a client actually has, per the client's own annotation."""
+    """As colunas que um cliente de fato tem, segundo a anotação do próprio cliente."""
 
     client: str
-    #: model column number (1-based) -> client column number (1-based)
+    #: número da coluna do modelo (a partir de 1) -> número da coluna do cliente (a partir de 1)
     present: dict[int, int]
-    #: model column number -> why the client's own annotation was overridden
+    #: número da coluna do modelo -> por que a anotação do próprio cliente foi substituída
     corrections: dict[int, str] = field(default_factory=dict)
 
     @property
     def denominator(self) -> int:
-        """The only legitimate recall denominator. Never 227."""
+        """O único denominador legítimo do recall. Nunca 227."""
         return len(self.present)
 
     def __len__(self) -> int:
@@ -59,7 +63,7 @@ def load_answer_key(
     *,
     apply_corrections: bool = True,
 ) -> AnswerKey:
-    """Read row 1 of a de-para workbook into a model->client column map."""
+    """Lê a linha 1 de uma planilha de-para num mapa coluna do modelo -> coluna do cliente."""
     workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
     try:
         sheet = workbook[workbook.sheetnames[0]]

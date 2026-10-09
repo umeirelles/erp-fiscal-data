@@ -1,236 +1,260 @@
-# Evaluation: how to tell whether a change helps
+# Avaliação: como saber se uma mudança ajuda
 
-This page covers how the mapper is measured: what the ground truth is and where it falls short, how `mapeval` turns a report into numbers, today's baseline, why the 0.90 accept gate stays, and the steps to follow before you call a change an improvement. For how the mapper decides, see [ARCHITECTURE.md](ARCHITECTURE.md). For the workbooks themselves, see [DATA.md](DATA.md). Bugs and code/comment mismatches are collected in [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
+Esta página explica como o mapeador é medido: qual é o gabarito e onde ele fica aquém, como o `mapeval` transforma um relatório em números, a linha de base de hoje, por que o limiar de aceite continua em 0,90 e os passos a seguir antes de chamar uma mudança de melhoria. Para como o mapeador decide, veja [ARCHITECTURE.md](ARCHITECTURE.md). Para as planilhas em si, veja [DATA.md](DATA.md). Defeitos e divergências entre código e comentário estão reunidos em [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
 
-Every number on this page was measured on 2026-10-08 against the files in `data/`. Run all commands from the repo root. Nothing here calls OpenAI unless it says so.
+Todos os números desta página foram medidos em 2026-10-09 nos arquivos de `data/`, com os relatórios já migrados para o esquema em português. A migração não mudou nenhum número. Rode todos os comandos a partir da raiz do repositório. Nada aqui chama a OpenAI, a não ser onde a página indica.
+
+O código usa o vocabulário interno em inglês (`status == "accepted"`, `Outcome.CORRECT`). Relatórios, planilhas e a saída das CLIs estão em português. Os nomes de aba, coluna e valor citados aqui são os que `report_schema.py` grava. O mapeval lê o esquema em português (versão 3) e o legado em inglês (versão 2) e dá os mesmos números nos dois. Nomes de arquivo e de pasta, flags das CLIs e identificadores continuam em inglês.
 
 ```bash
-python -m mapeval                                   # score all four archived reports (about 10 s)
-python -m mapeval --show-losses                     # also list every withheld, missed and wrong-column row
-python -m mapeval --client oracle                   # one client; repeat --client for more
-python -m mapeval --strict-key-only                 # score against the keys exactly as the client wrote them
-python -m pytest -q                                 # 137 tests, offline, about 7 s
+python -m mapeval                                   # pontua os quatro relatórios arquivados (cerca de 11 s)
+python -m mapeval --show-losses                     # lista também cada linha retida, perdida ou com coluna errada
+python -m mapeval --client oracle                   # um cliente; repita --client para mais
+python -m mapeval --strict-key-only                 # pontua contra o gabarito exatamente como o cliente o escreveu
+python -m pytest -q                                 # 451 testes, offline, cerca de 10 s (os 10 marcados "lento" ficam de fora)
+python -m pytest -q -m lento                        # as 10 provas lentas de ponta a ponta, cerca de 4 min
 ```
 
-## Ground truth and its limits
+## O gabarito e seus limites
 
-There are two sources of truth, and neither covers much.
+Há duas fontes de verdade, e nenhuma cobre muito.
 
-### 1. Answer keys (de-para files)
+### 1. Gabaritos (arquivos de-para)
 
-A *de-para* ("from-to") is a correspondence table. Two clients sent one: a copy of the base model in which they wrote, above each model column they can supply, the letter of their own column that supplies it (`Coluna FY`).
+Dois clientes mandaram um de-para: uma cópia do modelo base em que escreveram, acima de cada coluna do modelo que conseguem fornecer, a letra da coluna deles que a alimenta (`Coluna FY`).
 
-| Client | Key | Keyed model columns |
+| Cliente | Gabarito | Colunas do modelo no gabarito |
 |---|---|---|
 | datasul | `data/keys/de_para_datasul.xlsx` | 30 |
 | oracle | `data/keys/de_para_oracle.xlsx` | 26 |
 | **total** | | **56** |
 
-`mapeval/truth.py` `load_answer_key` reads only row 1. A cell's position gives the model column number, and `mapeval/excel.py` `parse_coluna_annotation` turns `Coluna FY` (trailing spaces allowed) into a client column number. Row 2 repeats the model headers and is not read. Rows 3 onward hold the client's own data under the annotated columns, and mapeval does not read those either.
+`load_answer_key`, em `mapeval/truth.py`, lê só a linha 1. A posição da célula dá o número da coluna do modelo, e `parse_coluna_annotation`, em `mapeval/excel.py`, transforma `Coluna FY` (com espaços no fim, se houver) no número de uma coluna do cliente. A linha 2 repete os cabeçalhos do modelo e não é lida. Da linha 3 em diante vêm os dados do próprio cliente sob as colunas anotadas, e o mapeval também não os lê.
 
-`data/keys/de_para_procosa.xlsx` is not a key. Its row 1 says `ITEM`/`NOTA` (a record-granularity spec), so it yields no column pairs. sap_terumo has no key at all.
+`data/keys/de_para_procosa.xlsx` não é gabarito. A linha 1 dele diz `ITEM`/`NOTA` (uma especificação da granularidade do registro), então não gera nenhum par de colunas. sap_terumo não tem gabarito.
 
-The keys have four limits.
+Os gabaritos têm quatro limites.
 
-- **They are small.** One column is 1.8 points of the 56-column keyed total and 3–4 points of a single client's figure. **Treat every recall number as ±2 columns.** A one- or two-column move on its own is not a signal. Look at which rows moved and why.
-- **They are partly wrong.** In four rows the key is wrong and the mapper is right. `mapeval/truth.py` `KEY_CORRECTIONS` overrides them:
+- **São pequenos.** Uma coluna vale 1,8 ponto percentual no total de 56 colunas e de 3 a 4 pontos percentuais no número de um cliente só. **Trate todo recall como ±2 colunas.** Uma variação de uma ou duas colunas, sozinha, não é sinal. Veja quais linhas mudaram e por quê.
+- **Estão parcialmente errados.** Em quatro linhas o gabarito está errado e o mapeador está certo. `KEY_CORRECTIONS`, em `mapeval/truth.py`, corrige essas linhas:
 
-  | Client | Model column | Key says | Corrected to | Why |
+  | Cliente | Coluna do modelo | O gabarito diz | Corrigido para | Por quê |
   |---|---|---|---|---|
-  | oracle | m213 Aliquota PIS | c37 | c36 | c37 is the COFINS rate. c36 is the PIS rate. |
-  | oracle | m220 CST COFINS | c39 | c40 | The CST pair is transposed in the key. |
-  | oracle | m221 CST PIS | c40 | c39 | Same transposition. |
-  | datasul | m184 Aliquota COFINS | c99 | c188 | c188 matches the key's own m52–m55 tax block. |
+  | oracle | m213 Aliquota PIS | c37 | c36 | c37 é a alíquota da COFINS; c36 é a do PIS. |
+  | oracle | m220 CST COFINS | c39 | c40 | O par de CST está trocado no gabarito. |
+  | oracle | m221 CST PIS | c40 | c39 | A mesma troca. |
+  | datasul | m184 Aliquota COFINS | c99 | c188 | c188 fecha o trio fiscal com o bloco m52–m55 do próprio gabarito. |
 
-  PIS and COFINS are federal contributions on revenue. CST is the tax-situation code each tax line carries. `--strict-key-only` turns the corrections off. Today they are worth exactly +4 delivered and +4 found (28 → 32 and 39 → 43), and `tests/test_mapeval.py` pins the found difference.
-- **They say nothing about the other model columns.** A model column the client did not annotate scores as *undetermined*. The key cannot confirm that a `no_match` is right, and it cannot judge an accept outside its 56 columns.
-- **They sometimes assign one client column to two model columns.** datasul c8 feeds both m39 Região and m147 Municipio Inicio. oracle c23 feeds both m100 Aliquota ICSP and m190 Aliquota ICMS (ICMS is the state VAT on goods). The mapper withdraws a client column from the pool once it is accepted, and `apply_invoice_mapping.py` refuses to deliver one client column twice. So at most 54 of the 56 keyed columns can be delivered under the current rules.
+  `--strict-key-only` desliga as correções. Hoje elas valem exatamente +4 entregues e +4 encontrados (28 → 32 e 39 → 43), e `tests/test_mapeval.py` fixa a diferença dos encontrados.
+- **Não dizem nada sobre as outras colunas do modelo.** Uma coluna do modelo que o cliente não anotou sai como *indeterminada*. O gabarito não consegue confirmar que um `sem_correspondencia` está certo, nem julgar um aceite fora das suas 56 colunas.
+- **Às vezes atribuem uma coluna do cliente a duas colunas do modelo.** No datasul, c8 alimenta m39 Região e m147 Municipio Inicio. No oracle, c23 alimenta m100 Aliquota ICSP e m190 Aliquota ICMS. O mapeador tira uma coluna do cliente do conjunto disponível (`available`) assim que ela é aceita, e `apply_invoice_mapping.py` se recusa a entregar a mesma coluna do cliente duas vezes. Então, com as regras atuais, no máximo 54 das 56 colunas do gabarito podem ser entregues.
 
-### 2. Reviewer verdicts
+### 2. Pareceres do revisor
 
-A reviewer can rule on a row in a report's `Mappings` sheet (`reviewer_status` = `correct`, `incorrect` with `correct_client_column`, or `no_mapping_exists`). Only one report has verdicts: `data/reports/mapping_sap_procosa_full.xlsx` holds 26 (15 `correct`, 2 `incorrect` with a corrected column, 9 `no_mapping_exists`). `apply_invoice_mapping.py` honours them. mapeval ignores them: it counts a row as delivered only when the mapper's own `status` is `accepted`. Its fabrication check has the same blind spot: it never inspects reviewer-confirmed rows (see [KNOWN_ISSUES.md: mapeval ignores reviewer verdicts](KNOWN_ISSUES.md#26-mapeval-ignores-reviewer-verdicts)).
+Um revisor pode dar parecer sobre uma linha da aba `Mapeamentos` de um relatório (`parecer_revisor` = `correto`, `incorreto` com `coluna_cliente_correta`, ou `inexistente`). Só um relatório tem pareceres: `data/reports/mapping_sap_procosa_full.xlsx` tem 26 (15 `correto`, 2 `incorreto` com a coluna corrigida, 9 `inexistente`), e as 26 observações do revisor (`observacao_revisor`) estão como foram escritas. `apply_invoice_mapping.py` respeita os pareceres, digitados em português ou em inglês. O mapeval os ignora: só conta uma linha como entregue quando a `situacao` dada pelo próprio mapeador é `aceito`. A verificação de fabricação tem o mesmo ponto cego: nunca olha as linhas confirmadas pelo revisor (ver [KNOWN_ISSUES.md, item 2.6](KNOWN_ISSUES.md#26-o-mapeval-ignora-os-pareceres-do-revisor)).
 
-## How mapeval scores a report
+## Como o mapeval pontua um relatório
 
-`python -m mapeval` is read-only. It never runs the mapper and writes no files. For each client in `mapeval/cli.py` `CLIENTS` it reads three workbooks under `--root`: the client export in `data/clients/`, the archived report `data/reports/mapping_<client>_full.xlsx` and, for datasul and oracle, the key in `data/keys/`.
+`python -m mapeval` só lê. Nunca roda o mapeador e não grava arquivos. Para cada cliente de `CLIENTS`, em `mapeval/cli.py`, ele lê três planilhas sob `--root`: a exportação do cliente em `data/clients/`, o relatório de mapeamento arquivado `data/reports/mapping_<cliente>_full.xlsx` e, para datasul e oracle, o gabarito em `data/keys/`.
 
-`mapeval/score.py` `score_report` reads the report's `Mappings` sheet by **row position**: data row *n* is model column *n*. The `model_column_number` cell is not read, so a sheet someone sorted or filtered by hand is mis-scored without an error ([KNOWN_ISSUES.md](KNOWN_ISSUES.md#28-mapeval-matches-model-columns-by-position-never-by-name)). From each row it takes `model_column` (the name, for printing only), `client_column_number`, `status`, `method`, `final_confidence` and `arithmetic_proof`.
+`read_mappings`, em `mapeval/score.py`, localiza a aba de mapeamentos (`Mapeamentos`, ou a legada `Mappings`) com `report_schema.find_sheet`, detecta o esquema pelo cabeçalho com `report_schema.internal_header_index` e devolve as linhas cruas com um índice pelos nomes internos dos campos. `score_report` converte `situacao` e `metodo` para o vocabulário interno (`aceito` → `accepted`, `catalogo` → `catalog`) com `report_schema.internal_value` antes de qualquer comparação. Um relatório meio traduzido, por exemplo uma aba `Mappings` com cabeçalhos em português, é recusado com `ValueError` em vez de ser lido pela metade.
 
-### Outcome classes
+`score_report` lê a aba pela **posição da linha**: a linha de dados *n* é a coluna do modelo *n*. A célula `numero_coluna_modelo` não é lida, então uma aba que alguém ordenou ou filtrou à mão é pontuada errado, sem nenhum erro ([KNOWN_ISSUES.md, item 2.8](KNOWN_ISSUES.md#28-o-mapeval-casa-as-colunas-do-modelo-pela-posição-nunca-pelo-nome)). De cada linha ela tira `coluna_modelo` (o nome, só para imprimir), `numero_coluna_cliente`, `situacao`, `metodo`, `confianca_final` e `prova_aritmetica`.
 
-`mapeval/outcomes.py` `classify` assigns each model column one outcome. The checks run in this order, and the first one that matches wins:
+### Classes de resultado
 
-| # | Outcome | Condition |
-|---|---|---|
-| 1 | `FABRICATED` | The row is `accepted` and its client column has zero populated cells. This is checked first, so it applies even when the key agrees. |
-| 2 | `UNDETERMINED` | The model column is not in the key, whatever the mapper did. |
-| 3 | `MISSED` / `CORRECTLY_ABSENT` | The mapper proposed no column. The result is `MISSED` if the key names one, otherwise `CORRECTLY_ABSENT`. |
-| 4 | `FABRICATED` | A column was proposed but the key names none. |
-| 5 | `CORRECT` / `WRONG_COLUMN` | The proposal equals the key's column, or it does not. |
+`classify`, em `mapeval/outcomes.py`, atribui um resultado a cada coluna do modelo. As checagens rodam nesta ordem, e vale a primeira que casar. Os valores de `Outcome` continuam em inglês no código; o rótulo em português vem de `report_schema.ENUMS["outcome"]`.
 
-"Zero populated cells" (vacuity) is computed by `mapeval/score.py` `_vacuous_client_columns`: no non-blank value under the header in the export's first sheet. A column of zeros is *not* vacuous, because an exempt operation legitimately has a zero base.
+| # | Resultado (`Outcome`) | Rótulo | Condição |
+|---|---|---|---|
+| 1 | `FABRICATED` | `fabricado` | A `situacao` da linha é `aceito` e a coluna do cliente não tem nenhuma célula preenchida. É checado primeiro, então vale mesmo quando o gabarito concorda. |
+| 2 | `UNDETERMINED` | `indeterminado` | A coluna do modelo não está no gabarito, faça o mapeador o que fizer. |
+| 3 | `MISSED` / `CORRECTLY_ABSENT` | `perdido` / `ausente_com_acerto` | O mapeador não propôs coluna. É `MISSED` se o gabarito indica uma, senão `CORRECTLY_ABSENT`. |
+| 4 | `FABRICATED` | `fabricado` | Houve proposta, mas o gabarito não indica coluna. |
+| 5 | `CORRECT` / `WRONG_COLUMN` | `correto` / `coluna_errada` | A proposta é igual à coluna do gabarito, ou não é. |
 
-When `classify` is called from `score_report`, a keyed column always has an expected client column. That makes `CORRECTLY_ABSENT` and check 4 reachable only from unit tests. In practice every column outside the key is `UNDETERMINED`: datasul has 197 and oracle 201.
+O resumo de cada cliente imprime `CORRETO`, `COLUNA_ERRADA`, `PERDIDO` e `FABRICADO` em maiúsculas; `--show-losses` usa `perdido` e `coluna_errada`. `indeterminado` e `ausente_com_acerto` não aparecem na saída: os aceites indeterminados são contados na linha `sem_veredito`.
 
-`review` rows are classified as well. A `review` proposal onto an empty column is not `FABRICATED`, because apply does not deliver it (unless run with `--include-review`). It falls through to the normal checks. `Score.vacuous_proposals` counts these (datasul 6, oracle 0), but the CLI does not print them.
+"Nenhuma célula preenchida" (coluna vazia) é calculado por `_vacuous_client_columns`, em `mapeval/score.py`: nenhum valor não vazio sob o cabeçalho, na primeira aba da exportação. Uma coluna toda zerada *não* é vazia, porque uma operação isenta tem base de cálculo zero legitimamente.
 
-### What each figure means
+Quando `classify` é chamado por `score_report`, uma coluna do gabarito sempre tem uma coluna do cliente esperada. Por isso `CORRECTLY_ABSENT` e a checagem 4 só são alcançáveis nos testes unitários. Na prática, toda coluna fora do gabarito é `UNDETERMINED`: 197 no datasul e 201 no oracle.
 
-| Printed line | Definition |
-|---|---|
-| `CORRECT` / recall on present | **Found.** Rows whose proposal (accepted *or* review) matches the key, divided by the keyed columns. This measures retrieval. |
-| `DELIVERED` / delivered recall | `CORRECT` rows whose `status` is `accepted`, divided by the keyed columns. This is what apply puts in the customer's workbook, and **it is the number that describes the product.** |
-| `withheld` | `CORRECT` rows that are not `accepted`: the mapper found the right column and the gate held it back. `--show-losses` lists them, highest confidence first. |
-| `accepted` / precision (lower bound) | `CORRECT` accepts divided by all accepts. Unadjudicable accepts count as wrong, so a new unverified accept lowers the bound. |
-| `unadjudicable` | Accepts on model columns outside the key. The key cannot say whether they are right. |
-| `header-independent accepts` | The generalization metric, using mapeval's definition (see [below](#the-generalization-metric)). |
-| `method census` | Accepts by `method`: `name` is a pass-1 header accept, `data` a pass-2 decision, `catalog` a pass-2 decision by a distinctive official code table. |
-| `key corrections applied` | Which `KEY_CORRECTIONS` rows were used. |
-| `KEYED TOTAL` | Found and delivered summed over the keyed clients, plus total fabrications. |
+As linhas em `revisao` também são classificadas. Uma proposta em `revisao` sobre uma coluna vazia não é `FABRICATED`, porque o apply não a entrega (a não ser com `--include-review`). Ela segue para as checagens normais. `Score.vacuous_proposals` conta essas propostas (datasul 6, oracle 0), mas a CLI não as imprime.
 
-The denominator is always the number of keyed columns (`AnswerKey.denominator`). Never divide by 227. The base model is a deliberate superset, and most of its columns are legitimately absent from any one client.
+### O que cada número significa
 
-### Fabrication and the exit code
-
-`main` in `mapeval/cli.py` returns 1 if any fabrication was found and 0 otherwise. Fabrications are keyed `FABRICATED` rows plus "vacuous accepts" on unkeyed clients. Fabrication is the failure that matters: a fabricated `Base CBS` is far worse than an empty one. (CBS is the new federal consumption tax from the tax reform; `Base CBS` is its taxable base.)
-
-This is the only automatic block. An exit code of 0 does **not** mean a change is safe. A change that adds wrong accepts on populated columns outside the key raises `unadjudicable` and lowers the precision bound, but the exit code stays 0. Read those two lines before trusting a clean exit.
-
-The exit path was checked on 2026-10-08 with a scratch copy of the datasul report in which one `review` row onto an empty column was marked `accepted`. Scoring the copy printed `FABRICATED 1 <-- BLOCKING` and a `FABRICATION m32 ... (0 populated rows ...)` line, and exited 1.
-
-### Unkeyed clients
-
-For sap_procosa and sap_terumo, mapeval prints no precision or recall figure:
+A saída de `python -m mapeval` para o datasul, e o total, como saíram em 2026-10-09:
 
 ```text
-sap_procosa  UNKEYED — no precision or recall figure is honest here.
-  accepted  45   adjudication backlog  45   vacuous accepts 0
+datasul  presentes=30  (nunca 227)
+  CORRETO           24      recall sobre presentes  80,0%
+  COLUNA_ERRADA      1
+  PERDIDO            5
+  FABRICADO          0
+  aceitos           19      precisão (limite inferior)  89,5%
+  ENTREGUES         17      recall entregue  56,7%   <-- o que o cliente recebe
+  retidos            7      coluna certa encontrada, retida pelo limiar de aceite
+  sem_veredito       2      aceitos que o gabarito não consegue verificar
+  aceites independentes de cabeçalho  36,8%   <-- métrica de generalização
+  censo de métodos {'catalogo': 1, 'nome': 15, 'dados': 3}
+  correções do gabarito aplicadas: [184]
+...
+TOTAL COM GABARITO  encontrados 43/56 (76,8%)   ENTREGUES 32/56 (57,1%)   fabricações 0
+                    11 mapeamentos corretos encontrados, mas não entregues - rode com --show-losses para listá-los
 ```
 
-`accepted` counts rows with `status == "accepted"`. `vacuous accepts` counts accepted rows whose client column is empty, and those count as fabrications for the exit code. The "adjudication backlog" is the accepted count printed a second time. It does not count review rows or reviewer verdicts (see [KNOWN_ISSUES.md](KNOWN_ISSUES.md#25-mapeval-prints-the-accept-count-as-the-adjudication-backlog)).
-
-### Flags
-
-| Flag | Effect |
+| Linha impressa | Definição |
 |---|---|
-| `--client NAME` | Score only this client. Repeat it for more. The name must be a key of `CLIENTS` (`datasul`, `oracle`, `sap_procosa`, `sap_terumo`). Any other name stops with a `KeyError` traceback. |
-| `--show-losses` | For keyed clients, list every withheld row (with `final_confidence` and status), then every `MISSED` and `WRONG_COLUMN` row with the column chosen and the column wanted. |
-| `--strict-key-only` | Skip `KEY_CORRECTIONS`. |
-| `--root DIR` | Resolve every workbook path in `CLIENTS` against `DIR` instead of `.`. Use this to score candidate reports without touching `data/reports/` (see [the protocol](#protocol-for-a-proposed-change)). If you run from outside the repo, also set `PYTHONPATH` to the repo. |
+| `presentes=` | O denominador: as colunas do modelo que o gabarito do cliente anota (`AnswerKey.denominator`). |
+| `ENTREGUES` / `recall entregue` | **Entregues.** Linhas `CORRETO` cuja `situacao` é `aceito`, divididas pelas colunas do gabarito. É o que o apply põe na planilha mapeada que o cliente recebe, e **é o número que descreve o produto.** |
+| `CORRETO` / `recall sobre presentes` | **Encontrados.** Linhas cuja proposta (`aceito` *ou* `revisao`) bate com o gabarito, divididas pelas colunas do gabarito. Mede a recuperação. |
+| `retidos` | Linhas `CORRETO` cuja `situacao` não é `aceito`: o mapeador achou a coluna certa e o limiar a reteve. `--show-losses` as lista, da maior confiança para a menor. |
+| `aceitos` / `precisão (limite inferior)` | Aceites `CORRETO` divididos por todos os aceites. Aceites sem veredito contam como errados, então um aceite novo não verificado baixa o limite. |
+| `sem_veredito` | Aceites em colunas do modelo fora do gabarito. O gabarito não consegue dizer se estão certos. |
+| `aceites independentes de cabeçalho` | A métrica de generalização, na definição do mapeval (ver [abaixo](#a-métrica-de-generalização)). |
+| `censo de métodos` | Aceites por `metodo`: `nome` é aceite de cabeçalho da primeira passagem, `dados` é decisão da segunda passagem, `catalogo` é decisão da segunda passagem por um catálogo oficial de códigos distintivo. |
+| `correções do gabarito aplicadas` | Quais linhas de `KEY_CORRECTIONS` foram usadas. |
+| `TOTAL COM GABARITO` | Encontrados e entregues somados nos clientes com gabarito, mais o total de fabricações. A linha seguinte diz quantas colunas corretas foram encontradas e não entregues. |
 
-When a report file is absent, an unkeyed client is skipped silently, but a keyed client stops with `FileNotFoundError`. When you point `--root` at a directory that holds only some reports, name those clients with `--client`.
+O denominador é sempre o número de colunas do gabarito. Nunca divida por 227. O modelo base é um superconjunto de propósito, e a maioria das colunas dele legitimamente não consta na exportação de um cliente qualquer.
 
-A full run takes about 10 s. Almost all of that is the vacuity scans of the two large exports, datasul (8.9 MB, about 5 s) and sap_procosa (9.8 MB, about 4.5 s). Each scan is cached within one process.
+### Fabricação e o código de saída
 
-## Baseline (measured 2026-10-08)
+`main`, em `mapeval/cli.py`, devolve 1 se achou alguma fabricação e 0 caso contrário. Fabricações são as linhas `FABRICATED` dos clientes com gabarito mais os aceites em coluna vazia dos clientes sem gabarito. A fabricação é a falha que importa: uma `Base CBS` fabricada é muito pior que uma vazia.
 
-Produced by `python -m mapeval` and `python -m mapeval --show-losses` on the archived online reports:
+É o único bloqueio automático. Código de saída 0 **não** quer dizer que a mudança é segura. Uma mudança que acrescenta aceites errados em colunas preenchidas fora do gabarito aumenta `sem_veredito` e baixa o limite de precisão, mas o código de saída continua 0. Leia essas duas linhas antes de confiar numa saída limpa.
 
-| Client | Keyed | **Delivered** | Found | Withheld | Wrong column | Missed | Fabricated | Accepted | Precision (lower bound) | Unadjudicable |
+O caminho de saída foi conferido em 2026-10-09 numa cópia do relatório do datasul em que uma linha `revisao` sobre coluna vazia (m32 ← c280) foi marcada `aceito`. A pontuação da cópia imprimiu `FABRICADO          1   <-- BLOQUEANTE` e a linha `FABRICAÇÃO m32 'Nº da Nota Fiscal' <- c280 (0 linhas preenchidas, final=0,9176)`, e saiu com 1.
+
+### Clientes sem gabarito
+
+Para sap_procosa e sap_terumo o mapeval não imprime nenhum número de precisão ou recall:
+
+```text
+sap_procosa  SEM GABARITO — nenhum número de precisão ou recall seria honesto aqui.
+  aceitos  45   pendências de revisão  45   aceites em coluna vazia 0
+```
+
+`aceitos` conta as linhas com `situacao` = `aceito`. `aceites em coluna vazia` conta as linhas aceitas cuja coluna do cliente está vazia, e elas contam como fabricação para o código de saída. As `pendências de revisão` são a contagem de aceitos impressa de novo. Não contam linhas em `revisao` nem pareceres do revisor (ver [KNOWN_ISSUES.md, item 2.5](KNOWN_ISSUES.md#25-o-mapeval-imprime-a-contagem-de-aceitos-como-pendências-de-revisão)).
+
+### Opções
+
+| Opção | Efeito |
+|---|---|
+| `--client CLIENTE` | Pontua só este cliente. Repita a opção para mais de um. O nome precisa ser uma chave de `CLIENTS` (`datasul`, `oracle`, `sap_procosa`, `sap_terumo`). Qualquer outro nome para com um traceback de `KeyError`. |
+| `--show-losses` | Para os clientes com gabarito, lista cada linha retida (`retido`, com `final=` e a situação, por exemplo `(revisao)`), depois cada linha `perdido` e `coluna_errada`, com a coluna `escolhida` e a `esperada`. |
+| `--strict-key-only` | Não aplica `KEY_CORRECTIONS`. |
+| `--root PASTA` | Resolve todo caminho de planilha de `CLIENTS` a partir de `PASTA` em vez de `.`. Use para pontuar relatórios candidatos sem tocar em `data/reports/` (ver [o protocolo](#protocolo-para-uma-mudança-proposta)). Se rodar de fora do repositório, aponte também o `PYTHONPATH` para o repositório. |
+
+Quando o arquivo de relatório não existe, um cliente sem gabarito é pulado em silêncio, mas um cliente com gabarito para com `FileNotFoundError`. Quando você aponta `--root` para uma pasta com só alguns relatórios, nomeie esses clientes com `--client`.
+
+Uma execução completa leva cerca de 11 s. Quase tudo é a varredura de colunas vazias das duas exportações grandes, datasul (8,9 MB) e sap_procosa (9,8 MB), cerca de 5 s cada. Cada varredura fica em cache dentro do processo.
+
+## Linha de base (medida em 2026-10-09)
+
+Produzida por `python -m mapeval` e `python -m mapeval --show-losses` sobre os relatórios arquivados, que foram gerados online e depois migrados para o esquema em português sem reexecutar o mapeador:
+
+| Cliente | Colunas no gabarito | **Entregues** | Encontrados | Retidos | Coluna errada | Perdidos | Fabricados | Aceitos | Precisão (limite inferior) | Sem veredito |
 |---|---|---|---|---|---|---|---|---|---|---|
-| datasul | 30 | **17 (56.7%)** | 24 (80.0%) | 7 | 1 | 5 | 0 | 19 | 89.5% | 2 |
-| oracle | 26 | **15 (57.7%)** | 19 (73.1%) | 4 | 1 | 6 | 0 | 18 | 83.3% | 3 |
-| **keyed total** | 56 | **32 (57.1%)** | 43 (76.8%) | 11 | 2 | 11 | 0 | 37 | 86.5% | 5 |
+| datasul | 30 | **17 (56,7%)** | 24 (80,0%) | 7 | 1 | 5 | 0 | 19 | 89,5% | 2 |
+| oracle | 26 | **15 (57,7%)** | 19 (73,1%) | 4 | 1 | 6 | 0 | 18 | 83,3% | 3 |
+| **total com gabarito** | 56 | **32 (57,1%)** | 43 (76,8%) | 11 | 2 | 11 | 0 | 37 | 86,5% | 5 |
 
-Unkeyed: sap_procosa 45 accepted, sap_terumo 67 accepted, 0 vacuous accepts on either. Exit code 0.
+Sem gabarito: sap_procosa 45 aceitos, sap_terumo 67 aceitos, nenhum aceite em coluna vazia nos dois. Código de saída 0.
 
-With `--strict-key-only`, the keyed total is delivered 28/56 (50.0%) and found 39/56 (69.6%).
+Com `--strict-key-only`, o total com gabarito fica em 28/56 entregues (50,0%) e 39/56 encontrados (69,6%).
 
-None of the 37 keyed accepts is `WRONG_COLUMN`, so precision on the accepts the key *can* check is 32/32. The 5 that keep the lower bound below 100% are the unadjudicable ones.
+Nenhum dos 37 aceites com gabarito é `COLUNA_ERRADA`, então a precisão nos aceites que o gabarito *consegue* checar é 32/32. Os 5 que deixam o limite inferior abaixo de 100% são os sem veredito.
 
-### The 11 withheld-correct rows
+### As 11 linhas corretas retidas
 
-Every one is a `review` row below 0.90. Five sit at exactly 0.8999. That value is not a model hedge. In pass 2, when neither the header nor objective data evidence is decisive, `map_columns` in `invoice_mapper.py` caps `final_confidence` at `final_threshold - 0.0001`, so the gate can never accept a row from that branch.
+Todas são linhas em `revisao` abaixo de 0,90. Cinco estão exatamente em 0,8999. Esse valor não é hesitação do modelo. Na segunda passagem, quando nem o cabeçalho nem a evidência objetiva dos dados são decisivos, `map_columns`, em `invoice_mapper.py`, limita a `confianca_final` a `final_threshold - 0.0001` (linha 3166), então o limiar nunca aceita uma linha desse caminho.
 
-| Client | Model column | Proposed | final_confidence |
+| Cliente | Coluna do modelo | Proposta | `confianca_final` |
 |---|---|---|---|
-| datasul | m45 Outras ICMS | c16 | 0.8999 |
-| datasul | m50 Isentas IPI | c19 | 0.8999 |
-| datasul | m51 Outras IPI | c20 | 0.8999 |
-| datasul | m52 Base PIS | c181 | 0.8999 |
-| datasul | m210 Valor Total do Item | c90 | 0.891 |
-| datasul | m44 Isentas ICMS | c15 | 0.8701 |
-| datasul | m30 Data de lançamento | c3 | 0.8612 |
-| oracle | m210 Valor Total do Item | c20 | 0.8999 |
-| oracle | m195 Descrição | c13 | 0.8823 |
-| oracle | m34 CFOP | c16 | 0.8547 |
-| oracle | m31 Nº de documento | c8 | 0.8339 |
+| datasul | m45 Outras ICMS | c16 | 0,8999 |
+| datasul | m50 Isentas IPI | c19 | 0,8999 |
+| datasul | m51 Outras IPI | c20 | 0,8999 |
+| datasul | m52 Base PIS | c181 | 0,8999 |
+| datasul | m210 Valor Total do Item | c90 | 0,891 |
+| datasul | m44 Isentas ICMS | c15 | 0,8701 |
+| datasul | m30 Data de lançamento | c3 | 0,8612 |
+| oracle | m210 Valor Total do Item | c20 | 0,8999 |
+| oracle | m195 Descrição | c13 | 0,8823 |
+| oracle | m34 CFOP | c16 | 0,8547 |
+| oracle | m31 Nº de documento | c8 | 0,8339 |
 
-IPI is the federal tax on manufactured goods. *Isentas* and *Outras* are a tax's exempt and other (untaxed) amounts. CFOP is the 4-digit code for the type of operation.
+### Outras perdas
 
-### Other losses
+- **datasul.** Perdidos: m31 Nº de documento (c4), m39 Região (c8), m147 Municipio Inicio (c8), m194 Nº item do documento (c67), m211 Nome do Fornecedor do Local de Início (c6). Coluna errada: m213 Aliquota PIS, que propôs c96 onde o gabarito quer c187 (`revisao`, 0,8999).
+- **oracle.** Perdidos: m30 Data de lançamento (c2), m37 Nome (c1), m99 Base ICSP (c28), m100 Aliquota ICSP (c23), m101 Valor ICSP (c24), m211 Nome do Fornecedor do Local de Início (c7). Coluna errada: m194 Nº item do documento, que propôs c15 onde o gabarito quer c12 (`revisao`, 0,8752).
 
-- **datasul.** Missed: m31 Nº de documento (c4), m39 Região (c8), m147 Municipio Inicio (c8), m194 Nº item do documento (c67), m211 Nome do Fornecedor do Local de Início (c6). Wrong column: m213 Aliquota PIS, which proposed c96 where the key wants c187 (`review`, 0.8999).
-- **oracle.** Missed: m30 Data de lançamento (c2), m37 Nome (c1), m99 Base ICSP (c28), m100 Aliquota ICSP (c23), m101 Valor ICSP (c24), m211 Nome do Fornecedor do Local de Início (c7). Wrong column: m194 Nº item do documento, which proposed c15 where the key wants c12 (`review`, 0.8752).
-
-### The 5 unadjudicable accepts
+### Os 5 aceites sem veredito
 
 - datasul: m161 Despesas ← c76, m165 Código do Item ← c69.
 - oracle: m41 Base ICMS ← c28, m42 Valor ICMS ← c24, m199 Quantidade ← c17.
 
-The oracle pair needs a human. The client's own headers for c28 and c24 are `BASE ICMS` and `VALOR ICMS`, and the mapper accepted them onto the ICMS slots. The key puts those same columns in the model's ICSP slots (m99, m101), which therefore score `MISSED`. mapeval scores the two sides separately and does not link them ([KNOWN_ISSUES.md](KNOWN_ISSUES.md#27-accepts-outside-the-key-are-not-checked-against-the-key-oracle-m41m42)). ICSP is a separate tax family in the model, and the mapper's family-conflict guard deliberately refuses to match an ICMS header to an ICSP column. Do not "fix" this with a rule that maps ICMS headers to ICSP. That would gain key points on one client by encoding its vocabulary, which is exactly the hand-tuning the ground rules forbid (the docstring of `Score.undetermined_accepts` in `mapeval/score.py` gives this exact example).
+O par do oracle precisa de uma pessoa. Os cabeçalhos do próprio cliente para c28 e c24 são `BASE ICMS` e `VALOR ICMS`, e o mapeador os aceitou nas colunas de ICMS. O gabarito põe essas mesmas colunas nas colunas de ICSP do modelo (m99, m101), que por isso saem como `PERDIDO`. O mapeval pontua os dois lados separadamente e não os relaciona ([KNOWN_ISSUES.md, item 2.7](KNOWN_ISSUES.md#27-aceites-fora-do-gabarito-não-são-conferidos-contra-o-gabarito-oracle-m41m42)). ICSP é uma família de tributo separada no modelo, e a trava de conflito de família do mapeador se recusa, de propósito, a casar um cabeçalho de ICMS com uma coluna de ICSP. Não "conserte" isso com uma regra que mande cabeçalhos de ICMS para ICSP. Isso ganharia pontos de gabarito num cliente codificando o vocabulário dele, que é exatamente o ajuste à mão que as regras do projeto proíbem (a docstring de `Score.undetermined_accepts`, em `mapeval/score.py`, dá este exemplo).
 
-## The generalization metric
+## A métrica de generalização
 
-The four sample clients are reference material. Production will see ERPs nobody here has seen. The question that predicts the next client is how many accepts rest on evidence other than the client's header text. This page calls that share of accepts the generalization metric. Raising it is a goal in its own right. Two definitions exist in the code, and they disagree:
+Os quatro clientes de amostra são material de referência. A produção vai ver ERPs que ninguém aqui viu. A pergunta que antecipa o próximo cliente é quantos aceites se apoiam em evidência que não seja o texto do cabeçalho do cliente. Esta página chama essa fração dos aceites de métrica de generalização. Aumentá-la é um objetivo em si. Há duas definições no código, e elas discordam:
 
-- **mapeval** (`mapeval/score.py` `Row.header_independent`, printed as `header-independent accepts`). An accept counts if its `arithmetic_proof` is non-empty and does not contain "does not single out" (a proof that two disjoint tax blocks both satisfy is not evidence for either), or if its `method` is `catalog`.
-- **mapping_steps** (`mapping_steps.py`). Every evidence step has a `transfers` flag. `profile`, `identifier`, `catalog` and `arithmetic` transfer. `resolver`, `lexical` and `semantic` do not. A report's `decided_by` is the strongest supporting step in the order `resolver < lexical < semantic < profile < identifier < catalog < arithmetic` (`deciding_step`). The metric is the share of accepts whose `decided_by` is in `TRANSFERRING_STEP_IDS`. A related helper, `rests_only_on_headers`, asks whether `supported_by` names at least one evidence step and no transferring one.
+- **mapeval** (`Row.header_independent`, em `mapeval/score.py`, impressa como `aceites independentes de cabeçalho`). Um aceite conta se a `prova_aritmetica` é decisiva, ou se o `metodo` é `catalogo`. Decisiva quer dizer não vazia e sem o marcador de prova não decisiva: `report_schema.proof_is_decisive` reconhece "não distingue esta coluna" e o legado "does not single out". Uma prova que dois blocos disjuntos do mesmo tributo satisfazem não é evidência para nenhum dos dois.
+- **mapping_steps** (`mapping_steps.py`). Toda etapa de evidência tem o campo `transfers`. `perfil`, `identificador`, `catalogo` e `aritmetica` se transferem; `resolvedor_ia`, `lexico` e `semantico`, não. O `decidido_por` de uma linha é a etapa de apoio mais forte, na ordem `resolvedor_ia < lexico < semantico < perfil < identificador < catalogo < aritmetica` (`deciding_step`). No código, essas funções trabalham com os ids internos (`resolver`, `lexical`, `semantic`, `profile`, `identifier`, `catalog`, `arithmetic`); uma célula lida de um relatório em português passa antes por `report_schema.steps_to_internal`. A métrica é a fração de aceites cujo `decidido_por` está em `TRANSFERRING_STEP_IDS`. Uma função relacionada, `rests_only_on_headers`, pergunta se o `apoiado_por` cita ao menos uma etapa de evidência e nenhuma que se transfere.
 
-The two differ when a pass-1 header accept is *corroborated* by a catalog. mapping_steps counts it as transferring (`decided_by = catalog`). mapeval does not (`method = name`, no arithmetic proof). Measured on the accepted rows of the current reports:
+As duas diferem quando um aceite de cabeçalho da primeira passagem é *corroborado* por um catálogo. mapping_steps o conta como transferível (`decidido_por` = `catalogo`). O mapeval, não (`metodo` = `nome`, sem prova aritmética). Medido nas linhas aceitas dos relatórios atuais:
 
-| Client | Accepts | mapeval definition | `decided_by` transfers |
+| Cliente | Aceitos | Definição do mapeval | `decidido_por` se transfere |
 |---|---|---|---|
-| datasul | 19 | 7 (36.8%), printed | 8 (42.1%). Differs on m204 Nº do NCM (`semantic + catalog`) |
-| oracle | 18 | 6 (33.3%), printed | 6 (33.3%) |
-| sap_procosa | 45 | not printed; 0, because the report has no `arithmetic_proof` column | 17 (37.8%) |
-| sap_terumo | 67 | not printed; 15 (22.4%) | 16 (23.9%). Differs on m34 CFOP |
+| datasul | 19 | 7 (36,8%), impressa | 8 (42,1%). Difere em m204 Nº do NCM (`semantico + catalogo`) |
+| oracle | 18 | 6 (33,3%), impressa | 6 (33,3%) |
+| sap_procosa | 45 | não impressa; 0, porque o relatório não tem a coluna `prova_aritmetica` | 17 (37,8%) |
+| sap_terumo | 67 | não impressa; 15 (22,4%) | 16 (23,9%). Difere em m34 CFOP |
 
-NCM is the 8-digit product classification code. Some accepts are labelled `decided_by = unrecorded` (datasul 2, sap_procosa 3, sap_terumo 1). Objective evidence carried them, but the backfilled report cannot say which step it was. Both definitions count them as not transferring. Until the two definitions are unified, quote both and say which is which. See [KNOWN_ISSUES.md: two definitions of the generalization metric](KNOWN_ISSUES.md#24-two-definitions-of-the-generalization-metric).
+Alguns aceites têm `decidido_por` = `nao_registrado` (datasul 2, sap_procosa 3, sap_terumo 1). Uma evidência objetiva os sustentou, mas o relatório completado pelo preenchimento retroativo (backfill) não sabe dizer qual etapa foi. As duas definições os contam como não transferíveis. Enquanto as duas definições não forem unificadas, cite as duas e diga qual é qual. Ver [KNOWN_ISSUES.md, item 2.4](KNOWN_ISSUES.md#24-duas-definições-da-métrica-de-generalização).
 
-When two changes recover the same column, prefer the one that rests on transferring evidence: tax arithmetic (base × rate = value), official code catalogs, or check digits on CPF/CNPJ (individual and company taxpayer IDs) and NF-e access keys (the 44-digit key of an electronic invoice). Avoid one that adds header vocabulary.
+Quando duas mudanças recuperam a mesma coluna, prefira a que se apoia em evidência que se transfere: a aritmética fiscal (base de cálculo × alíquota = valor do imposto), os catálogos oficiais de códigos e os dígitos verificadores de CPF/CNPJ e da chave de acesso da NF-e. Evite a que acrescenta vocabulário de cabeçalho.
 
-## Why the accept gate stays at 0.90
+## Por que o limiar de aceite fica em 0,90
 
-The withheld rows invite the obvious move: lower the gate. The table below shows what that would ship. It is a what-if on the archived scores. At gate *g*, a row ships if it is accepted today, or if it is a `review` proposal with *g* ≤ `final_confidence` < 0.90. Review rows at or above 0.90 are held by a guard, not by the gate, so they are left out. There are 5 today, all pointing at empty client columns. Rows are then checked against the keys with the corrections applied.
+As linhas retidas sugerem o caminho óbvio: baixar o limiar. A tabela abaixo mostra o que isso entregaria. É uma simulação sobre as pontuações arquivadas. No limiar *g*, uma linha é entregue se hoje é `aceito`, ou se é uma proposta em `revisao` com *g* ≤ `confianca_final` < 0,90. As linhas em `revisao` com 0,90 ou mais são retidas por uma trava, não pelo limiar, e ficam de fora. Hoje são 5 (4 no datasul, 1 no sap_terumo), todas apontando para colunas vazias do cliente. As linhas são então conferidas contra os gabaritos, com as correções aplicadas.
 
-**Measured 2026-10-08. Keyed clients (datasul + oracle):**
+**Medido em 2026-10-09. Clientes com gabarito (datasul + oracle):**
 
-| Gate | Rows that would ship | Key-correct | Key-wrong | Not adjudicable by the key | Client column claimed twice |
+| Limiar | Linhas que seriam entregues | Certas pelo gabarito | Erradas pelo gabarito | Sem veredito do gabarito | Coluna do cliente usada duas vezes |
 |---|---|---|---|---|---|
-| 0.90 (today) | 37 | 32 | 0 | 5 | 0 |
-| 0.89 | 59 | 38 | 1 | 20 | 3 |
-| 0.86 | 114 | 41 | 2 | 71 | 27 |
-| 0.83 | 158 | 43 | 2 | 113 | 55 |
+| 0,90 (hoje) | 37 | 32 | 0 | 5 | 0 |
+| 0,89 | 59 | 38 | 1 | 20 | 3 |
+| 0,86 | 114 | 41 | 2 | 71 | 27 |
+| 0,83 | 158 | 43 | 2 | 113 | 55 |
 
-"Claimed twice" counts shipped rows that reuse a client column another shipped row of the same client already uses.
+"Usada duas vezes" conta as linhas entregues que reaproveitam uma coluna do cliente que outra linha entregue do mesmo cliente já usa.
 
-**Unkeyed clients (sap_procosa + sap_terumo)**, which nobody can adjudicate. Rows that would ship: 112 / 180 / 223 / 253 at the same four gates, with 0 / 11 / 28 / 45 claimed twice. Of those rows, 0 / 3 / 8 / 10 point at a client column with no data, so they would be fabrications. On the keyed side, one such row appears at 0.83.
+**Clientes sem gabarito (sap_procosa + sap_terumo)**, que ninguém consegue julgar. Linhas que seriam entregues: 112 / 180 / 223 / 253 nos mesmos quatro limiares, com 0 / 11 / 28 / 45 usadas duas vezes. Dessas linhas, 0 / 3 / 8 / 10 apontam para uma coluna do cliente sem dado, então seriam fabricações. No lado com gabarito, uma linha assim aparece em 0,83.
 
-Read it this way. Going to 0.83 recovers all 11 withheld-correct columns (32 → 43 delivered). It also ships 121 more keyed rows, of which 2 are known wrong and 108 no one can check. On the unkeyed clients it ships 141 more unverifiable rows, 10 of them onto empty columns. Precision on the rows the key can check falls from 32/32 to 43/45. Where two shipped rows claim the same client column, at most one can be right. The gate currently delivers nothing the keys can show to be wrong. That is worth more than 11 columns.
+Leia assim. Descer a 0,83 recupera as 11 colunas corretas retidas (32 → 43 entregues). Também entrega mais 121 linhas com gabarito, das quais 2 sabidamente erradas e 108 que ninguém consegue conferir. Nos clientes sem gabarito, entrega mais 141 linhas não verificáveis, 10 delas em colunas vazias. A precisão nas linhas que o gabarito consegue checar cai de 32/32 para 43/45. Onde duas linhas entregues usam a mesma coluna do cliente, no máximo uma pode estar certa. Hoje o limiar não entrega nada que o gabarito mostre estar errado. Isso vale mais que 11 colunas.
 
-Re-running the mapper with `--final-threshold 0.83` is a different experiment. The 0.8999 cap is `final_threshold - 0.0001`, and objective evidence counts as decisive at `final_threshold`. A lower flag value therefore moves the cap and the evidence bar as well as the line rows must cross. It also needs an online run.
+Reexecutar o mapeador com `--final-threshold 0.83` é outro experimento. O teto de 0,8999 é `final_threshold - 0.0001`, e a evidência objetiva conta como decisiva a partir de `final_threshold`. Um valor menor na opção move o teto e a régua da evidência, não só o ponto que as linhas precisam ultrapassar. E exige uma execução online.
 
-**The unlock is reviewer adjudication, not a looser constant.** sap_procosa is the measured proof. 26 verdicts produced 17 more delivered columns: 15 confirmed review proposals and 2 corrected rows. Apply now delivers 62 columns (45 accepted + 17 reviewer-confirmed). An apply run into a scratch file on 2026-10-08 printed `mapped_columns=62`. The `Adjudication Queue` sheet ranks the withheld proposals for exactly that work. Reports written by the current code have it; sap_procosa's older report does not.
+**O que destrava é o parecer do revisor, não uma constante mais frouxa.** sap_procosa é a prova medida. 26 pareceres renderam 17 colunas entregues a mais: 15 propostas em revisão confirmadas e 2 linhas corrigidas. O apply entrega hoje 62 colunas (45 aceitas + 17 confirmadas pelo revisor). Uma execução do apply para um arquivo de rascunho em 2026-10-09 imprimiu `colunas_mapeadas=62`. A aba `Fila de Revisão` ordena as propostas retidas justamente para esse trabalho. Os relatórios gravados pelo código atual têm essa aba; o relatório mais antigo de sap_procosa, não (a migração manteve o layout dele, só com `Mapeamentos` e `Metadados da Execução`).
 
-mapeval has no flag for this curve. Re-measure it with the snippet below before anyone proposes a threshold change. It reads the archived reports and takes about 10 s.
+O mapeval não tem opção para esta curva. Meça de novo com o trecho abaixo antes de alguém propor mudar o limiar. Ele lê os relatórios arquivados, em qualquer um dos dois esquemas, e leva cerca de 11 s.
 
 ```bash
 python - <<'EOF'
 from collections import Counter
 
-import openpyxl
-
+import report_schema
 from mapeval.cli import CLIENTS
-from mapeval.score import _vacuous_client_columns
+from mapeval.score import _vacuous_client_columns, read_mappings
 from mapeval.truth import load_answer_key
 
 def mappings(report):
-    book = openpyxl.load_workbook(report, read_only=True)
-    rows = list(book["Mappings"].iter_rows(values_only=True))
-    book.close()
-    col = {h: i for i, h in enumerate(rows[0])}
-    return [(m, r[col["client_column_number"]], r[col["status"]], r[col["final_confidence"]] or 0.0)
+    rows, col, schema = read_mappings(report)   # aba Mapeamentos (ou a legada Mappings)
+    def status(row):                             # aceito -> accepted, revisao -> review
+        return report_schema.internal_value("mappings", "status", row[col["status"]], schema)
+    return [(m, r[col["client_column_number"]], status(r), r[col["final_confidence"]] or 0.0)
             for m, r in enumerate(rows[1:], start=1)]
 
 for gate in (0.90, 0.89, 0.86, 0.83):
@@ -241,34 +265,44 @@ for gate in (0.90, 0.89, 0.86, 0.83):
         tally = keyed if key else unkeyed
         ships = [(m, int(c)) for m, c, status, final in mappings(report)
                  if status == "accepted" or (status == "review" and c is not None and gate <= final < 0.90)]
-        tally["ships"] += len(ships)
-        tally["claimed twice"] += len(ships) - len({c for _, c in ships})
-        tally["empty column"] += sum(c in empty for _, c in ships)
+        tally["entregues"] += len(ships)
         if key:
-            tally["right"] += sum(key.get(m) == c for m, c in ships)
-            tally["wrong"] += sum(m in key and key[m] != c for m, c in ships)
-            tally["not in key"] += sum(m not in key for m, _ in ships)
-    print(f"{gate:.2f}  keyed {dict(keyed)}  unkeyed {dict(unkeyed)}")
+            tally["certas"] += sum(key.get(m) == c for m, c in ships)
+            tally["erradas"] += sum(m in key and key[m] != c for m, c in ships)
+            tally["sem veredito"] += sum(m not in key for m, _ in ships)
+        tally["usada duas vezes"] += len(ships) - len({c for _, c in ships})
+        tally["coluna vazia"] += sum(c in empty for _, c in ships)
+    print(f"{report_schema.format_decimal_br(gate, 2)}  com gabarito {dict(keyed)}")
+    print(f"      sem gabarito {dict(unkeyed)}")
 EOF
 ```
 
-## Protocol for a proposed change
+## Protocolo para uma mudança proposta
 
-The ground rules in [README.md](../README.md#ground-rules) apply. In short: never tune against the four samples, no code may branch on a client name, the keys are a regression test and never a training set, and accept precision outranks recall.
+As [regras do projeto](../README.md#regras-do-projeto) valem aqui. Em resumo:
 
-### 1. Run the tests and record the current numbers
+- O escopo é o algoritmo de correspondência.
+- Os quatro clientes de amostra são exemplos de referência, nunca conjunto de treino. Nenhum código pode ramificar pelo nome de um cliente, nada se ajusta à mão contra eles, e toda mudança é validada deixando um cliente de fora. Os gabaritos são teste de regressão.
+- Prefira evidência que se transfere para um ERP nunca visto.
+- A fabricação é a falha que importa, e a precisão do aceite vale mais que o recall. O limiar de 0,90 fica; o caminho para entregar a faixa retida é o parecer do revisor.
+- Cobertura parcial é o desenho. Nunca use 227 como denominador, e nunca chame de "faltante", "lacuna" ou "incompleta" uma coluna que o cliente não tem.
+- Cite os ENTREGUES antes dos encontrados.
+- O `data/model.xlsx` não muda por enquanto.
+- O repositório tem dados reais de clientes e é só para uso interno.
+
+### 1. Rode os testes e anote os números atuais
 
 ```bash
 python -m pytest -q
-python -m mapeval --show-losses > /tmp/mapeval-before.txt
+python -m mapeval --show-losses > /tmp/mapeval-antes.txt
 ```
 
-### 2. Produce baseline and candidate reports outside `data/reports/`
+### 2. Gere relatórios de base e candidatos fora de `data/reports/`
 
-Never write candidate reports over the archived ones while you evaluate. mapeval reads fixed file names, so give each run its own root with the same layout:
+Nunca grave relatórios candidatos por cima dos arquivados enquanto avalia. O mapeval lê nomes de arquivo fixos, então dê a cada execução uma raiz própria com a mesma estrutura:
 
 ```bash
-run_all() {   # usage: run_all <root dir> [mapper flags...]
+run_all() {   # uso: run_all <pasta raiz> [opções do mapeador...]
   root=$1; shift
   mkdir -p "$root/data/reports"
   ln -sf "$PWD/data/clients" "$PWD/data/keys" "$root/data/"
@@ -279,136 +313,157 @@ run_all() {   # usage: run_all <root dir> [mapper flags...]
   done
 }
 
-BASE=/tmp/mapeval-base   # any directory outside the repo
+BASE=/tmp/mapeval-base   # qualquer pasta fora do repositório
 CAND=/tmp/mapeval-cand
 
-run_all "$BASE" --offline   # with the code BEFORE your change (e.g. after `git stash`)
-run_all "$CAND" --offline   # with your change applied
+run_all "$BASE" --offline   # com o código ANTES da mudança (por exemplo, depois de `git stash`)
+run_all "$CAND" --offline   # com a mudança aplicada
 python -m mapeval --root "$BASE"
 python -m mapeval --root "$CAND"
 ```
 
-These reports contain sample values from real client data. Keep the scratch roots on your machine and never commit them (see [README.md](../README.md#confidential-data)).
+Para cada cliente, o mapeador imprime `Arquivo gravado: ...` e a contagem por situação, por exemplo `aceito=12 revisao=215 sem_correspondencia=0` no datasul offline. Os relatórios saem no esquema em português.
 
-Compare like with like. The archived reports were made online. datasul, oracle and sap_terumo were regenerated on 2026-08-25. sap_procosa was generated on 2026-08-04 by older code (no `arithmetic_proof` column), so its 45 accepts are not a baseline for the current code. Always produce `BASE` with the unchanged code in the same mode as `CAND`.
+Esses relatórios contêm valores de amostra de dados reais de clientes. Mantenha as raízes de rascunho na sua máquina e nunca as inclua num commit (ver [dados confidenciais](../README.md#dados-confidenciais)).
 
-### 3. Compare the rows, not only the totals
+Compare execuções equivalentes. Os relatórios arquivados foram gerados online: datasul, oracle e sap_terumo em 2026-08-25; sap_procosa em 2026-08-04, por um código mais antigo (sem a coluna `prova_aritmetica`), então os 45 aceites dele não servem de base para o código atual. Os quatro foram depois migrados para o esquema em português sem reexecutar o mapeador, então as decisões são as das execuções online originais. Sempre gere `BASE` com o código sem a mudança, no mesmo modo de `CAND`.
 
-A change can lose one correct column and gain another, leaving the totals flat. This prints what moved on each client, using found and delivered pairs for keyed clients and accepted pairs for unkeyed ones:
+### 3. Compare as linhas, não só os totais
+
+Uma mudança pode perder uma coluna correta e ganhar outra, deixando os totais iguais. Este trecho imprime o que mudou em cada cliente: pares entregues e encontrados nos clientes com gabarito, pares aceitos nos sem gabarito. Ele lê relatórios nos dois esquemas.
 
 ```bash
 python - "$BASE" "$CAND" <<'EOF'
 import sys
 from pathlib import Path
 
-import openpyxl
-
+import report_schema
 from mapeval.cli import CLIENTS
 from mapeval.outcomes import Outcome
-from mapeval.score import score_report
+from mapeval.score import read_mappings, score_report
 from mapeval.truth import load_answer_key
 
 base, cand = Path(sys.argv[1]), Path(sys.argv[2])
 
 def accepted(root, report):
-    book = openpyxl.load_workbook(root / report, read_only=True)
-    rows = list(book["Mappings"].iter_rows(values_only=True))
-    book.close()
-    col = {h: i for i, h in enumerate(rows[0])}
+    rows, col, schema = read_mappings(root / report)   # aba Mapeamentos (ou a legada Mappings)
     return {(m, int(r[col["client_column_number"]]))
-            for m, r in enumerate(rows[1:], start=1) if r[col["status"]] == "accepted"}
+            for m, r in enumerate(rows[1:], start=1)
+            if report_schema.internal_value("mappings", "status", r[col["status"]], schema) == "accepted"}
 
 def correct(root, client, report, key):
     score = score_report(root / report, root / client, key)
-    found = {(r.model_column, r.client_column) for r in score.rows if r.outcome is Outcome.CORRECT}
-    return found, found & accepted(root, report)
+    found = score.correct_pairs
+    delivered = {(r.model_column, r.client_column) for r in score.rows
+                 if r.outcome is Outcome.CORRECT and r.status == "accepted"}
+    return delivered, found
 
 for name, (client, report, key_file) in CLIENTS.items():
     if not (base / report).exists() or not (cand / report).exists():
         continue
     if key_file is None:
-        pairs = {"accepted": (accepted(base, report), accepted(cand, report))}
+        pairs = {"aceitos": (accepted(base, report), accepted(cand, report))}
     else:
         key = load_answer_key(base / key_file, name)
-        (f0, d0), (f1, d1) = correct(base, client, report, key), correct(cand, client, report, key)
-        pairs = {"found": (f0, f1), "delivered": (d0, d1)}
+        (d0, f0), (d1, f1) = correct(base, client, report, key), correct(cand, client, report, key)
+        pairs = {"entregues": (d0, d1), "encontrados": (f0, f1)}
     for label, (old, new) in pairs.items():
-        print(f"{name:12} {label:9} {len(old):3} -> {len(new):3}"
-              f"  lost {sorted(old - new)}  gained {sorted(new - old)}")
+        print(f"{name:12} {label:11} {len(old):3} -> {len(new):3}"
+              f"  perdeu {sorted(old - new)}  ganhou {sorted(new - old)}")
 EOF
 ```
 
-Pairs are `(model column, client column)`. Pass `.` as the first argument to compare against the archived reports.
+Os pares são `(coluna do modelo, coluna do cliente)`. Passe `.` como primeiro argumento para comparar com os relatórios arquivados.
 
-### 4. Acceptance criteria
+### 4. Critérios de aceitação
 
-A change is an improvement only if all of these hold:
+Uma mudança só é melhoria se todas estas condições forem atendidas:
 
-- **Fabrications stay at 0.** mapeval exits 0 on `CAND`.
-- **Delivered does not drop** on either keyed client. Every pair it loses is explained. Found is secondary.
-- **Unadjudicable accepts and the precision lower bound do not get worse without explanation.** Every new out-of-key accept is listed and checked by someone who reads Portuguese invoice headers.
-- **No accepted-count regression on sap_procosa or sap_terumo.** These have no key, so a rising count is not proof of improvement either. Every newly accepted pair needs a look, and `vacuous accepts` must stay 0.
-- **The generalization share does not fall**, under both definitions. If a gain comes only from header vocabulary, say so.
-- **The move exceeds the noise.** A ±1–2 column change in the keyed total is not evidence by itself.
-- **The tests pass**, except pins you deliberately update (see [below](#regenerating-archived-reports)).
+- **As fabricações continuam em 0.** O mapeval sai com 0 em `CAND`.
+- **Os entregues não caem** em nenhum dos dois clientes com gabarito. Todo par perdido tem explicação. Os encontrados vêm em segundo lugar.
+- **Os aceites sem veredito e o limite inferior de precisão não pioram sem explicação.** Todo aceite novo fora do gabarito é listado e conferido por alguém que conhece os cabeçalhos fiscais.
+- **Nenhuma queda de aceitos em sap_procosa ou sap_terumo.** Eles não têm gabarito, então uma contagem que sobe também não prova melhoria. Todo par aceito novo precisa de uma olhada, e `aceites em coluna vazia` tem de continuar em 0.
+- **A fração de generalização não cai**, nas duas definições. Se um ganho vem só de vocabulário de cabeçalho, diga isso.
+- **A variação é maior que o ruído.** Uma variação de ±1–2 colunas no total com gabarito não é evidência por si só.
+- **Os testes passam**, menos as fixações que você atualiza de propósito (ver [abaixo](#regenerar-os-relatórios-arquivados)).
 
-### 5. Leave one client out
+### 5. Validação deixando um cliente de fora
 
-For each change, write down which client's rows motivated it. Then judge it only on the other three. A rule found by staring at datasul has to show its value on oracle's key, or at least do no harm on oracle, sap_procosa and sap_terumo. If it helps only the client that inspired it, it is a fit to that sample, so drop it. Justify a rule by something outside the samples: tax law, an official code table, a national standard such as a SPED field definition (SPED is the federal digital bookkeeping system). Do not open a de-para file to design a rule.
+Para cada mudança, anote quais linhas de qual cliente a motivaram. Depois julgue a mudança só nos outros três. Uma regra encontrada olhando o datasul precisa mostrar seu valor no gabarito do oracle, ou ao menos não fazer mal no oracle, no sap_procosa e no sap_terumo. Se ela só ajuda o cliente que a inspirou, é um ajuste àquela amostra: descarte. Justifique uma regra por algo fora das amostras: a legislação tributária, uma tabela oficial de códigos, um padrão nacional como a definição de um campo do SPED. Não abra um arquivo de-para para desenhar uma regra.
 
-No executable code may name a client. Today every hit of this search is a comment or docstring that explains a rule:
+Nenhum código executável pode citar um cliente. Hoje toda ocorrência desta busca é um comentário ou uma docstring que explica uma regra:
 
 ```bash
-grep -nEi 'datasul|oracle|procosa|terumo' invoice_mapper.py reference_catalog.py mapping_steps.py apply_invoice_mapping.py
+grep -nEi 'datasul|oracle|procosa|terumo' invoice_mapper.py reference_catalog.py mapping_steps.py apply_invoice_mapping.py \
+  report_schema.py cli_ptbr.py legacy_reports.py migrate_reports.py backfill_mapping_steps.py
 ```
 
 ### 6. Offline versus online
 
-| | Offline (`--offline`) | Online (default) |
+| | Offline (`--offline`) | Online (padrão) |
 |---|---|---|
-| Header scoring | lexical (`LexicalHeaderScorer`) | OpenAI embeddings |
-| Pass-2 evidence (arithmetic, catalogs, identifiers, resolver) | **not used**. Every model column left after pass 1 becomes `review` on its best header candidate, so in practice there is no `no_match` (0 on all four clients) | used, with gpt-4o-mini as resolver |
-| Reproducible | yes. Three runs of all four clients on 2026-10-08 produced identical `Mappings` sheets | not guaranteed: the resolver can churn `review` rows between runs (`backfill_mapping_steps.py` docstring) |
-| Cost and data exposure | none | paid API calls. Every model and client header is embedded. Each model column that reaches the resolver sends sample values from the model and up to 8 from each candidate client column (`--sample-size`). The archived runs record 167–211 resolver answers per client. See [README.md](../README.md#confidential-data) |
-| Runtime (measured 2026-10-08 on the development Mac) | datasul 36 s, oracle 17 s, sap_procosa 83 s, sap_terumo 12 s | not measured |
+| Pontuação dos cabeçalhos | léxica (`LexicalHeaderScorer`) | embeddings da OpenAI |
+| Evidência da segunda passagem (aritmética, catálogos, identificadores, resolvedor de IA) | **não é usada**. Toda coluna do modelo que sobra depois da primeira passagem vira `revisao` sobre o melhor candidato de cabeçalho, então na prática não há `sem_correspondencia` (0 nos quatro clientes) | usada, com gpt-4o-mini como resolvedor de IA |
+| Língua das justificativas | português: todas as frases são escritas pelo mapeador | as frases do mapeador em português; as justificativas do resolvedor de IA em inglês, porque o prompt é em inglês (502 nos quatro relatórios arquivados) |
+| Reprodutível | sim. Três execuções dos quatro clientes em 2026-10-09 gravaram abas `Mapeamentos`, `Colunas do Cliente sem Uso` e `Fila de Revisão` idênticas | não é garantido: o resolvedor pode mudar linhas em `revisao` de uma execução para outra (docstring de `backfill_mapping_steps.py`) |
+| Custo e exposição de dados | nenhum | chamadas pagas de API. Todo cabeçalho do modelo e do cliente vai para embeddings. Cada coluna do modelo que chega ao resolvedor manda valores de amostra do modelo e até 8 de cada coluna candidata do cliente (`--sample-size`). As execuções arquivadas registram de 167 a 211 respostas do resolvedor por cliente. Ver [dados confidenciais](../README.md#dados-confidenciais) |
+| Tempo (medido em 2026-10-09 no Mac de desenvolvimento) | datasul 40 s, oracle 17 s, sap_procosa 88 s, sap_terumo 13 s | não medido |
 
-Offline A/B is valid only for changes to pass 1 (see [KNOWN_ISSUES.md](KNOWN_ISSUES.md#215-offline-mode-is-a-different-pipeline)): header normalization and lexical scoring, the pass-1 guards, and the catalog audit and tax-trio demotion that follow it. A pass-2 change needs online runs of both `BASE` and `CAND`. Because online runs are not reproducible, inspect the moved rows rather than trusting a one-column delta.
+O A/B offline só vale para mudanças na primeira passagem (ver [KNOWN_ISSUES.md, item 2.15](KNOWN_ISSUES.md#215-o-modo-offline-é-outro-pipeline)): normalização dos cabeçalhos e pontuação léxica, as travas da primeira passagem, e a auditoria por catálogo e o rebaixamento pelo trio fiscal que vêm depois dela. Uma mudança na segunda passagem precisa de execuções online de `BASE` e de `CAND`. Como as execuções online não são reprodutíveis, inspecione as linhas que mudaram em vez de confiar numa diferença de uma coluna.
 
-Offline baseline for the current code, measured 2026-10-08, **for offline A/B only**: keyed delivered 26/56, found 39/56, fabrications 0. sap_procosa 27 accepted, sap_terumo 47 accepted. Offline found means little: every model column gets a header-only guess, so `MISSED` is always 0 and misses show up as `WRONG_COLUMN`. Compare delivered and accepted, and **never quote offline numbers as the product figure.**
+Linha de base offline do código atual, medida em 2026-10-09 com o `run_all` acima, **só para A/B offline**: ENTREGUES 26/56 com gabarito, encontrados 39/56, 0 fabricações; sap_procosa 27 aceitos, sap_terumo 47 aceitos. Encontrados offline quer dizer pouco: toda coluna do modelo recebe um palpite só de cabeçalho, então `PERDIDO` é sempre 0 e as perdas aparecem como `COLUNA_ERRADA`. Compare entregues e aceitos, e **nunca cite número offline como número do produto.**
 
-## Regenerating archived reports
+## Regenerar os relatórios arquivados
 
-When a change is accepted, regenerating `data/reports/` has two consequences.
+Quando uma mudança é aceita, regenerar `data/reports/` tem estas consequências.
 
-**Reviewer decisions are lost.** `invoice_mapper.py` `write_results` writes every reviewer column blank and overwrites the output file without asking. There is no tool to carry verdicts from an old report to a new one. Without `--output`, the mapper writes `mapping_<client file stem>.xlsx` to the current directory (for example `mapping_datasul_maio.xlsx`), so you must pass `--output data/reports/mapping_<client>_full.xlsx` explicitly to replace an archived report. **Do not regenerate `mapping_sap_procosa_full.xlsx` in place:** it holds the 26 verdicts. `backfill_mapping_steps.py` is the precedent for adding columns to an existing report in place without re-running the mapper. It has known bugs (see [KNOWN_ISSUES.md](KNOWN_ISSUES.md#11-backfill-reads-shifted-cells-so-resolver-is-absent-from-supported_by) and [no safety checks](KNOWN_ISSUES.md#317-backfill_mapping_stepspy-has-no-safety-checks-and-no-tests)). The proposed fix for lost verdicts is in [KNOWN_ISSUES.md](KNOWN_ISSUES.md#33-regenerating-a-report-erases-reviewer-verdicts). After regenerating, re-run apply for the matching `data/mapped/` workbook (see [DATA.md](DATA.md)).
+**Os pareceres do revisor se perdem.** `write_results`, em `invoice_mapper.py`, grava todas as colunas do revisor em branco e sobrescreve o arquivo de saída sem perguntar. Não há ferramenta que leve os pareceres de um relatório antigo para um novo. Sem `--output`, o mapeador grava `mapping_<nome do arquivo do cliente>.xlsx` na pasta atual (por exemplo `mapping_datasul_maio.xlsx`), então você precisa passar `--output data/reports/mapping_<cliente>_full.xlsx` explicitamente para substituir um relatório arquivado. **Nunca regenere `mapping_sap_procosa_full.xlsx`:** ele guarda os 26 pareceres e as 26 observações do revisor. A correção proposta para os pareceres perdidos está em [KNOWN_ISSUES.md, item 3.3](KNOWN_ISSUES.md#33-regenerar-um-relatório-apaga-os-pareceres-do-revisor). `backfill_mapping_steps.py` é o precedente de acrescentar colunas a um relatório existente sem reexecutar o mapeador, mas ele só se aplica a relatórios legados em inglês e recusa, sem gravar, um relatório no esquema em português, ou seja, qualquer um dos quatro arquivados hoje. Ele tem defeitos conhecidos (itens [1.1](KNOWN_ISSUES.md#11-o-backfill-lê-células-deslocadas-e-resolvedor_ia-não-aparece-em-apoiado_por) e [3.17](KNOWN_ISSUES.md#317-backfill_mapping_stepspy-tem-poucas-verificações-de-segurança-resolvido-em-parte) de KNOWN_ISSUES.md). Depois de regenerar, rode o apply de novo para a planilha correspondente de `data/mapped/` (ver [Como regenerar as saídas](DATA.md#como-regenerar-as-saídas) em DATA.md); as planilhas saem com os nomes de aba em português, uma mudança incompatível para quem lê os nomes antigos (ver [Planilhas mapeadas](DATA.md#planilhas-mapeadas-datamapped)).
 
-**Pinned tests fail by design.** `tests/test_mapeval.py` asserts today's absolute totals on the archived reports:
-
-| Line | Assertion |
-|---|---|
-| 124 | `total == 43` (found) |
-| 142–143 | corrections worth exactly 4, and `(strict, corrected) == (39, 43)` |
-| 190–191 | `found - delivered == 11`, and `(found, delivered) == (43, 32)` |
-| 203 | every withheld-correct row has `final_confidence < 0.90` |
-
-A legitimate improvement must update these deliberately, in the same commit as the regenerated reports, with the before/after figures and the moved pairs in the commit message. Also update the baseline on this page and the status in the README. Two invariants should survive any improvement and need investigating, not editing, if they fail: corrections are worth exactly 4 (line 142; line 143 is an absolute pin you do update), and nothing delivered points at an empty column (`test_no_report_delivers_a_column_with_no_data`). The withheld-below-0.90 test (line 203) fails if a guard, rather than the gate, starts holding back a correct row. That case needs investigating too. Some comments carry older figures (`tests/test_mapeval.py:179` says 42/56 and 31; `mapeval/truth.py:21` says 33/56 and 37/56). The assertions are authoritative.
-
-## Test suite
+**Um relatório legado se migra, não se regenera.** Um relatório no esquema legado em inglês (versão 2), como os gravados antes da tradução, passa para o esquema em português com `migrate_reports.py`, sem reexecutar o mapeador: nenhuma decisão, pontuação ou número muda, e os pareceres e observações do revisor ficam como estão. Foi assim que os quatro arquivados foram migrados.
 
 ```bash
-python -m pytest -q                              # all 137 tests
-python -m pytest -q tests/test_mapeval.py        # one file
-python -m pytest -q -k vacuous                   # by name
+python migrate_reports.py RELATORIO EXPORTACAO --dry-run   # migra e verifica num temporário, sem alterar o relatório
+python migrate_reports.py RELATORIO EXPORTACAO             # migra no próprio arquivo
 ```
 
-`pyproject.toml` sets `pythonpath = ["."]` and `testpaths = ["tests"]`. The suite ran in 6.6–6.9 s on 2026-10-08 (Python 3.13.1, pytest 8.4.1). About 5.5 s of that is the first datasul vacuity scan in `test_harness_reproduces_the_corrected_baseline`. No test touches the network: the OpenAI scorer and resolver tests inject fake clients, and the suite passes with `OPENAI_API_KEY` unset.
+Antes de traduzir, quando os hashes gravados conferem com a exportação, o modelo e o manifesto atuais, a ferramenta regenera as partes derivadas com o código atual e as compara com o arquivado; se algo diverge, recusa e não grava nada. As justificativas escritas pela IA ficam em inglês. O apply também lê um relatório legado diretamente: grava a planilha em português, copia as frases como estão e imprime um aviso de uma linha recomendando a migração. O mecanismo está em [ARCHITECTURE.md](ARCHITECTURE.md#relatórios-legados-legacy_reports-e-migrate_reports), e o que a migração fez nos quatro relatórios arquivados, em [DATA.md](DATA.md#migração-dos-relatórios-arquivados).
 
-| File | Tests | Covers |
+**Os testes fixados falham por desenho.** `tests/test_mapeval.py` afirma os totais absolutos de hoje nos relatórios arquivados:
+
+| Linha | Asserção |
+|---|---|
+| 222 | `total == 43` (encontrados) |
+| 240–241 | as correções valem exatamente 4, e `(strict, corrected) == (39, 43)` |
+| 290–291 | `found - delivered == 11`, e `(found, delivered) == (43, 32)` |
+| 303 | toda linha correta retida tem `final_confidence < 0.90` |
+
+Uma melhoria legítima precisa atualizar esses números de propósito, no mesmo commit dos relatórios regenerados, com os números de antes e de depois e os pares que mudaram na mensagem do commit. Atualize também a linha de base desta página e a situação no README. Duas invariantes devem sobreviver a qualquer melhoria e pedem investigação, não edição, se falharem: as correções valem exatamente 4 (linha 240; a 241 é uma fixação absoluta, que você atualiza) e nada entregue aponta para coluna vazia (`test_no_report_delivers_a_column_with_no_data`). O teste das retidas abaixo de 0,90 (linha 303) falha se uma trava, e não o limiar, passar a segurar uma linha correta. Esse caso também pede investigação. Alguns comentários trazem números antigos (`tests/test_mapeval.py:278` diz 42/56 e 31; `mapeval/truth.py:22` diz 33/56 e 37/56). Valem as asserções.
+
+**As provas da tradução também fixam o comportamento.** Duas suítes existem para provar que a tradução não mudou nada e por isso podem falhar com uma mudança deliberada de comportamento. `tests/test_model_input_golden.py` compara o que os modelos de IA recebem (prompt, esquema `DataMappingDecision`, entradas de embedding, payloads do resolvedor) e as decisões de uma execução pequena com `tests/fixtures/model_input_golden.json`. Só regenere esse arquivo (`python tests/test_model_input_golden.py --write`) quando o que os modelos recebem, ou as decisões dessa execução, mudarem de propósito, no mesmo commit e com a explicação; se o prompt mudar, mude junto o `PROMPT_VERSION`. Nunca regenere só para fazer o teste passar. Os testes `lento` de `tests/test_migrate_reports.py` exigem que a saída offline atual seja, célula a célula, a saída offline do código de 2ae4b6d migrada, e que a regeneração das partes derivadas do relatório legado do oracle não divirja. Uma mudança que altera decisões, provas ou frases offline os faz falhar: trate-os como as fixações acima, atualizando de propósito no mesmo commit e explicando.
+
+## Suíte de testes
+
+```bash
+python -m pytest -q                              # os 451 testes padrão, cerca de 10 s
+python -m pytest -q -m lento                     # as 10 provas lentas, cerca de 4 min
+python -m pytest -q -m "lento or not lento"      # os 461
+python -m pytest -q tests/test_mapeval.py        # um arquivo
+python -m pytest -q -k vacuous                   # pelo nome (os nomes dos testes estão em inglês)
+```
+
+`pyproject.toml` define `pythonpath = ["."]`, `testpaths = ["tests"]` e `addopts = "-m 'not lento'"`, que deixa de fora os testes com a marca `lento`; um `-m` na linha de comando substitui esse filtro. A suíte padrão rodou em 9,7 s em 2026-10-09 (Python 3.13.1, pytest 8.4.1). Cerca de 5,5 s disso é a primeira varredura de colunas vazias do datasul, em `test_harness_reproduces_the_corrected_baseline`. As 10 provas `lento` passaram em 3 min 48 s (5 min 14 s numa outra execução, com a máquina ocupada): elas extraem o código de 2ae4b6d com `git archive` e rodam o mapeador offline, o antigo e o atual, nos quatro clientes. Para reaproveitar uma saída offline do código de 2ae4b6d já gravada, aponte `MIGRACAO_BASELINE_EN` para a pasta com os arquivos `mapping_<cliente>_offline.xlsx`. Nenhum teste usa a rede: os testes do pontuador e do resolvedor da OpenAI injetam clientes falsos, e a suíte passa com `OPENAI_API_KEY` ausente.
+
+| Arquivo | Testes | Cobre |
 |---|---|---|
-| `tests/test_invoice_mapper.py` | 76 | The mapper on synthetic tables: pass-1 acceptance and margins, column exclusivity, header normalization and conflict/role detection, fiscal arithmetic and tax-trio discovery, the vacuity guard, NF-e check digits and value profiles, the OpenAI scorer and resolver with fakes, the report's reviewer columns and Run Metadata, the unmatched-column and Adjudication Queue logic, and the step columns (including that an offline run never claims `semantic`). |
-| `tests/test_mapeval.py` | 25 | Column-letter parsing, outcome precedence in `classify`, the non-discriminating-proof rule. 10 of them score the real archived reports and pin the baseline. They are skipped if `data/keys/de_para_oracle.xlsx` is absent. |
-| `tests/test_mapping_steps.py` | 17 | The step registry: unique ids, deciding-step ranking, resolver ranked weakest and non-transferring, every step documented. |
-| `tests/test_apply_invoice_mapping.py` | 12 | Apply on temporary workbooks: only accepted and confirmed rows are filled, `--include-review`, reviewer-status validation, the stale-input hash check, time values preserved, empty columns hidden, and the Coverage states. |
-| `tests/test_reference_catalog.py` | 7 | Catalog loading from `reference_data/`, code normalization (leading zeros, ERP CFOP suffixes), distinct coverage, a distinctive catalog rescuing a bogus header as a `review` row, and the rule that short CST domains cannot decide alone. |
+| `tests/test_report_schema.py` | 119 | O esquema em português e a CLI em português (`cli_ptbr`): nomes de aba válidos no Excel, cabeçalhos em snake_case ASCII, nenhum nome em português igual a um legado, valores distintos em cada enum; cobertura por introspecção (todo campo que o código grava tem nome em português); ida e volta interno → português → interno, leitura do legado, recusa do esquema misto, parecer do revisor nas duas línguas, nome de exibição, etapas, marcador da prova e vírgula decimal. 4 deles leem os relatórios arquivados e são pulados se eles não existem. |
+| `tests/test_invoice_mapper.py` | 111 | O mapeador em tabelas sintéticas: aceite e margens da primeira passagem, exclusividade de coluna, normalização de cabeçalho e detecção de conflito e de papel, aritmética fiscal e descoberta do trio fiscal, a trava de coluna vazia, dígitos verificadores da chave de acesso e perfis de valores, o pontuador e o resolvedor da OpenAI com clientes falsos, as colunas do revisor e os `Metadados da Execução`, as abas `Colunas do Cliente sem Uso` e `Fila de Revisão`, as colunas de etapas (inclusive que uma execução offline nunca alega `semantico`), as frases em português com vírgula decimal, a gravação no esquema em português (`.xlsx` e `.csv`) com ida e volta pelo `report_schema`, e a CLI em português. |
+| `tests/test_migrate_reports.py` | 76 + 10 `lento` | `migrate_reports` e `legacy_reports`: um relatório legado sintético migrado e comparado com o português esperado, idempotência, pareceres preservados, a verificação embutida que barra uma migração errada, recusa de arquivo misto ou que não é planilha, regeneração divergente recusada, texto vazio preservado; e, para cada frase inglesa legada, que a tradução é o que o mapeador atual grava. Os 10 `lento` comparam a saída offline atual com a do código de 2ae4b6d migrada, migram a versão legada do relatório de sap_procosa tirada de 2ae4b6d (26 pareceres preservados, o apply entrega 62 colunas) e conferem por regeneração a versão legada do de oracle. |
+| `tests/test_apply_invoice_mapping.py` | 54 | O apply sobre planilhas temporárias, com cada relatório gravado nos dois esquemas: só as linhas aceitas e confirmadas são preenchidas, `--include-review`, validação do parecer do revisor nas duas línguas, a verificação de hash contra entradas alteradas (inclusive com metadados em português e recusa do esquema misto), valores de hora preservados, colunas vazias ocultas, os estados da `Cobertura`, o banner em português, o aviso de relatório legado e a CLI em português. |
+| `tests/test_mapeval.py` | 35 | Leitura das letras de coluna, a precedência de resultados em `classify`, a regra da prova não decisiva nas duas línguas, os dois esquemas pontuados igual (sintético e real), recusa de relatório meio traduzido, a saída da CLI com vírgula decimal e os rótulos em português. 13 deles pontuam os relatórios arquivados reais e fixam a linha de base; são pulados se `data/keys/de_para_oracle.xlsx` não existe. |
+| `tests/test_mapping_steps.py` | 28 | O registro de etapas: ids únicos, ordem da etapa decisiva, o resolvedor como a mais fraca e não transferível, toda etapa documentada, e células de etapas lidas de um relatório em português dando a mesma decisão. |
+| `tests/test_backfill_mapping_steps.py` | 11 | O preenchimento retroativo: recusa, sem gravar, um relatório em português ou de esquema misto; completa um relatório legado exatamente como antes da tradução; continua recusando um relatório legado já completado; `--dry-run`; a prova não decisiva nas duas línguas; a ajuda em português. |
+| `tests/test_model_input_golden.py` | 10 | A entrada dos modelos de IA, byte a byte, contra `tests/fixtures/model_input_golden.json`: o prompt do resolvedor e o esquema `DataMappingDecision`, as entradas de embedding (com cabeçalho em branco e repetido), os payloads do resolvedor (conflitos de cabeçalho, `Unnamed column N`, `(occurrence N)`, evidência de catálogo e aritmética) e as decisões de uma execução pequena de `map_columns`. |
+| `tests/test_reference_catalog.py` | 7 | Carga dos catálogos de referência de `reference_data/`, normalização dos códigos (zeros à esquerda, sufixos de CFOP de ERP), cobertura distinta, um catálogo distintivo resgatando um cabeçalho enganoso como linha `revisao`, e a regra de que domínios curtos de CST não decidem sozinhos. |
+| **total** | **451 + 10 `lento`** | |
 
-`backfill_mapping_steps.py` and `update_reference_data.py` have no tests.
+`update_reference_data.py` não tem testes.
