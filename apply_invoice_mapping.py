@@ -36,10 +36,8 @@ from cli_ptbr import PortugueseArgumentParser
 from invoice_mapper import (
     ColumnRef,
     SheetTable,
+    describe_header_conflict_pt,
     file_sha256,
-    header_semantic_role,
-    header_tax_families,
-    normalize_header,
     semantic_header_conflict,
 )
 
@@ -162,61 +160,6 @@ def _display_name(text: object) -> object:
     embedding e da IA.
     """
     return report_schema.display_name_to_external(text)
-
-
-def _families_label(families: frozenset[str]) -> str:
-    """Famílias de tributo em maiúsculas, na ordem de ``semantic_header_conflict``."""
-    return ", ".join(family.upper() for family in sorted(families))
-
-
-def _qualifiers_label(qualifiers: set[str]) -> str:
-    """Qualificador do tributo como se fala no Brasil: ``ST`` ou, sem ele, ``normal``."""
-    labels = report_schema.TEXT_LABELS["tax_qualifier"]
-    names = sorted(qualifiers) or ["regular"]
-    return ", ".join(labels.get(name, name) for name in names)
-
-
-def _describe_header_conflict_pt(left: object, right: object) -> str | None:
-    """Gêmea em português de ``semantic_header_conflict``, para mensagens a pessoas.
-
-    O texto em inglês de ``semantic_header_conflict`` vai no payload enviado à
-    IA e não pode mudar; a decisão de recusar continua sendo dela. Esta função
-    refaz a mesma análise sobre os mesmos dados estruturados (famílias de
-    tributo, qualificador ST e papel semântico de cada cabeçalho) e descreve
-    o conflito em português, com os rótulos de ``report_schema.TEXT_LABELS``.
-    Devolve ``None`` quando não há conflito. Um teste confere que ela concorda
-    com a original em todos os casos cobertos.
-    """
-    left_families = header_tax_families(left)
-    right_families = header_tax_families(right)
-    if left_families and right_families and left_families.isdisjoint(right_families):
-        return (
-            "conflito de família de tributo "
-            f"({_families_label(left_families)} vs {_families_label(right_families)})"
-        )
-
-    left_qualifiers = set(normalize_header(left).split()) & {"st"}
-    right_qualifiers = set(normalize_header(right).split()) & {"st"}
-    if (
-        left_families
-        and right_families
-        and not left_families.isdisjoint(right_families)
-        and left_qualifiers != right_qualifiers
-    ):
-        return (
-            "conflito de qualificador do tributo "
-            f"({_qualifiers_label(left_qualifiers)} vs {_qualifiers_label(right_qualifiers)})"
-        )
-
-    left_role = header_semantic_role(left)
-    right_role = header_semantic_role(right)
-    if left_role is not None and right_role is not None and left_role != right_role:
-        roles = report_schema.TEXT_LABELS["header_role"]
-        return (
-            "conflito de papel semântico "
-            f"({roles.get(left_role, left_role)} vs {roles.get(right_role, right_role)})"
-        )
-    return None
 
 
 def _column_from_number(client: SheetTable, value: object) -> ColumnRef | None:
@@ -477,7 +420,7 @@ def _effective_columns(
             conflict = semantic_header_conflict(model_column.name, column.name)
             if conflict is not None:
                 description = (
-                    _describe_header_conflict_pt(model_column.name, column.name) or conflict
+                    describe_header_conflict_pt(model_column.name, column.name) or conflict
                 )
                 raise ValueError(
                     f"O mapeamento aceito {model_column.name!r} -> "
@@ -754,12 +697,12 @@ def build_parser() -> argparse.ArgumentParser:
             "modelo."
         )
     )
-    parser.add_argument("client", metavar="EXPORTACAO", help="Exportação .xlsx do cliente")
+    parser.add_argument("client", metavar="EXPORTACAO", help="exportação .xlsx do cliente")
     parser.add_argument(
         "mapping",
         metavar="RELATORIO",
         help=(
-            "Relatório de mapeamento gerado pelo invoice_mapper.py (esquema em português "
+            "relatório de mapeamento gerado pelo invoice_mapper.py (esquema em português "
             "ou legado em inglês)"
         ),
     )
@@ -767,47 +710,47 @@ def build_parser() -> argparse.ArgumentParser:
         "--model",
         default="data/model.xlsx",
         metavar="ARQUIVO",
-        help="Planilha do modelo base (padrão: %(default)s)",
+        help="planilha do modelo base (padrão: %(default)s)",
     )
     parser.add_argument(
-        "--output", required=True, metavar="ARQUIVO", help="Planilha .xlsx de saída"
+        "--output", required=True, metavar="ARQUIVO", help="planilha .xlsx de saída"
     )
     parser.add_argument(
         "--model-sheet",
         default="0",
         metavar="ABA",
-        help="Índice (a partir de 0) ou nome da aba do modelo",
+        help="índice (a partir de 0) ou nome da aba do modelo",
     )
     parser.add_argument(
         "--client-sheet",
         default="0",
         metavar="ABA",
-        help="Índice (a partir de 0) ou nome da aba do cliente",
+        help="índice (a partir de 0) ou nome da aba do cliente",
     )
     parser.add_argument(
         "--model-header-row",
         type=int,
         default=1,
         metavar="LINHA",
-        help="Linha do cabeçalho do modelo (contada a partir de 1)",
+        help="linha do cabeçalho do modelo (contada a partir de 1)",
     )
     parser.add_argument(
         "--client-header-row",
         type=int,
         default=1,
         metavar="LINHA",
-        help="Linha do cabeçalho do cliente (contada a partir de 1)",
+        help="linha do cabeçalho do cliente (contada a partir de 1)",
     )
     parser.add_argument(
         "--accepted-only",
         action="store_true",
-        help="Obsoleta: mapeamentos aceitos e confirmados pelo revisor já são o padrão",
+        help="obsoleta: mapeamentos aceitos e confirmados pelo revisor já são o padrão",
     )
     parser.add_argument(
         "--include-review",
         action="store_true",
         help=(
-            "Preenche também as propostas em revisão não confirmadas, numa planilha de "
+            "preenche também as propostas em revisão não confirmadas, numa planilha de "
             "revisão explicitamente insegura, que não deve ser entregue"
         ),
     )

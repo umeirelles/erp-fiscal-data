@@ -334,7 +334,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output",
         default="reference_data",
-        metavar="DIRETÓRIO",
+        metavar="DIRETORIO",
         help=(
             "diretório de saída dos CSV e do manifest.json "
             "(padrão: reference_data, relativo ao diretório atual)"

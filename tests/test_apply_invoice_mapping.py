@@ -27,12 +27,11 @@ from apply_invoice_mapping import (
     STATE_ABSENT,
     STATE_DELIVERED,
     STATE_PENDING,
-    _describe_header_conflict_pt,
     build_mapped_workbook,
     build_parser,
     main,
 )
-from invoice_mapper import semantic_header_conflict
+from invoice_mapper import describe_header_conflict_pt, semantic_header_conflict
 
 MAPPED_SHEET = "Dados Mapeados"
 COVERAGE_SHEET = "Cobertura"
@@ -542,7 +541,7 @@ def test_portuguese_header_conflict_agrees_with_the_model_input_text(left, right
         "semantic-role conflict": "conflito de papel semântico",
     }
     original = semantic_header_conflict(left, right)
-    portuguese = _describe_header_conflict_pt(left, right)
+    portuguese = describe_header_conflict_pt(left, right)
     assert portuguese == expected
     if original is None:
         assert portuguese is None
@@ -852,7 +851,7 @@ def test_command_line_is_in_portuguese(capsys) -> None:
     help_text = build_parser().format_help()
     assert help_text.startswith("uso: ")
     assert "opções:" in help_text
-    assert "Exportação .xlsx do cliente" in help_text
+    assert "exportação .xlsx do cliente" in help_text
     # As flags continuam em inglês.
     assert "--include-review" in help_text and "--output" in help_text
 

@@ -3524,19 +3524,19 @@ def build_parser() -> PortugueseArgumentParser:
         )
     )
     parser.add_argument(
-        "client", metavar="CLIENTE", help="Arquivo .xlsx exportado pelo cliente"
+        "client", metavar="EXPORTACAO", help="exportação .xlsx do cliente"
     )
     parser.add_argument(
         "--model",
         default="data/model.xlsx",
         metavar="ARQUIVO",
-        help="Planilha do modelo base (padrão: %(default)s)",
+        help="planilha do modelo base (padrão: %(default)s)",
     )
     parser.add_argument(
         "--output",
         metavar="ARQUIVO",
         help=(
-            "Relatório de mapeamento a gravar, .xlsx ou .csv "
+            "relatório de mapeamento a gravar, .xlsx ou .csv "
             "(padrão: mapping_<nome do arquivo do cliente>.xlsx)"
         ),
     )
@@ -3544,27 +3544,27 @@ def build_parser() -> PortugueseArgumentParser:
         "--model-sheet",
         default="0",
         metavar="ABA",
-        help="Índice (a partir de 0) ou nome da aba do modelo (padrão: %(default)s)",
+        help="índice (a partir de 0) ou nome da aba do modelo (padrão: %(default)s)",
     )
     parser.add_argument(
         "--client-sheet",
         default="0",
         metavar="ABA",
-        help="Índice (a partir de 0) ou nome da aba do cliente (padrão: %(default)s)",
+        help="índice (a partir de 0) ou nome da aba do cliente (padrão: %(default)s)",
     )
     parser.add_argument(
         "--model-header-row",
         type=int,
         default=1,
         metavar="LINHA",
-        help="Linha do cabeçalho na aba do modelo, contada a partir de 1 (padrão: %(default)s)",
+        help="linha do cabeçalho na aba do modelo, contada a partir de 1 (padrão: %(default)s)",
     )
     parser.add_argument(
         "--client-header-row",
         type=int,
         default=1,
         metavar="LINHA",
-        help="Linha do cabeçalho na aba do cliente, contada a partir de 1 (padrão: %(default)s)",
+        help="linha do cabeçalho na aba do cliente, contada a partir de 1 (padrão: %(default)s)",
     )
     parser.add_argument(
         "--name-threshold",
@@ -3572,7 +3572,7 @@ def build_parser() -> PortugueseArgumentParser:
         default=0.90,
         metavar="VALOR",
         help=(
-            "Pontuação mínima do cabeçalho para o aceite na primeira passagem, "
+            "pontuação mínima do cabeçalho para o aceite na primeira passagem, "
             "de 0 a 1 (padrão: %(default)s)"
         ),
     )
@@ -3582,7 +3582,7 @@ def build_parser() -> PortugueseArgumentParser:
         default=0.05,
         metavar="VALOR",
         help=(
-            "Vantagem mínima sobre o segundo melhor candidato de cabeçalho para o "
+            "vantagem mínima sobre o segundo melhor candidato de cabeçalho para o "
             "aceite na primeira passagem, de 0 a 1 (padrão: %(default)s)"
         ),
     )
@@ -3591,7 +3591,7 @@ def build_parser() -> PortugueseArgumentParser:
         type=float,
         default=0.90,
         metavar="VALOR",
-        help="Limiar de aceite da confiança final, de 0 a 1 (padrão: %(default)s)",
+        help="limiar de aceite da confiança final, de 0 a 1 (padrão: %(default)s)",
     )
     parser.add_argument(
         "--candidates",
@@ -3599,7 +3599,7 @@ def build_parser() -> PortugueseArgumentParser:
         default=10,
         metavar="N",
         help=(
-            "Quantidade de candidatos por critério na segunda passagem "
+            "quantidade de candidatos por critério na segunda passagem "
             "(padrão: %(default)s)"
         ),
     )
@@ -3609,7 +3609,7 @@ def build_parser() -> PortugueseArgumentParser:
         default=8,
         metavar="N",
         help=(
-            "Quantidade de valores de amostra por coluna em cada perfil "
+            "quantidade de valores de amostra por coluna em cada perfil "
             "(padrão: %(default)s)"
         ),
     )
@@ -3618,7 +3618,7 @@ def build_parser() -> PortugueseArgumentParser:
         default=os.getenv("OPENAI_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL),
         metavar="MODELO",
         help=(
-            "Modelo de embeddings da OpenAI usado para comparar os cabeçalhos "
+            "modelo de embeddings da OpenAI usado para comparar os cabeçalhos "
             "(padrão: %(default)s; a variável OPENAI_EMBEDDING_MODEL, se definida, "
             "substitui o padrão)"
         ),
@@ -3628,7 +3628,7 @@ def build_parser() -> PortugueseArgumentParser:
         default=os.getenv("OPENAI_MODEL", DEFAULT_LLM_MODEL),
         metavar="MODELO",
         help=(
-            "Modelo de linguagem da OpenAI usado como resolvedor de IA "
+            "modelo de linguagem da OpenAI usado como resolvedor de IA "
             "(padrão: %(default)s; a variável OPENAI_MODEL, se definida, substitui o "
             "padrão)"
         ),
@@ -3638,20 +3638,20 @@ def build_parser() -> PortugueseArgumentParser:
         default=str(Path(__file__).with_name("reference_data")),
         metavar="DIRETORIO",
         help=(
-            "Diretório com o manifest.json e os catálogos versionados de códigos "
+            "diretório com o manifest.json e os catálogos versionados de códigos "
             "fiscais (padrão: a pasta reference_data ao lado deste programa)"
         ),
     )
     parser.add_argument(
         "--no-reference-data",
         action="store_true",
-        help="Desativa a evidência dos catálogos oficiais de códigos fiscais",
+        help="desativa a evidência dos catálogos oficiais de códigos fiscais",
     )
     parser.add_argument(
         "--offline",
         action="store_true",
         help=(
-            "Usa só a comparação léxica dos nomes e dispensa a OpenAI (embeddings e "
+            "usa só a comparação léxica dos nomes e dispensa a OpenAI (embeddings e "
             "comparação de dados)"
         ),
     )
