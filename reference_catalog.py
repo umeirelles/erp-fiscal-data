@@ -1,4 +1,13 @@
-"""Load and evaluate versioned Brazilian fiscal-code reference catalogs."""
+"""Carrega e avalia os catálogos de referência versionados de códigos fiscais.
+
+Os catálogos são cópias das tabelas oficiais (CFOP, NCM, municípios do IBGE,
+CST e cClassTrib do IBS/CBS, CST do ICMS, do IPI e do PIS/COFINS, e CSOSN)
+gravadas em ``reference_data/``, cada uma com o seu SHA-256 registrado no
+``manifest.json``. Os ids de catálogo, as chaves do manifest e os nomes dos
+normalizadores ficam em inglês: são identificadores usados no código, e
+mudá-los alteraria o ``manifest.json`` e, com ele, o hash do manifest que cada
+relatório registra nos Metadados da Execução.
+"""
 
 from __future__ import annotations
 
@@ -22,7 +31,10 @@ def _normalized_header(value: object) -> str:
 
 
 def expected_catalogs(header: object) -> tuple[str, ...]:
-    """Return official code domains that a canonical header could represent."""
+    """Devolve os domínios de códigos oficiais que um cabeçalho canônico pode representar.
+
+    O cabeçalho canônico é o da coluna do modelo base, nunca o do cliente.
+    """
     normalized = _normalized_header(header)
     tokens = set(normalized.split())
     if "cfop" in tokens:
@@ -65,7 +77,7 @@ def normalize_code_value(
     width: int,
     normalizer: str,
 ) -> str | None:
-    """Normalize spreadsheet codes without losing leading-zero semantics."""
+    """Normaliza códigos vindos da planilha sem perder os zeros à esquerda."""
     if value is None or pd.isna(value):
         return None
     numeric_cell = isinstance(value, (int, float)) and not isinstance(value, bool)
@@ -118,7 +130,7 @@ class LoadedCatalog:
 
 
 class ReferenceCatalogs:
-    """Immutable catalog snapshots plus conservative column-level evidence."""
+    """Cópias imutáveis dos catálogos e a evidência conservadora que dão sobre uma coluna."""
 
     def __init__(self, directory: Path, catalogs: dict[str, LoadedCatalog]) -> None:
         self.directory = directory
@@ -136,11 +148,14 @@ class ReferenceCatalogs:
             actual_hash = hashlib.sha256(catalog_path.read_bytes()).hexdigest()
             if actual_hash != spec.sha256:
                 raise ValueError(
-                    f"Reference catalog checksum mismatch for {catalog_path}"
+                    "O checksum do catálogo de referência não confere com o "
+                    f"manifest.json: {catalog_path}"
                 )
             frame = pd.read_csv(catalog_path, dtype=str, keep_default_na=False)
             if "code" not in frame.columns:
-                raise ValueError(f"Reference catalog lacks a code column: {catalog_path}")
+                raise ValueError(
+                    f"O catálogo de referência não tem a coluna 'code': {catalog_path}"
+                )
             codes = frozenset(code.strip() for code in frame["code"] if code.strip())
             loaded[name] = LoadedCatalog(spec=spec, codes=codes)
         return cls(root, loaded)
@@ -167,14 +182,15 @@ class ReferenceCatalogs:
         coverage = len(valid) / nonempty_count if nonempty_count else 0.0
         unique_formatted = {code for code in formatted if code is not None}
         unique_valid = set(valid)
-        # Coverage weighted by how often each code happens to be used answers
-        # "what share of rows did we recognise", which is not the question.
-        # A CFOP column is a CFOP column even when two frequent ERP-generic
-        # codes are absent from the official table: oracle's CFO uses 17
-        # distinct codes, 15 of them official, but the two unofficial ones
-        # cover a third of its rows, so row coverage reads 0.667 while the
-        # column is unmistakably CFOP. Coverage over DISTINCT codes reads
-        # 0.882 and does not care how often a code repeats.
+        # A cobertura ponderada pela frequência de cada código responde à
+        # pergunta "que parcela das linhas reconhecemos", e a pergunta não é
+        # essa. Uma coluna de CFOP continua sendo de CFOP mesmo quando dois
+        # códigos genéricos do ERP, muito usados, não constam da tabela
+        # oficial: a coluna CFO do oracle usa 17 códigos distintos, 15 deles
+        # oficiais, mas os dois não oficiais ocupam um terço das linhas. A
+        # cobertura por linha dá 0,667, embora a coluna seja claramente de
+        # CFOP; a cobertura sobre os códigos DISTINTOS dá 0,882 e não depende
+        # de quantas vezes um código se repete.
         distinct_coverage = (
             len(unique_valid) / len(unique_formatted) if unique_formatted else 0.0
         )
@@ -182,9 +198,9 @@ class ReferenceCatalogs:
             not code.strip("0") for code in unique_valid
         )
         sample_factor = min(1.0, math.sqrt(nonempty_count / 5.0))
-        # Scored on distinct codes rather than rows: how often a client
-        # happens to repeat one code says nothing about whether the column
-        # belongs to this code domain.
+        # A pontuação usa os códigos distintos, não as linhas: quantas vezes
+        # um cliente repete o mesmo código não diz nada sobre a coluna
+        # pertencer ou não a este domínio de códigos.
         score = distinct_coverage * catalog.spec.specificity * sample_factor
         if all_zero_only:
             score = 0.0

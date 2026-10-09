@@ -4,9 +4,11 @@ __pycache__/
 .pytest_cache/
 *.py[cod]
 
-# Temporary audit reruns; published mapping workbooks remain tracked explicitly.
+# Reexecuções temporárias de auditoria; os relatórios de mapeamento publicados
+# continuam versionados explicitamente.
 mapping_*_review_v*.xlsx
 
-# Tool caches and coverage output; regenerated on demand.
+# Caches de ferramentas e dados de cobertura de testes; são gerados de novo
+# quando necessário.
 .coverage
 .ruff_cache/
