@@ -1,8 +1,8 @@
-"""Excel column-letter arithmetic.
+"""Aritmética de letras de coluna do Excel.
 
-The repo imports openpyxl's get_column_letter but never its inverse, and the
-de-para keys record their source columns as free text ("Coluna FY"), so the
-inverse has to exist here.
+O repositório importa o get_column_letter do openpyxl, mas nunca a função
+inversa, e os gabaritos de-para registram a coluna de origem como texto livre
+("Coluna FY"); por isso a inversa precisa existir aqui.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ _COLUNA = re.compile(r"coluna\s*([A-Za-z]+)", re.IGNORECASE)
 
 
 def column_letter_to_index(letters: str) -> int:
-    """Return the 1-based column index for an Excel column letter.
+    """Devolve o índice da coluna (a partir de 1) de uma letra de coluna do Excel.
 
     >>> column_letter_to_index("A"), column_letter_to_index("Z")
     (1, 26)
@@ -22,7 +22,7 @@ def column_letter_to_index(letters: str) -> int:
     """
     text = letters.strip()
     if not text or not text.isalpha():
-        raise ValueError(f"not an Excel column letter: {letters!r}")
+        raise ValueError(f"não é uma letra de coluna do Excel: {letters!r}")
     index = 0
     for char in text.upper():
         index = index * 26 + (ord(char) - ord("A") + 1)
@@ -30,9 +30,9 @@ def column_letter_to_index(letters: str) -> int:
 
 
 def index_to_column_letter(index: int) -> str:
-    """Inverse of :func:`column_letter_to_index`."""
+    """Inversa de :func:`column_letter_to_index`."""
     if index < 1:
-        raise ValueError(f"column index must be >= 1, got {index}")
+        raise ValueError(f"o índice da coluna deve ser >= 1; recebido {index}")
     letters = ""
     while index:
         index, remainder = divmod(index - 1, 26)
@@ -41,11 +41,11 @@ def index_to_column_letter(index: int) -> str:
 
 
 def parse_coluna_annotation(cell: object) -> int | None:
-    """Extract the 1-based column index from a de-para row-1 annotation.
+    """Extrai o índice da coluna (a partir de 1) de uma anotação da linha 1 do de-para.
 
-    Returns None when the cell carries no annotation. Tolerates the trailing
-    whitespace present in de_para_datasul.xlsx ("Coluna BV ") and ignores
-    free-text notes that merely mention a column in passing.
+    Devolve None quando a célula não traz anotação. Tolera o espaço no fim
+    que existe em de_para_datasul.xlsx ("Coluna BV ") e ignora notas de
+    texto livre que só citam uma coluna de passagem.
     """
     if cell is None:
         return None

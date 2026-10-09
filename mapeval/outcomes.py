@@ -1,8 +1,9 @@
-"""The five outcomes, which must never be collapsed.
+"""Os cinco resultados, que nunca podem ser reduzidos a um número só.
 
-Today's reporting cannot tell a correct absence from a miss, nor a wrong
-column from a fabrication. Those are different failures with different costs:
-on tax output a fabricated 'Base CBS' is far worse than an empty one.
+Os relatórios de hoje não distinguem uma ausência correta de uma coluna
+perdida, nem uma coluna errada de uma fabricação. São falhas diferentes, com
+custos diferentes: numa saída fiscal, uma 'Base CBS' fabricada é muito pior
+do que uma vazia.
 """
 
 from __future__ import annotations
@@ -11,21 +12,30 @@ import enum
 
 
 class Outcome(enum.Enum):
-    #: In the present-set, and the mapper picked that client column.
+    """Resultado de uma coluna do modelo na avaliação.
+
+    Os valores ficam em inglês porque são identificadores: nunca são gravados
+    em arquivo. A CLI imprime o rótulo em português de
+    ``report_schema.ENUMS["outcome"]``.
+    """
+
+    #: Está no conjunto presente, e o mapeador escolheu aquela coluna do cliente.
     CORRECT = "correct"
-    #: No counterpart exists and the mapper said no_match. A correct answer.
+    #: Não existe coluna correspondente e o mapeador respondeu ``no_match``
+    #: (``sem_correspondencia`` no relatório). Resposta certa.
     CORRECTLY_ABSENT = "correctly_absent"
-    #: A counterpart exists and the mapper said no_match.
+    #: Existe coluna correspondente e o mapeador respondeu ``no_match``.
     MISSED = "missed"
-    #: A counterpart exists and the mapper picked a different column.
+    #: Existe coluna correspondente e o mapeador escolheu outra.
     WRONG_COLUMN = "wrong_column"
-    #: Mapped, but the target client column carries no data at all.
+    #: Mapeada, mas a coluna do cliente escolhida não tem dado nenhum.
     FABRICATED = "fabricated"
-    #: Not in the key and not adjudicated. Credited to nothing, printed in full.
+    #: Fora do gabarito e sem veredito. Não conta a favor de nada e aparece
+    #: inteira na contagem.
     UNDETERMINED = "undetermined"
 
 
-#: Outcomes that may never get worse between runs.
+#: Resultados que nunca podem piorar de uma execução para outra.
 REGRESSION_GUARDED = (Outcome.CORRECT, Outcome.FABRICATED)
 
 
@@ -38,31 +48,34 @@ def classify(
     in_key: bool,
     delivered: bool = True,
 ) -> Outcome:
-    """Classify one model column's outcome.
+    """Classifica o resultado de uma coluna do modelo.
 
-    ``chosen_is_vacuous`` means the selected client column has zero populated
-    rows. Delivered, that is fabrication by construction - the downstream app
-    receives a column that looks mapped and is silently blank - so it is
-    checked before anything else.
+    ``chosen_is_vacuous`` indica que a coluna do cliente escolhida não tem
+    nenhuma linha preenchida. Se ela for entregue, isso é fabricação por
+    construção - o sistema que recebe a planilha ganha uma coluna que parece
+    mapeada e está em branco, sem aviso -, por isso essa condição é
+    verificada antes de qualquer outra.
 
-    ``delivered`` gates that. apply_invoice_mapping.py populates only accepted
-    and reviewer-confirmed rows, so a *review* proposal onto a vacuous column
-    never reaches the customer. It is a latent risk worth reporting (one
-    --include-review away) but it is not a fabrication, and conflating the two
-    overstates the delivered risk by an order of magnitude: the offline run
-    proposes 35 such rows while delivering none of them.
+    ``delivered`` condiciona essa regra. O apply_invoice_mapping.py preenche
+    só as linhas aceitas e as confirmadas pelo revisor, então uma proposta em
+    *revisão* sobre uma coluna vazia nunca chega ao cliente. É um risco
+    latente que vale reportar (está a um --include-review de distância), mas
+    não é fabricação, e confundir as duas coisas exagera o risco entregue em
+    uma ordem de grandeza: a execução offline propõe 35 linhas assim e não
+    entrega nenhuma.
 
-    Vacuity is *not* all-zero. An exempt operation has a zero base, and six of
-    oracle's all-zero columns are client-authored ground truth.
+    Coluna vazia *não* é coluna toda zerada. Uma operação isenta tem base de
+    cálculo zero, e seis das colunas totalmente zeradas de oracle são
+    gabarito escrito pelo próprio cliente.
     """
     if delivered and chosen_client_column is not None and chosen_is_vacuous:
         return Outcome.FABRICATED
 
     if not in_key:
         if chosen_client_column is None:
-            # Absent and unclaimed. Correct under partial coverage, but the key
-            # does not say so, and inventing that confirmation would inflate
-            # every rate in this harness.
+            # Ausente e não reivindicada. Estaria certo com cobertura parcial,
+            # mas o gabarito não diz isso, e inventar essa confirmação
+            # inflaria todas as taxas desta avaliação.
             return Outcome.UNDETERMINED
         return Outcome.UNDETERMINED
 
