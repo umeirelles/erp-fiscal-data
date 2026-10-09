@@ -1,140 +1,181 @@
-# cbs-base-fiscal: invoice column mapper
+# cbs-base-fiscal: mapeador de colunas de notas fiscais
 
-An internal tool for a Brazilian tax advisory firm. Clients send invoice spreadsheets exported from their ERP (SAP, Datasul, Oracle, ...), and every ERP and every client lays them out differently. The tool maps a client's columns onto the firm's fixed base model, `data/model.xlsx`. It never changes a value. A downstream application reads only the base model.
+Ferramenta interna de uma consultoria tributária. Os clientes mandam planilhas de notas fiscais exportadas do ERP (SAP, Datasul, Oracle...), e cada ERP e cada cliente organiza as colunas de um jeito. A ferramenta liga as colunas da exportação do cliente às colunas do modelo base fixo da consultoria, `data/model.xlsx`. Ela nunca altera um valor. A aplicação seguinte na cadeia lê só o modelo base.
 
-The base model is a deliberately oversized superset. It has 227 columns covering every field any client might send, and it starts with the new reform taxes CBS and IBS (the federal and subnational consumption taxes that replace PIS/COFINS and ICMS/ISS). A client fills only part of it, so an empty model column is often the correct answer.
+O modelo base é um superconjunto grande de propósito: 227 colunas, que cobrem qualquer campo que algum cliente possa mandar, a começar pelos tributos da reforma, CBS e IBS. Cada cliente preenche só uma parte dele, então uma coluna do modelo vazia muitas vezes é a resposta certa.
 
-## Pipeline at a glance
+## Visão geral do fluxo
 
 ```text
-data/clients/<export>.xlsx
+data/clients/<exportação>.xlsx
       │  python invoice_mapper.py
       ▼
-data/reports/mapping_<client>.xlsx     one row per model column: accepted / review / no_match
-      │  human review: reviewer columns in the Mappings sheet
+data/reports/mapping_<cliente>.xlsx    uma linha por coluna do modelo: aceito / revisao / sem_correspondencia
+      │  revisão humana: colunas do revisor na aba Mapeamentos
       │  python apply_invoice_mapping.py
       ▼
-data/mapped/<client>_mapped.xlsx       sheets: Mapped Data, Coverage
+data/mapped/<cliente>_mapped.xlsx      abas: Dados Mapeados, Cobertura
 
-python -m mapeval                      scores the archived reports against the answer keys (read-only)
+python -m mapeval                      pontua os relatórios arquivados contra os gabaritos (só leitura)
+python migrate_reports.py              passa um relatório legado em inglês para o esquema em português
 ```
 
-1. **Map** (`invoice_mapper.py` `map_columns`). Pass 1 accepts a client column on its header alone. It does this when the header similarity (OpenAI embeddings online, lexical matching offline) is at least 0.90, leads the runner-up by at least 0.05, and no guard objects. Pass 2 takes the remaining model columns and weighs the values: tax arithmetic (base × rate = value), official code catalogs, overlap with the model's sample values, and check digits on identifiers. An LLM (`gpt-4o-mini`) usually proposes the column, then local code recomputes the confidence and applies the 0.90 accept gate. Each model column ends up `accepted`, `review` or `no_match`, with a reason. The `supported_by` / `decided_by` / `vetoed_by` columns name the analysis steps behind the result; `mapping_steps.py` defines those steps. Confidences are decision signals, not calibrated probabilities.
-2. **Review.** A reviewer rules on rows in the report's `Mappings` sheet (`correct`, `incorrect` + `correct_client_column`, or `no_mapping_exists`). The `Adjudication Queue` sheet ranks the proposals the gate withheld. `Unmatched Client Columns` lists client columns whose data reached no model column. The archived procosa report predates both of these sheets and has only `Mappings` and `Run Metadata`.
-3. **Apply** (`apply_invoice_mapping.py`). Copies client values unchanged into model column order. It fills only accepted and reviewer-confirmed columns. Its `Coverage` sheet marks each model column as delivered, awaiting decision, or not in this client's export.
-4. **Measure** (`mapeval/`). Read-only scoring of the archived reports against the client-written answer keys. It exits 1 on any fabrication.
+1. **Mapear** (`invoice_mapper.py`, `map_columns`). A primeira passagem aceita uma coluna do cliente só pelo cabeçalho. Isso acontece quando a similaridade dos cabeçalhos (embeddings da OpenAI no modo online, comparação léxica no offline) é de pelo menos 0,90, supera a segunda melhor por uma margem de pelo menos 0,05 e nenhuma trava se opõe. A segunda passagem pega as colunas do modelo que sobraram e pesa os valores: aritmética fiscal (base de cálculo × alíquota = valor do imposto), catálogos oficiais de códigos, sobreposição com os valores de amostra do modelo e dígitos verificadores dos identificadores. Em geral o resolvedor de IA (`gpt-4o-mini`) propõe a coluna; depois o código local recalcula a confiança e aplica o limiar de aceite de 0,90. Cada coluna do modelo termina como `aceito`, `revisao` ou `sem_correspondencia`, com uma `justificativa`. As colunas `apoiado_por` / `decidido_por` / `vetado_por` nomeiam as etapas de evidência e as travas por trás do resultado; `mapping_steps.py` define essas etapas. As confianças são sinais de decisão, não probabilidades calibradas.
+2. **Revisar.** O revisor registra o parecer nas linhas da aba `Mapeamentos` do relatório: em `parecer_revisor`, `correto`, `incorreto` (com a coluna certa em `coluna_cliente_correta`) ou `inexistente` (o cliente não tem esse campo). Os valores em inglês dos relatórios legados (`correct`, `incorrect`, `no_mapping_exists`) continuam aceitos. A aba `Fila de Revisão` ordena as propostas que o limiar reteve. A aba `Colunas do Cliente sem Uso` lista as colunas do cliente cujos dados não chegaram a nenhuma coluna do modelo. O relatório arquivado de sap_procosa é anterior a essas duas abas e tem só `Mapeamentos` e `Metadados da Execução`.
+3. **Aplicar** (`apply_invoice_mapping.py`). Copia os valores do cliente sem alteração, na ordem das colunas do modelo. Preenche só as colunas aceitas e as confirmadas pelo revisor. A aba `Cobertura` marca cada coluna do modelo como `entregue`, `aguardando decisão` ou `não consta na exportação do cliente`.
+4. **Medir** (`mapeval/`). Pontuação, só de leitura, dos relatórios arquivados contra os gabaritos que os próprios clientes escreveram. Sai com código 1 se houver qualquer fabricação.
 
-## Repository layout
+## Estrutura do repositório
 
 ```text
-invoice_mapper.py          mapper CLI and algorithm: header scoring, evidence, accept gate, report writer
-mapping_steps.py           registry of the named evidence steps and guards used in supported_by/decided_by/vetoed_by
-reference_catalog.py       loads reference_data/, verifies checksums, scores a column against each code catalog
-apply_invoice_mapping.py   apply CLI: client export + mapping report -> mapped workbook
-backfill_mapping_steps.py  one-off: added the step columns in place to reports written before they existed
-update_reference_data.py   rebuilds reference_data/ from official sources (network)
-mapeval/                   evaluation harness, run as `python -m mapeval`
-docs/                      the four detailed docs listed under "Where to read next"
-tests/                     pytest suite; runs offline
-reference_data/            10 fiscal-code catalogs (CSV) + manifest.json with their checksums
-data/model.xlsx            the base model: 227 headers and 209 sample rows (immutable for now)
-data/clients/              four real client exports: datasul_maio, oracle, sap_procosa, sap_terumo
-data/keys/                 de-para files: datasul and oracle are column answer keys; procosa's is a record-level spec, not a key
-data/reports/              archived mapper reports, mapping_<client>_full.xlsx (procosa's holds 26 reviewer verdicts)
-data/mapped/               apply outputs, <client>_mapped.xlsx
-requirements.txt           dependency ranges, no lockfile (pyproject.toml holds only pytest settings)
+invoice_mapper.py          CLI e algoritmo do mapeador: pontuação de cabeçalhos, evidências, limiar de aceite, gravação do relatório
+mapping_steps.py           registro das etapas de evidência e das travas citadas em apoiado_por/decidido_por/vetado_por
+reference_catalog.py       carrega reference_data/, confere os checksums e pontua uma coluna contra cada catálogo
+apply_invoice_mapping.py   CLI do apply: exportação do cliente + relatório de mapeamento -> planilha mapeada
+report_schema.py           fronteira entre o vocabulário interno (em inglês) e o esquema em português dos arquivos:
+                           abas, cabeçalhos, chaves de metadados e valores; lê também o esquema legado em inglês
+cli_ptbr.py                PortugueseArgumentParser: ajuda e erros do argparse em português, usado por todas as CLIs
+legacy_reports.py          reescreve em português as frases do mapeador gravadas em inglês nos relatórios legados
+migrate_reports.py         CLI que migra um relatório legado em inglês (versão 2) para o esquema em português (versão 3), sem reexecutar
+backfill_mapping_steps.py  uso pontual: acrescentou as colunas de etapas, no próprio arquivo, a relatórios legados gravados antes delas
+update_reference_data.py   reconstrói reference_data/ a partir das fontes oficiais (rede)
+mapeval/                   avaliação, rodada com `python -m mapeval`
+docs/                      os quatro documentos detalhados listados em "Onde ler a seguir"
+tests/                     suíte do pytest; roda offline
+  test_report_schema.py            vocabulário do esquema em português, ida e volta interno -> português -> interno e o cli_ptbr
+  test_model_input_golden.py       garante que a entrada dos modelos de IA não mudou (ver "Idioma")
+  fixtures/model_input_golden.json a entrada dos modelos capturada antes da tradução
+  test_migrate_reports.py          migração dos relatórios legados; aqui ficam as provas marcadas `lento`
+  test_backfill_mapping_steps.py   preenchimento retroativo e a recusa de relatório no esquema em português
+  test_invoice_mapper.py, test_apply_invoice_mapping.py, test_mapeval.py,
+  test_mapping_steps.py, test_reference_catalog.py   um arquivo por módulo
+reference_data/            10 catálogos de códigos fiscais (CSV) + manifest.json com os checksums
+data/model.xlsx            o modelo base: 227 cabeçalhos e 209 linhas de amostra (imutável por enquanto)
+data/clients/              quatro exportações reais de clientes: datasul_maio, oracle, sap_procosa, sap_terumo
+data/keys/                 arquivos de-para: os de datasul e oracle são gabaritos de colunas; o de procosa é uma especificação no nível de registro, não um gabarito
+data/reports/              relatórios arquivados do mapeador, mapping_<cliente>_full.xlsx, no esquema em português (o de sap_procosa tem 26 pareceres do revisor)
+data/mapped/               saídas do apply, <cliente>_mapped.xlsx
+requirements.txt           faixas de versão das dependências, sem lockfile
+pyproject.toml             só a configuração do pytest, inclusive a marca `lento`
 ```
 
-A *de-para* ("from-to") is a correspondence table. Here it is a spreadsheet in which the client marked model columns with the letter of its own column that supplies them.
+Aqui o de-para é uma planilha em que o cliente anotou, nas colunas do modelo que a exportação dele abastece, a letra da coluna correspondente.
 
-## Setup
+## Instalação
 
-Developed and tested on Python 3.13.1 (pandas 2.3.3, openpyxl 3.1.5, openai 2.30.0).
+Desenvolvido e testado no Python 3.13.1 (pandas 2.3.3, openpyxl 3.1.5, openai 2.30.0).
 
 ```bash
 python3.13 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-export OPENAI_API_KEY='...'      # online mode only
+export OPENAI_API_KEY='...'      # só no modo online
 ```
 
-No code loads `.env`, so the key must be exported in the shell. `.env` and `.venv/` are git-ignored; never commit a key. The models default to `gpt-4o-mini` and `text-embedding-3-large`. Override them with `--llm-model` / `--embedding-model`, or with `OPENAI_MODEL` / `OPENAI_EMBEDDING_MODEL`.
+Nenhum código carrega o `.env`, então a chave precisa estar exportada no shell. `.env` e `.venv/` estão no `.gitignore`; nunca faça commit de uma chave. Os modelos padrão são `gpt-4o-mini` e `text-embedding-3-large`. Para trocá-los, use `--llm-model` / `--embedding-model` ou as variáveis `OPENAI_MODEL` / `OPENAI_EMBEDDING_MODEL`.
 
-Run every command from the repo root. The `--model` default (`data/model.xlsx`), mapeval's workbook paths and the reference-data refresh all resolve against the current directory.
+Rode todos os comandos a partir da raiz do repositório. O padrão de `--model` (`data/model.xlsx`), os caminhos das planilhas no mapeval e a atualização dos dados de referência são resolvidos a partir do diretório atual.
 
-## Everyday commands
+## Comandos do dia a dia
 
-**Mapping report, online** (calls OpenAI, costs money, sends client data out; see [Confidential data](#confidential-data)):
+**Relatório de mapeamento, online** (chama a OpenAI, tem custo e manda dados do cliente para fora; veja [Dados confidenciais](#dados-confidenciais)):
 
 ```bash
 python invoice_mapper.py data/clients/oracle.xlsx --output data/reports/mapping_oracle.xlsx
 ```
 
-Without `--output`, the report lands in the current directory as `mapping_<client file stem>.xlsx`. The writer overwrites existing files without asking and always starts the reviewer columns blank. Never point `--output` at a report that holds verdicts, such as `data/reports/mapping_sap_procosa_full.xlsx`. If the headers are not on row 1, pass `--client-header-row N` / `--model-header-row N` (1-based), and pass the same flags to apply. `python invoice_mapper.py --help` lists every option.
+No fim, o mapeador imprime o arquivo gravado e a contagem por situação (`aceito=… revisao=… sem_correspondencia=…`). Sem `--output`, o relatório vai para o diretório atual como `mapping_<nome do arquivo do cliente>.xlsx`. A gravação sobrescreve arquivos existentes sem perguntar e sempre começa com as colunas do revisor em branco. Nunca aponte `--output` para um relatório que tenha pareceres, como `data/reports/mapping_sap_procosa_full.xlsx`. Se os cabeçalhos não estiverem na linha 1, passe `--client-header-row N` / `--model-header-row N` (contadas a partir de 1), e passe as mesmas flags ao apply. `python invoice_mapper.py --help` lista todas as opções.
 
-**Mapping report, offline** (no network, no cost):
+**Relatório de mapeamento, offline** (sem rede e sem custo):
 
 ```bash
 python invoice_mapper.py data/clients/oracle.xlsx --offline --output /tmp/mapping_oracle_offline.xlsx
 ```
 
-Offline mode scores headers lexically and skips the LLM. Pass 1 still accepts on headers, but pass 2 never accepts or rejects: every model column left for it becomes `review` on its best header match. Use it for smoke tests and for work on header logic. Treat its reports as scratch output: don't commit them or quote their counts as a product figure.
+O modo offline pontua os cabeçalhos pela comparação léxica e dispensa o resolvedor de IA. A primeira passagem continua aceitando pelo cabeçalho, mas a segunda nunca aceita nem rejeita: toda coluna do modelo que sobra para ela vira `revisao` com o melhor cabeçalho que encontrou. Use-o em testes rápidos e no trabalho com a lógica de cabeçalhos. Trate esses relatórios como rascunho: não faça commit deles nem cite as contagens como número do produto.
 
-**Mapped workbook:**
+**Planilha mapeada:**
 
 ```bash
 python apply_invoice_mapping.py data/clients/sap_terumo.XLSX data/reports/mapping_sap_terumo_full.xlsx \
   --output data/mapped/sap_terumo_mapped.xlsx
 ```
 
-Apply refuses a report whose recorded SHA-256 of the client or model file differs from the files you pass. `--include-review` also fills unconfirmed proposals. That produces an explicitly unsafe workbook for review, never a deliverable.
+O apply imprime o arquivo gravado e `colunas_modelo=227 linhas_cliente=727 colunas_mapeadas=67`. Ele recusa um relatório cujo SHA-256 gravado da exportação ou do modelo (`sha256_cliente` / `sha256_modelo` em `Metadados da Execução`) não confere com os arquivos passados. `--include-review` preenche também as propostas não confirmadas; o resultado é uma planilha de revisão explicitamente insegura, nunca um entregável. O apply lê relatórios no esquema em português e no legado em inglês. Com um relatório legado, a planilha sai em português, mas as frases do mapeador são copiadas em inglês, como estão, e um aviso recomenda migrar o relatório.
 
-**Evaluation and tests:**
+**Migração de um relatório legado** (gravado antes da tradução, no esquema em inglês):
 
 ```bash
-python -m mapeval                     # all four clients
-python -m mapeval --show-losses       # list every withheld, missed and wrong-column row
-python -m mapeval --client datasul    # one client (repeatable)
-python -m pytest -q                   # 137 tests, offline, about 7 s
+git show 2ae4b6d:data/reports/mapping_oracle_full.xlsx > /tmp/mapping_oracle_legado.xlsx
+python migrate_reports.py /tmp/mapping_oracle_legado.xlsx data/clients/oracle.xlsx --dry-run
+python migrate_reports.py /tmp/mapping_oracle_legado.xlsx data/clients/oracle.xlsx
 ```
 
-mapeval scores the archived `data/reports/mapping_<client>_full.xlsx` files listed in `mapeval/cli.py` `CLIENTS`; it never runs the mapper. Some tests pin those archived figures, so a regenerated `_full` report fails them by design until someone updates the pins on purpose.
+O exemplo usa uma cópia do relatório de oracle como estava antes da tradução. `migrate_reports.py` reescreve o relatório no próprio arquivo, no esquema em português (versão 3), sem reexecutar o mapeador: nenhuma decisão, confiança ou ordem de linhas muda, os pareceres do revisor são preservados (só o valor passa para o português: `correct` vira `correto`), as observações do revisor ficam como estão e as justificativas escritas pela IA continuam em inglês. O segundo argumento é a exportação que gerou o relatório, usada para conferir as partes derivadas por regeneração antes de traduzir. `--dry-run` faz tudo num arquivo temporário, sem alterar o relatório. Um relatório que já está em português sai com código 0 sem ser gravado; um arquivo com nomes dos dois esquemas é recusado. Os quatro relatórios de `data/reports/` já foram migrados (`migrado_da_versao_esquema` = 2 em `Metadados da Execução`). Um relatório legado tão antigo que não tenha as colunas de etapas passa primeiro pelo `backfill_mapping_steps.py`, que só aceita o esquema legado, e depois pela migração. Como a migração funciona está em [ARCHITECTURE.md](docs/ARCHITECTURE.md#relatórios-legados-legacy_reports-e-migrate_reports); o que ela fez nos quatro relatórios arquivados, em [DATA.md](docs/DATA.md#migração-dos-relatórios-arquivados).
 
-**Refreshing reference data** (network; downloads from Brazilian government portals):
+**Avaliação e testes:**
+
+```bash
+python -m mapeval                     # os quatro clientes
+python -m mapeval --show-losses       # lista cada linha retida, perdida ou com coluna errada
+python -m mapeval --client datasul    # um cliente (a opção pode ser repetida)
+python -m pytest -q                   # 451 testes, offline, cerca de 10 s
+python -m pytest -m lento             # as 10 provas de ponta a ponta sobre os dados reais, cerca de 4 min
+```
+
+O mapeval pontua os relatórios arquivados `data/reports/mapping_<cliente>_full.xlsx` listados em `CLIENTS`, em `mapeval/cli.py`; ele nunca roda o mapeador. A saída é em português; a linha de totais é `TOTAL COM GABARITO  encontrados 43/56 (76,8%)   ENTREGUES 32/56 (57,1%)   fabricações 0`, seguida de uma linha que conta os 11 mapeamentos corretos encontrados mas não entregues. Alguns testes fixam esses números dos relatórios arquivados. Por isso um relatório `_full` regenerado faz esses testes falharem de propósito, até que alguém atualize os valores fixados conscientemente.
+
+O `pyproject.toml` deixa as provas marcadas `lento` fora da execução padrão. Elas rodam o mapeador atual e o de `2ae4b6d` (extraído com `git archive`) offline sobre as quatro exportações e conferem, célula a célula, que o relatório antigo migrado é igual a uma execução nova; também migram cópias legadas (de `2ae4b6d`) dos relatórios arquivados de sap_procosa e oracle. Rode-as depois de mexer no `report_schema.py`, no `legacy_reports.py`, no `migrate_reports.py` ou em qualquer frase que o mapeador grava. A suíte está descrita, arquivo por arquivo, em [EVALUATION.md](docs/EVALUATION.md#suíte-de-testes).
+
+**Atualização dos dados de referência** (rede; baixa dos portais do governo):
 
 ```bash
 python update_reference_data.py
 ```
 
-This rewrites `reference_data/` in place: CFOP (4-digit code for the type of operation), NCM (8-digit product classification), IBGE municipality codes, IBS/CBS tax-situation and classification codes, and the hard-coded CST/CSOSN tables (CST is the tax-situation code each tax line carries; CSOSN is its variant for small companies in the Simples Nacional regime). Review the diff, then commit the CSVs and `manifest.json` together. The mapper refuses to start if a catalog does not match its manifest checksum.
+Regrava `reference_data/` no próprio lugar: CFOP, NCM, códigos de município do IBGE, CST e cClassTrib do IBS/CBS, e as tabelas de CST/CSOSN que ficam fixas no código. Revise o diff e faça commit dos CSV junto com o `manifest.json`. O mapeador se recusa a começar se um catálogo não confere com o checksum do manifesto.
 
-## Ground rules
+## Idioma
 
-These come from the project owner and hold for every change.
+Tudo o que uma pessoa lê está em português: nomes de abas, cabeçalhos, chaves de metadados e valores dos relatórios e das planilhas mapeadas; as frases que o mapeador escreve (`justificativa`, `prova_aritmetica`, `motivo_retencao`...); a saída, a ajuda e os erros das CLIs; comentários, docstrings e estes documentos. Ficam em inglês, de propósito:
 
-1. **Scope is the matching algorithm**: header interpretation, evidence fusion and column assignment. A UI, reusing a client's mapping across deliveries, and scale/cost are out of scope for now.
-2. **The four sample clients are reference examples, not the product.** Production will see ERPs and layouts nobody here has seen. No code may branch on a client name, and nothing gets hand-tuned to these four. Validate a change leave-one-client-out. The keys are a regression test, never a training set.
-3. **Prefer evidence that transfers to an unseen ERP.** Tax arithmetic, official code catalogs, and check digits on CNPJ/CPF (company/individual taxpayer IDs) and NF-e (electronic invoice) access keys beat learned header vocabulary. The generalization metric to push up is the share of accepts that rest on header-independent evidence.
-4. **Fabrication is the failure that matters**, meaning a model column filled from data the client does not have. A fabricated `Base CBS` is far worse than an empty one, so accept precision outranks recall. The 0.90 gate stays. Reviewer adjudication, not a lower threshold, is how more of the withheld band gets delivered.
-5. **Partial coverage is the design.** `no_match` is often correct. Never use 227 as a denominator and never report "N of 227 filled". Describe a model column as *delivered*, *awaiting decision* or *not in this client's export*, never as "missing", a "gap" or "incomplete".
-6. **Quote delivered recall** when describing the product. Quote found recall only when discussing retrieval, and never present offline-mode numbers as the product figure.
-7. **`data/model.xlsx` is immutable for now.** Do not propose trimming or restructuring it.
+- **Identificadores.** Nomes de módulos, funções, variáveis e campos internos; nomes de arquivos e pastas (`data/clients`, `mapping_<cliente>_full.xlsx`, `<cliente>_mapped.xlsx`); flags das CLIs (`--offline`, `--output`); ids e arquivos dos catálogos em `reference_data/`; nomes das funções de teste. Em memória o código usa o vocabulário interno (`status == "accepted"`, etapa `semantic`). `report_schema.py` é a fronteira: traduz ao gravar e volta ao vocabulário interno ao ler.
+- **Entrada dos modelos de IA, byte a byte.** O prompt do resolvedor, o prefixo do embedding, o esquema `DataMappingDecision`, o payload enviado à IA, o texto de `semantic_header_conflict` e os nomes `Unnamed column N` e `(occurrence N)` de `ColumnRef`. Mudar qualquer um deles mudaria as pontuações e as decisões online sem que os demais testes offline percebessem. Por isso `tests/test_model_input_golden.py` compara tudo isso com `tests/fixtures/model_input_golden.json`, capturado antes da tradução; nunca regenere esse arquivo para fazer o teste passar. Nos arquivos, essas formas aparecem em português (`Coluna sem nome N`, `(ocorrência N)` e a descrição do conflito de cabeçalho feita por `describe_header_conflict_pt`).
+- **Justificativas escritas pela IA.** Como o prompt é em inglês, o resolvedor responde em inglês. As 502 justificativas da IA nos relatórios arquivados ficaram como estavam, e as próximas também virão em inglês.
+- **Texto que o código não escreve.** As 26 observações do revisor de sap_procosa estão intactas, byte a byte. Dados, cabeçalhos e valores de amostra do cliente passam sem alteração (por exemplo, `Net value` em sap_terumo).
 
-## Confidential data
+O apply e o mapeval leem o esquema em português (versão 3) e o legado em inglês (versão 2); um arquivo com nomes dos dois esquemas é recusado. O `backfill_mapping_steps.py` só se aplica ao legado e recusa, sem gravar, um relatório em português. Como a fronteira funciona está em [ARCHITECTURE.md](docs/ARCHITECTURE.md#língua-e-esquema-dos-arquivos).
 
-The repo contains real client data: CNPJs, CPFs, NF-e access keys and invoice values. It is shared with internal developers on purpose. Keep it on approved machines and never push it to a public remote. Online mode sends every model and client header to the OpenAI embeddings API. For each pass-2 model column it asks the chat model about, it also sends up to 8 sample values (`--sample-size`) and summary statistics (counts, min, quartiles, max) from each candidate client column and from the model, with no redaction. Confirm that the client permits this before an online run, and use `--offline` otherwise.
+**Mudança incompatível para quem lê as planilhas mapeadas:** as abas agora se chamam `Dados Mapeados` e `Cobertura` (antes `Mapped Data` e `Coverage`), a célula A1 de `Dados Mapeados` é `__info_mapeamento__` (antes `__mapping_info__`) e os rótulos e valores do bloco de decisão no topo de `Dados Mapeados` e da `Cobertura` estão em português. Qualquer leitor que procure os nomes antigos precisa ser atualizado. As colunas de dados, com os cabeçalhos do `model.xlsx`, e os valores das células não mudaram. O layout da planilha mapeada está em [DATA.md](docs/DATA.md#planilhas-mapeadas-datamapped), e a correspondência entre os nomes antigos e os novos, em [Nomes legados em inglês](docs/DATA.md#nomes-legados-em-inglês).
 
-## Current status
+## Regras do projeto
 
-*Found* means the mapper picked the client column the answer key names. *Delivered* means that pick also cleared the accept gate, so apply fills it.
+Vêm do dono do projeto e valem para qualquer mudança.
 
-- On the two clients with answer keys (datasul and oracle, 56 keyed model columns): **delivered 32/56 (57.1%)**, found 43/56 (76.8%), 0 fabrications. All 11 found-but-withheld columns are `review` rows below the 0.90 gate (final confidence 0.83 to 0.8999).
-- sap_procosa shows what adjudication unlocks: 26 reviewer verdicts took it from 45 accepted columns to 62 delivered (15 confirmed proposals + 2 corrections).
-- 137 tests pass, offline.
+1. **O escopo é o algoritmo de correspondência**: interpretação dos cabeçalhos, fusão das evidências e atribuição das colunas. Interface, reaproveitamento do mapeamento de um cliente entre entregas e escala/custo ficam de fora por enquanto.
+2. **Os quatro clientes de amostra são exemplos de referência, não o produto.** Em produção vão aparecer ERPs e layouts que ninguém aqui viu. Nenhum código pode ramificar pelo nome de um cliente, e nada é ajustado à mão para esses quatro. Valide cada mudança deixando um cliente de fora. Os gabaritos são teste de regressão, nunca conjunto de treino.
+3. **Prefira evidência que se transfere para um ERP nunca visto.** Aritmética fiscal, catálogos oficiais de códigos e dígitos verificadores de CNPJ/CPF e da chave de acesso da NF-e valem mais que vocabulário de cabeçalho aprendido. A métrica de generalização a melhorar é a fração dos aceites apoiados em evidência independente de cabeçalho.
+4. **Fabricação é a falha que importa**: preencher uma coluna do modelo com dados que o cliente não tem. Uma `Base CBS` fabricada é muito pior que uma vazia, então a precisão do aceite vale mais que o recall. O limiar de 0,90 fica. O caminho para entregar mais da faixa retida é o parecer do revisor, não um limiar mais baixo.
+5. **Cobertura parcial é o desenho.** `sem_correspondencia` muitas vezes é a resposta certa. Nunca use 227 como denominador nem escreva "N de 227 preenchidas". Descreva uma coluna do modelo como *entregue*, *aguardando decisão* ou *não consta na exportação do cliente*; nunca chame de "faltante", "lacuna" ou "incompleta" uma coluna que o cliente não tem.
+6. **Cite os ENTREGUES antes dos encontrados** ao descrever o produto. Cite o recall de encontrados só ao discutir a recuperação, e nunca apresente números do modo offline como número do produto.
+7. **`data/model.xlsx` é imutável por enquanto.** Não proponha enxugá-lo nem reestruturá-lo.
 
-## Where to read next
+## Dados confidenciais
 
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): how the mapper decides (passes, evidence steps, guards, the accept gate) and how apply builds the workbook.
-- [docs/DATA.md](docs/DATA.md): every workbook (model, client exports, keys, report sheets and columns, the mapped workbook) and the reference catalogs.
-- [docs/EVALUATION.md](docs/EVALUATION.md): mapeval outcomes, found versus delivered, key corrections, and how to validate a change.
-- [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md): known bugs and places where comments and code disagree.
+O repositório contém dados reais de clientes: CNPJs, CPFs, chaves de acesso de NF-e e valores de notas. Ele é compartilhado com desenvolvedores internos de propósito e é só para uso interno. Mantenha-o em máquinas aprovadas e nunca o envie para um repositório remoto público. O modo online manda todos os cabeçalhos do modelo e do cliente para a API de embeddings da OpenAI. Para cada coluna do modelo da segunda passagem sobre a qual consulta o resolvedor de IA, ele manda também até 8 valores de amostra (`--sample-size`) e estatísticas resumidas (contagens, mínimo, quartis, máximo) de cada coluna candidata do cliente e do modelo, sem anonimização. Confirme que o cliente permite isso antes de uma execução online; caso contrário, use `--offline`.
+
+## Situação atual
+
+*Encontrado* quer dizer que o mapeador escolheu a coluna do cliente que o gabarito indica. *Entregue* quer dizer que essa escolha também passou pelo limiar de aceite, então o apply a preenche.
+
+- Nos dois clientes com gabarito (datasul e oracle, 56 colunas do modelo com resposta no gabarito): **ENTREGUES 32/56 (57,1%)**, encontrados 43/56 (76,8%), 0 fabricações. As 11 colunas encontradas mas retidas são todas linhas `revisao` abaixo do limiar de 0,90 (confiança final de 0,8339 a 0,8999).
+- sap_procosa mostra o que o parecer do revisor destrava: 26 pareceres levaram o cliente de 45 colunas aceitas a 62 entregues (15 propostas confirmadas + 2 correções).
+- O repositório foi traduzido para o português sem mudar nenhuma decisão. Os quatro relatórios arquivados foram migrados para o esquema em português sem reexecutar o mapeador, e as quatro planilhas mapeadas foram regeneradas a partir deles. O mapeval dá os mesmos números de antes da tradução, e o apply entrega 19, 18, 62 e 67 colunas (datasul, oracle, sap_procosa, sap_terumo), como antes.
+- 451 testes passam offline em cerca de 10 s; as 10 provas `lento` passam à parte.
+
+## Onde ler a seguir
+
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): como o mapeador decide (passagens, etapas de evidência, travas, limiar de aceite) e como o apply monta a planilha mapeada.
+- [docs/DATA.md](docs/DATA.md): cada planilha (modelo base, exportações dos clientes, gabaritos, abas e colunas do relatório de mapeamento, planilha mapeada) e os catálogos de referência.
+- [docs/EVALUATION.md](docs/EVALUATION.md): resultados do mapeval, encontrados e entregues, correções do gabarito e como validar uma mudança.
+- [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md): defeitos conhecidos e pontos em que comentários e código discordam.
