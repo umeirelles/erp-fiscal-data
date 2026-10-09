@@ -1,28 +1,36 @@
-"""Add the named analysis steps to a report written before they existed.
+"""Acrescenta as etapas nomeadas da análise a um relatório gravado antes de elas existirem.
 
-Reports produced before ``mapping_steps.py`` carry the evidence but not the
-names: they record the catalog that matched, the arithmetic proof, the header
-score and whether the resolver ran, but never say which of those carried the
-decision. This reconstructs ``supported_by`` / ``decided_by`` / ``vetoed_by``
-from what is already stored, without re-running the mapper.
+Os relatórios produzidos antes de ``mapping_steps.py`` trazem a evidência, mas
+não os nomes: registram o catálogo que casou, a prova aritmética, a pontuação
+do cabeçalho e se o resolvedor de IA rodou, mas nunca dizem qual delas decidiu.
+Esta ferramenta reconstrói ``supported_by`` / ``decided_by`` / ``vetoed_by`` a
+partir do que já está gravado, sem rodar o mapeador de novo.
 
-That matters for more than cost. Re-running is not free of consequences: the
-resolver is non-deterministic, so a fresh run churns *review* rows an analyst
-may be part-way through, and for sap_procosa it would destroy 26 recorded
-reviewer decisions outright.
+Isso importa por mais do que o custo. Rodar de novo não é inofensivo: o
+resolvedor não é determinístico, então uma execução nova mexe nas linhas em
+*revisão* que um analista pode estar no meio de conferir, e, em sap_procosa,
+destruiria de uma vez os 26 pareceres de revisor já registrados.
 
-Two of the seven steps cannot always be recovered. ``profile`` and
-``identifier`` are folded into a single stored ``data_confidence``, so where
-that score exceeds the generic-profile ceiling with no catalog and no proof to
-explain it, something objective ran and the report does not say which. Those
-rows are marked ``unrecorded`` rather than guessed - a wrong provenance label
-is worse than an honest gap, because the whole point of these columns is to be
-able to trust what the tool says it did.
+Duas das sete etapas nem sempre podem ser recuperadas. ``profile`` e
+``identifier`` se fundem numa única ``data_confidence`` gravada; então, quando
+essa pontuação passa do teto do perfil genérico sem catálogo nem prova que a
+explique, alguma etapa objetiva rodou e o relatório não diz qual. Essas linhas
+são marcadas como ``unrecorded`` (não registrada) em vez de adivinhadas: um
+rótulo de procedência errado é pior do que uma lacuna assumida, porque a razão
+de ser destas colunas é poder confiar no que a ferramenta diz que fez.
 
-Arithmetic is recovered rather than read: tax trios are discovered from the
-client's own columns, so the proof can be recomputed offline for free. That is
-what lets sap_procosa - whose report predates the ``arithmetic_proof`` column
-entirely - still get its arithmetic support named.
+A aritmética é recalculada, não lida: os trios fiscais (base, alíquota, valor)
+são descobertos nas próprias colunas do cliente, então a prova pode ser refeita
+offline e sem custo. É isso que permite que sap_procosa, cujo relatório é
+anterior à própria coluna ``arithmetic_proof``, ainda tenha o apoio aritmético
+nomeado.
+
+A ferramenta só se aplica a relatórios legados em inglês, anteriores às colunas
+de etapas, e grava valores legados (``unrecorded``, ``catalog (agrees)``),
+porque a saída continua sendo um relatório legado. Ela recusa, sem gravar
+nada, um relatório no esquema em português e um que já tenha as colunas de
+etapas. A ordem é preencher retroativamente primeiro e só depois migrar o
+relatório para o esquema em português (``migrate_reports.py``).
 """
 
 from __future__ import annotations
@@ -33,6 +41,8 @@ from pathlib import Path
 
 import openpyxl
 
+import report_schema
+from cli_ptbr import PortugueseArgumentParser
 from invoice_mapper import (
     SheetTable,
     client_column_is_vacuous,
@@ -43,19 +53,24 @@ from invoice_mapper import (
 )
 from mapping_steps import deciding_step, format_steps
 
-#: An objective step ran and the report is too old to say which.
+#: Uma etapa objetiva rodou e o relatório é antigo demais para dizer qual.
+#: Valor legado, gravado em inglês como nos relatórios que esta ferramenta
+#: completa; a migração o converte depois para ``nao_registrado``.
 UNRECORDED = "unrecorded"
 
-#: Above this, something other than generic shape similarity is in play - it is
-#: the ceiling invoice_mapper puts on generic_profile_score.
+#: Acima disto, há algo além da semelhança genérica de formato em jogo: é o
+#: teto que o invoice_mapper impõe a generic_profile_score.
 GENERIC_PROFILE_CEILING = 0.84
 
-#: What catalog evidence must score to count as deciding rather than merely
-#: agreeing. invoice_mapper.catalog_evidence_is_distinctive applies the same
-#: bar to a live run; the stored confidence already carries the specificity
-#: discount that pushes collision-prone domains such as CST below it.
+#: Pontuação que a evidência de catálogo precisa atingir para contar como
+#: decisiva, e não só como concordância. A intenção é aplicar a mesma barra
+#: que invoice_mapper.catalog_evidence_is_distinctive aplica numa execução
+#: nova; a confiança gravada já traz o desconto de especificidade que deixa
+#: abaixo dela os domínios sujeitos a colisão, como o CST. Na prática as duas
+#: regras não coincidem (docs/KNOWN_ISSUES.md, item 2.3).
 DISTINCTIVE_CATALOG_SCORE = 0.90
 
+#: Colunas de etapas, com os nomes legados em inglês, na ordem em que são inseridas.
 NEW_COLUMNS = ("decided_by", "supported_by", "vetoed_by")
 
 
@@ -66,8 +81,42 @@ def _number(value: object) -> float:
         return 0.0
 
 
+def _refuse_unless_legacy(book: openpyxl.Workbook, report_path: Path) -> None:
+    """Encerra com ``SystemExit``, sem gravar nada, se o relatório não está no esquema legado.
+
+    A referência é o cabeçalho da primeira aba, a mesma que o ``apply`` lê pelo
+    índice 0. Sem esta checagem, um relatório no esquema em português, que não
+    tem nenhuma das colunas legadas ``decided_by`` / ``supported_by`` /
+    ``vetoed_by``, passaria pela recusa de relatório já preenchido e ganharia
+    três colunas legadas vazias, gravadas no próprio arquivo, com saída 0.
+
+    Também recusa um relatório de esquema misto ou não identificado, inclusive
+    pelos nomes das abas: um cabeçalho legado ao lado de uma aba "Metadados da
+    Execução" faria ``_header_step`` não achar "Run Metadata" e rotular tudo
+    como ``lexical`` sem aviso.
+    """
+    header = [cell.value for cell in book.worksheets[0][1]]
+    try:
+        schema = report_schema.detect_schema(header)
+        if schema == report_schema.LEGACY_EN:
+            for kind in ("mappings", "run_metadata"):
+                report_schema.find_sheet(book.sheetnames, kind, schema)
+    except ValueError as error:
+        raise SystemExit(f"{report_path.name}: {error} Nada foi gravado.") from None
+    if schema == report_schema.PT_BR:
+        raise SystemExit(
+            f"{report_path.name} está no esquema em português; o preenchimento "
+            "retroativo só se aplica a relatórios legados em inglês, anteriores às "
+            "colunas de etapas. Nada foi gravado."
+        )
+
+
 def _header_step(book: openpyxl.Workbook) -> str:
-    """Which header scorer produced this report, per its own run metadata."""
+    """Qual comparação de cabeçalhos (léxica ou semântica) gerou o relatório, segundo os metadados da execução."""
+    # Aba, chave e sentinela com os nomes legados em inglês. O mapeador grava
+    # "offline", e não "disabled", numa execução sem embeddings, então um
+    # relatório offline sai rotulado como semantic (docs/KNOWN_ISSUES.md, item
+    # 3.17). Mantido de propósito: corrigir mudaria a saída.
     if "Run Metadata" not in book.sheetnames:
         return "lexical"
     for row in book["Run Metadata"].values:
@@ -77,18 +126,28 @@ def _header_step(book: openpyxl.Workbook) -> str:
 
 
 def backfill(report_path: Path, client_path: Path, *, dry_run: bool = False) -> dict[str, int]:
+    """Preenche as colunas de etapas de um relatório legado e devolve a contagem.
+
+    Grava no próprio arquivo, a menos que ``dry_run`` seja verdadeiro. Antes de
+    ler a exportação do cliente ou de alterar qualquer célula, recusa com
+    ``SystemExit`` um relatório no esquema em português (ou de esquema misto)
+    e um relatório legado que já tenha as colunas de etapas.
+    """
     book = openpyxl.load_workbook(report_path)
+    _refuse_unless_legacy(book, report_path)
     sheet = book["Mappings"]
     header = [cell.value for cell in sheet[1]]
     if any(name in header for name in NEW_COLUMNS):
-        raise SystemExit(f"{report_path.name} already carries the step columns")
+        raise SystemExit(f"{report_path.name} já tem as colunas de etapas. Nada foi gravado.")
 
     client = SheetTable.from_excel(client_path, 0, 0)
     trios = discover_client_tax_trios(client)
     header_step = _header_step(book)
     index = {name: position for position, name in enumerate(header) if name}
 
-    # Match a fresh report's layout so old and new files read the same way.
+    # Segue o layout de um relatório novo, para que arquivos antigos e novos
+    # sejam lidos do mesmo jeito. Na prática o layout resultante é outro
+    # (docs/KNOWN_ISSUES.md, item 5.1).
     anchor = next(
         (index[name] + 1 for name in ("arithmetic_proof", "reviewer_status") if name in index),
         len(header) + 1,
@@ -97,6 +156,11 @@ def backfill(report_path: Path, client_path: Path, *, dry_run: bool = False) -> 
     for offset, name in enumerate(NEW_COLUMNS):
         sheet.cell(1, anchor + offset).value = name
 
+    # ``index`` não é recalculado depois da inserção: todo campo à direita da
+    # âncora passa a ser lido três células à esquerda de onde está, e por isso
+    # o resolvedor não é creditado quando a âncora é arithmetic_proof
+    # (docs/KNOWN_ISSUES.md, item 1.1). Mantido de propósito: corrigir mudaria
+    # a saída.
     def stored(row: int, name: str) -> object:
         return sheet.cell(row, index[name] + 1).value if name in index else None
 
@@ -114,28 +178,30 @@ def backfill(report_path: Path, client_path: Path, *, dry_run: bool = False) -> 
         tally["rows"] += 1
 
         steps: list[str] = []
-        #: Evidence that agrees but is too weak to carry the decision.
+        #: Evidência que concorda, mas é fraca demais para decidir.
         corroborating: list[str] = []
         if _number(stored(excel_row, "llm_final_confidence")) > 0:
             steps.append("resolver")
         if _number(stored(excel_row, "name_confidence")) > 0:
             steps.append(header_step)
-        # Match the live path, which scores catalog evidence through
-        # catalog_evidence_is_distinctive and zeroes anything that does not
-        # clear it. A two-digit CST covers its table completely and still says
-        # little, because the same codes appear across PIS, COFINS and IPI -
-        # which is what the specificity discount already encodes in the stored
-        # confidence. Crediting raw coverage here would make a backfilled
-        # report disagree with a freshly generated one about the same evidence.
+        # Segue o caminho de uma execução nova, que pontua a evidência de
+        # catálogo com catalog_evidence_is_distinctive e zera tudo o que não
+        # passa nessa barra. Um CST de dois dígitos cobre a tabela inteira e
+        # ainda assim diz pouco, porque os mesmos códigos aparecem no PIS, na
+        # COFINS e no IPI; é isso que o desconto de especificidade já embute na
+        # confiança gravada. Creditar a cobertura bruta aqui faria um relatório
+        # preenchido retroativamente discordar de um gerado agora sobre a mesma
+        # evidência.
         catalog_name = stored(excel_row, "catalog_name")
         catalog_score = _number(stored(excel_row, "catalog_confidence"))
-        # The old 'method' field records which branch the mapper actually took,
-        # which is better evidence than re-deriving it. Where it says catalog,
-        # the catalog decided and no threshold of ours should overrule it.
-        # Otherwise the catalog is incidental agreement, and has to clear the
-        # same distinctiveness bar a live run applies - a two-digit CST covers
-        # its table completely and still says little, because the same codes
-        # appear across PIS, COFINS and IPI.
+        # O campo antigo 'method' registra o ramo que o mapeador de fato
+        # seguiu, o que é evidência melhor do que deduzi-lo de novo. Quando ele
+        # diz catalog, o catálogo decidiu e nenhum limiar nosso deve
+        # contrariá-lo. Caso contrário, o catálogo é só uma concordância
+        # incidental e precisa passar na mesma barra de distinção que uma
+        # execução nova aplica: um CST de dois dígitos cobre a tabela inteira e
+        # ainda assim diz pouco, porque os mesmos códigos aparecem no PIS, na
+        # COFINS e no IPI.
         if catalog_name not in (None, ""):
             if str(stored(excel_row, "method")).strip() == "catalog" or (
                 catalog_score >= DISTINCTIVE_CATALOG_SCORE
@@ -144,17 +210,20 @@ def backfill(report_path: Path, client_path: Path, *, dry_run: bool = False) -> 
             elif catalog_score > 0:
                 corroborating.append("catalog")
 
-        # Recomputed, not read: trios come from the client's own columns, so
-        # this works even where the report has no arithmetic_proof column.
+        # Recalculada, não lida: os trios vêm das próprias colunas do cliente,
+        # então isto funciona mesmo quando o relatório não tem a coluna
+        # arithmetic_proof. A frase da prova pode estar em inglês ou em
+        # português; proof_is_decisive reconhece o marcador de prova não
+        # decisiva nas duas línguas.
         proof = _trio_proof_text(trio_corroboration(trios, str(model_column), client_index))
-        if proof and "does not single out" not in proof:
+        if report_schema.proof_is_decisive(proof):
             steps.append("arithmetic")
             tally["arithmetic"] += 1
 
-        # Something objective beat generic shape similarity. If the catalog
-        # score accounts for it exactly, that is the explanation and there is
-        # nothing unrecorded - the two are the same number because the catalog
-        # is what produced it.
+        # Alguma evidência objetiva superou a semelhança genérica de formato.
+        # Se a pontuação do catálogo explica isso exatamente, essa é a
+        # explicação e não há nada sem registro: os dois números são iguais
+        # porque foi o catálogo que produziu a pontuação.
         data_score = _number(stored(excel_row, "data_confidence"))
         explained_by_catalog = catalog_score > 0 and abs(data_score - catalog_score) < 1e-6
         objective_ran = data_score > GENERIC_PROFILE_CEILING
@@ -179,7 +248,8 @@ def backfill(report_path: Path, client_path: Path, *, dry_run: bool = False) -> 
         ranked = [step for step in steps if step != UNRECORDED]
         decided = deciding_step(ranked)
         if UNRECORDED in steps and decided in ("", header_step, "resolver"):
-            # Something objective outranked the header match; we cannot say what.
+            # Alguma evidência objetiva superou o casamento de cabeçalho; não
+            # dá para dizer qual.
             decided = UNRECORDED
         rendered = format_steps(ranked)
         for weak in corroborating:
@@ -198,18 +268,30 @@ def backfill(report_path: Path, client_path: Path, *, dry_run: bool = False) -> 
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("report", help="mapping report to backfill in place")
-    parser.add_argument("client", help="the client export it was produced from")
-    parser.add_argument("--dry-run", action="store_true", help="report without writing")
+    # A docstring do módulo é a ajuda; o formatador cru mantém os parágrafos.
+    parser = PortugueseArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "report",
+        metavar="RELATORIO",
+        help="relatório de mapeamento legado, em inglês, a completar no próprio arquivo",
+    )
+    parser.add_argument(
+        "client",
+        metavar="EXPORTACAO",
+        help="a exportação do cliente que gerou o relatório",
+    )
+    parser.add_argument("--dry-run", action="store_true", help="mostra a contagem sem gravar nada")
     args = parser.parse_args(argv)
 
     tally = backfill(Path(args.report), Path(args.client), dry_run=args.dry_run)
     print(
-        f"{args.report}: {tally['rows']} rows with a proposal, "
-        f"{tally['arithmetic']} carrying arithmetic, "
-        f"{tally[UNRECORDED]} {UNRECORDED}, {tally['vetoed']} vetoed"
-        + ("  (dry run, nothing written)" if args.dry_run else "")
+        f"{args.report}: {tally['rows']} linhas com proposta, "
+        f"{tally['arithmetic']} com prova aritmética, "
+        f"{tally[UNRECORDED]} com etapa não registrada ({UNRECORDED}), "
+        f"{tally['vetoed']} com veto"
+        + ("  (simulação, nada foi gravado)" if args.dry_run else "")
     )
     return 0
 

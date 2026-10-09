@@ -1,4 +1,11 @@
-"""Score a mapping report against an answer key."""
+"""Pontua um relatório de mapeamento contra um gabarito.
+
+O relatório pode estar no esquema em português ou no legado em inglês. A
+leitura passa por ``report_schema``: os cabeçalhos viram os nomes internos e
+os valores de situação e método voltam ao vocabulário interno (``accepted``,
+``catalog`` ...) antes de qualquer comparação. Assim os números são os mesmos
+nas duas línguas.
+"""
 
 from __future__ import annotations
 
@@ -9,10 +16,12 @@ from pathlib import Path
 
 import openpyxl
 
+import report_schema
 from mapeval.outcomes import Outcome, classify
 from mapeval.truth import AnswerKey
 
-#: Methods whose acceptance does not depend on reading the client's header.
+#: Métodos cuja aceitação não depende de ler o cabeçalho do cliente. Valores
+#: internos: ``catalog`` aparece como ``catalogo`` no relatório em português.
 HEADER_INDEPENDENT_METHODS = frozenset({"catalog"})
 
 
@@ -21,33 +30,38 @@ class Row:
     model_column: int
     model_name: str
     client_column: int | None
+    #: Situação no vocabulário interno (``accepted``, ``review``, ``no_match``),
+    #: qualquer que seja a língua do relatório.
     status: str
+    #: Método no vocabulário interno (``name``, ``data``, ``catalog`` ...).
     method: str
     final_confidence: float | None
     outcome: Outcome
-    #: A client-side arithmetic identity that places this column here.
+    #: Identidade aritmética, nos dados do próprio cliente, que põe esta coluna aqui.
     arithmetic_proof: str | None = None
 
     @property
     def header_independent(self) -> bool:
-        """Whether anything other than the header supports this mapping.
+        """Se algo além do cabeçalho sustenta este mapeamento.
 
-        The generalization question. An acceptance resting only on the client's
-        header string is one that may not survive an ERP whose vocabulary we
-        have never seen, and the four sample clients are reference material
-        rather than the deliverable. Arithmetic and official code domains both
-        transfer; a header match does not.
+        É a pergunta da generalização. Uma aceitação apoiada só no texto do
+        cabeçalho do cliente pode não sobreviver a um ERP cujo vocabulário
+        nunca vimos, e os quatro clientes de amostra são material de
+        referência, não o entregável. Aritmética e domínios de códigos
+        oficiais se transferem; um casamento de cabeçalho, não.
         """
-        proof = self.arithmetic_proof or ""
-        # A proof corroborates a tax *scope*. Where the client runs two
-        # disjoint blocks for one tax, both satisfy the identity, so the proof
-        # is true of either and singles out neither - the mapper says so in the
-        # string. Crediting it as independent evidence would let a coin-flip
-        # between two blocks masquerade as arithmetic. No accepted row carries
-        # one today; this keeps it that way.
-        if "does not single out" in proof:
-            proof = ""
-        return bool(proof) or self.method in HEADER_INDEPENDENT_METHODS
+        # Uma prova confirma o *escopo* de um tributo. Quando o cliente tem
+        # dois blocos disjuntos para o mesmo tributo, os dois satisfazem a
+        # identidade, então a prova vale para qualquer um e não distingue
+        # nenhum - e o mapeador diz isso na própria frase. proof_is_decisive
+        # reconhece o marcador nas duas línguas: "does not single out" nos
+        # relatórios legados e "não distingue esta coluna" nos em português.
+        # Contar uma prova assim como evidência independente deixaria um cara
+        # ou coroa entre dois blocos se passar por aritmética. Hoje quatro
+        # aceites de datasul (m53, m54, m55 e m184) têm uma prova assim, e
+        # esta regra os mantém fora da métrica.
+        decisive = report_schema.proof_is_decisive(self.arithmetic_proof)
+        return decisive or self.method in HEADER_INDEPENDENT_METHODS
 
 
 @dataclass
@@ -56,9 +70,9 @@ class Score:
     rows: list[Row] = field(default_factory=list)
     present: int = 0
     client_columns: int = 0
-    #: Delivered onto a column with no data. Blocking.
+    #: Entregues sobre uma coluna sem dado. Bloqueante.
     vacuous_targets: list[Row] = field(default_factory=list)
-    #: Proposed onto a column with no data but not delivered. Reported only.
+    #: Propostas sobre uma coluna sem dado, mas não entregues. Só informativo.
     vacuous_proposals: list[Row] = field(default_factory=list)
 
     def count(self, outcome: Outcome) -> int:
@@ -66,7 +80,7 @@ class Score:
 
     @property
     def recall_on_present(self) -> float | None:
-        """Correct / the columns the client actually has. Never over 227."""
+        """Corretos / colunas que o cliente de fato tem. Nunca sobre 227."""
         return self.count(Outcome.CORRECT) / self.present if self.present else None
 
     @property
@@ -75,11 +89,12 @@ class Score:
 
     @property
     def delivered_correct(self) -> int:
-        """Correct mappings the downstream app actually receives.
+        """Mapeamentos corretos que o sistema a jusante de fato recebe.
 
-        apply_invoice_mapping.py populates accepted and reviewer-confirmed
-        rows only, so a correct pick left in *review* is invisible to the
-        customer. Reporting picking recall alone overstates delivery.
+        O apply_invoice_mapping.py preenche só as linhas aceitas e as
+        confirmadas pelo revisor, então um acerto deixado em *revisão* fica
+        invisível para o cliente. Reportar só o recall da escolha exagera a
+        entrega.
         """
         return sum(
             1
@@ -89,16 +104,17 @@ class Score:
 
     @property
     def delivered_recall(self) -> float | None:
-        """The number that describes the product. Never above recall_on_present."""
+        """O número que descreve o produto. Nunca acima de recall_on_present."""
         return self.delivered_correct / self.present if self.present else None
 
     @property
     def withheld_correct(self) -> list[Row]:
-        """Right column found, then held back by the accept gate.
+        """Coluna certa encontrada e depois retida pelo limiar de aceite.
 
-        Not a scoring artefact: every one of these is a column the firm could
-        have delivered and did not. Sorted by how close it came to shipping,
-        because that is the order a reviewer should work them in.
+        Não é artefato da pontuação: cada uma destas é uma coluna que o
+        escritório poderia ter entregue e não entregou. Ficam ordenadas por
+        quão perto chegaram de ser entregues, porque é nessa ordem que um
+        revisor deve trabalhá-las.
         """
         held = [
             r
@@ -109,8 +125,8 @@ class Score:
 
     @property
     def accept_precision_lower(self) -> float | None:
-        """Undetermined accepts counted as wrong, so a new unverified accept
-        lowers the bound rather than leaving it flatteringly unchanged."""
+        """Aceites sem veredito contam como errados, para que um aceite novo e
+        não verificado baixe o limite, em vez de deixá-lo lisonjeiramente igual."""
         accepts = self.accepted
         if not accepts:
             return None
@@ -119,22 +135,24 @@ class Score:
 
     @property
     def undetermined_accepts(self) -> list[Row]:
-        """Accepted mappings the key cannot adjudicate either way.
+        """Mapeamentos aceitos que o gabarito não consegue julgar, nem para um lado nem para o outro.
 
-        The blind spot, and it is structural rather than a bug: with the key
-        covering 56 of 227 model columns, ``classify`` cannot say whether an
-        out-of-key accept is right, and inventing a verdict is exactly what
-        Outcome.UNDETERMINED exists to prevent. But a change that invents
-        mappings outside the key grows this number while ``fabrications`` -
-        the only thing the exit code reads - stays at zero. A hand-tuned
-        ICSP<-ICMS rule scores +3 correct, 0 fabrications, exit 0, and writes
-        wrong tax rates onto thousands of rows. Print the count so the silence
-        is visible; accept_precision_lower already prices it in.
+        É o ponto cego, e ele é estrutural, não um defeito: com o gabarito
+        cobrindo 56 das 227 colunas do modelo, ``classify`` não tem como
+        dizer se um aceite fora do gabarito está certo, e inventar um
+        veredito é exatamente o que Outcome.UNDETERMINED existe para impedir.
+        Só que uma mudança que inventa mapeamentos fora do gabarito faz este
+        número crescer enquanto ``fabrications`` - a única coisa que o código
+        de saída lê - continua em zero. Uma regra ajustada à mão de
+        ICSP<-ICMS soma +3 corretos e 0 fabricações, sai com código 0 e grava
+        alíquotas erradas em milhares de linhas. Imprimir a contagem torna o
+        silêncio visível; accept_precision_lower já leva isso em conta.
         """
         return [r for r in self.accepted if r.outcome is Outcome.UNDETERMINED]
 
     @property
     def header_independent_share(self) -> float | None:
+        """Fração dos aceites que não dependem só do cabeçalho: a métrica de generalização."""
         accepts = self.accepted
         if not accepts:
             return None
@@ -142,8 +160,8 @@ class Score:
 
     @property
     def correct_pairs(self) -> set[tuple[int, int]]:
-        """Compared as a set, never a count: losing one column while gaining
-        another leaves the total unchanged and is still a regression."""
+        """Comparados como conjunto, nunca como contagem: perder uma coluna e
+        ganhar outra deixa o total igual e ainda assim é uma regressão."""
         return {
             (r.model_column, r.client_column)
             for r in self.rows
@@ -153,14 +171,14 @@ class Score:
 
 @lru_cache(maxsize=None)
 def _vacuous_client_columns(client_path: str | Path, sheet: int = 0) -> frozenset[int]:
-    """Client columns with zero populated rows.
+    """Colunas do cliente sem nenhuma linha preenchida.
 
-    Deliberately not all-zero: datasul has 200 all-zero columns and six of
-    oracle's are client-authored truth, so an all-zero guard would destroy
-    verified-correct mappings.
+    De propósito, não é "toda zerada": datasul tem 200 colunas totalmente
+    zeradas e seis das de oracle são gabarito do cliente, então uma trava de
+    coluna zerada destruiria mapeamentos verificados como corretos.
 
-    Cached: scanning every cell of an 8.9MB export is the harness's only
-    real cost, and the same client is scored repeatedly.
+    Fica em cache: varrer todas as células de uma exportação de 8,9 MB é o
+    único custo real da avaliação, e o mesmo cliente é pontuado várias vezes.
     """
     workbook = openpyxl.load_workbook(client_path, read_only=True, data_only=True)
     try:
@@ -177,20 +195,48 @@ def _vacuous_client_columns(client_path: str | Path, sheet: int = 0) -> frozense
     return frozenset(i + 1 for i, count in enumerate(populated) if count == 0)
 
 
+def read_mappings(report_path: str | Path) -> tuple[list[tuple], dict[str, int], str]:
+    """Lê a aba de mapeamentos de um relatório, em qualquer um dos dois esquemas.
+
+    Devolve as linhas cruas (a primeira é o cabeçalho), o índice {nome
+    interno do campo: posição da coluna} e o esquema detectado pelo
+    cabeçalho (``report_schema.PT_BR`` ou ``report_schema.LEGACY_EN``). As
+    células continuam cruas: quem compara situação ou método converte o
+    valor com ``report_schema.internal_value`` e o esquema devolvido.
+
+    Levanta ``ValueError`` se o relatório não tem a aba (nem
+    ``Mapeamentos`` nem a legada ``Mappings``) ou se mistura os dois
+    esquemas, por exemplo cabeçalhos em português numa aba ``Mappings``.
+    """
+    workbook = openpyxl.load_workbook(report_path, read_only=True, data_only=True)
+    try:
+        sheet_names = list(workbook.sheetnames)
+        name = report_schema.find_sheet(sheet_names, "mappings", None)
+        if name is None:
+            raise ValueError(
+                f"{report_path}: o relatório não tem a aba "
+                f"{report_schema.sheet_name('mappings')!r} (nem a legada "
+                f"{report_schema.sheet_name('mappings', report_schema.LEGACY_EN)!r})."
+            )
+        raw = list(workbook[name].iter_rows(values_only=True))
+    finally:
+        workbook.close()
+    column, schema = report_schema.internal_header_index(raw[0], "mappings")
+    # O nome da aba precisa ser o do esquema do cabeçalho; um relatório meio
+    # traduzido é recusado em vez de lido pela metade.
+    report_schema.find_sheet(sheet_names, "mappings", schema)
+    return raw, column, schema
+
+
 def score_report(
     report_path: str | Path,
     client_path: str | Path,
     key: AnswerKey,
 ) -> Score:
-    """Score an archived mapping report. Runs no mapping and costs nothing."""
+    """Pontua um relatório de mapeamento arquivado. Não roda mapeamento e não custa nada."""
     vacuous = _vacuous_client_columns(Path(client_path))
 
-    workbook = openpyxl.load_workbook(report_path, read_only=True, data_only=True)
-    try:
-        raw = list(workbook["Mappings"].iter_rows(values_only=True))
-    finally:
-        workbook.close()
-    column = {name: i for i, name in enumerate(raw[0])}
+    raw, column, schema = read_mappings(report_path)
 
     result = Score(client=key.client, present=key.denominator)
     for position, raw_row in enumerate(raw[1:], start=1):
@@ -198,12 +244,21 @@ def score_report(
         chosen = int(chosen) if chosen not in (None, "") else None
         expected = key.present.get(position)
         confidence = raw_row[column["final_confidence"]]
+        # Situação e método no vocabulário interno: "aceito" vira "accepted",
+        # "catalogo" vira "catalog". Num relatório legado nada muda.
+        status = str(
+            report_schema.internal_value("mappings", "status", raw_row[column["status"]], schema)
+        )
+        method = str(
+            report_schema.internal_value("mappings", "method", raw_row[column["method"]], schema)
+            or ""
+        )
         row = Row(
             model_column=position,
             model_name=str(raw_row[column["model_column"]]),
             client_column=chosen,
-            status=str(raw_row[column["status"]]),
-            method=str(raw_row[column["method"]] or ""),
+            status=status,
+            method=method,
             final_confidence=float(confidence) if isinstance(confidence, (int, float)) else None,
             arithmetic_proof=(
                 str(raw_row[column["arithmetic_proof"]])
@@ -217,7 +272,7 @@ def score_report(
                 expected_client_column=expected,
                 chosen_is_vacuous=chosen in vacuous if chosen is not None else False,
                 in_key=position in key.present,
-                delivered=str(raw_row[column["status"]]) == "accepted",
+                delivered=status == "accepted",
             ),
         )
         result.rows.append(row)
@@ -229,4 +284,5 @@ def score_report(
 
 
 def method_census(score: Score) -> Counter[str]:
+    """Quantos aceites há por método, com os métodos no vocabulário interno."""
     return Counter(r.method for r in score.accepted)

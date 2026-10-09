@@ -1,6 +1,23 @@
+"""Testes do mapeador (invoice_mapper).
+
+Os valores de máquina (situação, método, etapas, nome de exibição) são
+verificados em memória, no vocabulário interno em inglês. As frases para
+pessoas (justificativa, prova aritmética, detalhe dos sinais, motivo de
+retenção) são verificadas em português, contra as constantes do próprio
+mapeador. Os arquivos gravados são verificados no esquema em português, e a
+ida e volta pelo ``report_schema`` precisa devolver os valores internos.
+
+Os cabeçalhos de cliente em inglês dos fixtures ('COFINS Value', 'Tax
+Situation COFI', 'Posting date' ...) ficam em inglês de propósito: eles
+representam exportações reais de SAP e testam a tabela de sinônimos. As
+justificativas dos resolvedores falsos também ficam em inglês, porque fazem o
+papel da prosa da IA, que continua em inglês.
+"""
+
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
+from dataclasses import asdict, dataclass
 from types import SimpleNamespace
 
 import numpy as np
@@ -8,44 +25,70 @@ import pandas as pd
 
 import pytest
 
+import report_schema as rs
 from invoice_mapper import (
-    MappingResult,
-    summarize_unmatched_columns,
-    _MIN_ROLE_PREFIX,
-    _ROLE_CONCEPT_WORDS,
-    expand_truncated_role_words,
-    trio_corroboration,
-    discover_client_tax_trios,
-    _trio_proof_text,
-    summarize_adjudication_queue,
-    MappingResult,
-    _supporting_step_ids,
-    map_columns,
-    LexicalHeaderScorer,
-    client_column_is_vacuous,
+    MAPPING_SCHEMA_VERSION,
+    PROOF_NOT_DECISIVE_SUFFIX,
+    PROOF_TEXT,
+    REASON_AMBIGUOUS_EMPTY,
+    REASON_CATALOG_DECISION,
+    REASON_CONFLICT_REVIEW,
+    REASON_OFFLINE,
+    REASON_OVERLAP,
+    REASON_PASS_ONE_ACCEPTED,
+    REASON_PRESERVE_BEST,
+    REASON_UNSUPPORTED_NO_MATCH,
+    REASON_VACUITY,
+    RESOLVER_DISAGREES,
+    SIGNAL_CATALOG,
+    SIGNAL_CHECKDIGIT,
+    SIGNAL_EMPTY,
+    SIGNAL_TRIO,
+    WHY_HELD_BELOW_THRESHOLD,
+    WHY_HELD_NAME_ONLY,
+    WHY_HELD_VACUOUS,
+    AdjudicationRow,
     ColumnRef,
     DataMappingDecision,
+    LexicalHeaderScorer,
     MapperConfig,
+    MappingResult,
     OpenAIDataResolver,
     OpenAIEmbeddingHeaderScorer,
     SheetTable,
-    LexicalHeaderScorer,
+    UnmatchedColumn,
+    _MIN_ROLE_PREFIX,
+    _ROLE_CONCEPT_WORDS,
+    _supporting_step_ids,
+    _trio_proof_text,
+    _unmatched_signals,
+    _unique_distinctive_catalog_decision,
+    build_parser,
+    client_column_is_vacuous,
+    describe_header_conflict_pt,
+    discover_client_tax_trios,
+    expand_truncated_role_words,
     header_semantic_role,
     header_tax_families,
-    map_columns,
     line_calculation_evidence,
+    main,
+    map_columns,
     profile_similarity,
     sample_values,
     semantic_header_conflict,
     semantic_header_signature,
+    summarize_adjudication_queue,
+    summarize_unmatched_columns,
     summarize_values,
     tax_calculation_evidence,
+    trio_corroboration,
     underspecified_header_match,
     write_results,
 )
 
 
 def table(headers: list[str], rows: list[list[object]]) -> SheetTable:
+    """Monta uma SheetTable em memória, contando as ocorrências de cabeçalhos repetidos."""
     occurrences: dict[str, int] = {}
     columns: list[ColumnRef] = []
     for index, name in enumerate(headers):
@@ -63,6 +106,8 @@ def table(headers: list[str], rows: list[list[object]]) -> SheetTable:
 
 @dataclass
 class FixedScorer:
+    """Avaliador de cabeçalhos falso: devolve sempre a mesma matriz."""
+
     matrix: np.ndarray
 
     def scores(self, model_headers, client_headers) -> np.ndarray:
@@ -70,6 +115,8 @@ class FixedScorer:
 
 
 class FixedResolver:
+    """Resolvedor de IA falso: devolve a decisão fixa de cada coluna do modelo e registra as chamadas."""
+
     def __init__(self, decisions: dict[str, DataMappingDecision]) -> None:
         self.decisions = decisions
         self.calls: list[str] = []
@@ -200,7 +247,12 @@ def test_review_proposal_does_not_reserve_source_column() -> None:
 
     assert results[0].client_column == "CBS Base"
     assert results[0].status == "review"
-    assert "semantic-role conflict" in results[0].reason
+    # A decisão usa o conflito em inglês; a justificativa mostra o mesmo
+    # conflito em português.
+    assert results[0].vetoed_by == "family_conflict"
+    assert results[0].reason == REASON_CONFLICT_REVIEW.format(
+        header_conflict="conflito de papel semântico (situação tributária vs base de cálculo)"
+    )
     assert results[1].client_column == "CBS Base"
     assert results[1].status == "review"
     assert resolver.calls == ["Tipo de Imposto CBS", "Base CBS"]
@@ -226,7 +278,7 @@ def test_generic_numeric_evidence_cannot_rescue_explicit_semantic_conflict() -> 
     assert resolver.calls == ["Base IBS"]
     assert result.client_column is None
     assert result.status == "no_match"
-    assert "distinctive row evidence" in result.reason
+    assert result.reason == REASON_UNSUPPORTED_NO_MATCH
 
 
 def test_semantic_header_conflict_is_generic_and_conservative() -> None:
@@ -257,6 +309,67 @@ def test_semantic_header_conflict_is_generic_and_conservative() -> None:
     assert semantic_header_conflict("Chave de acesso", "X9") is None
 
 
+#: Pares de cabeçalhos com os três tipos de conflito e sem conflito.
+CONFLICT_PAIRS = [
+    ("Base IBS", "IBSS Rate"),
+    ("Valor ICMS", "IPI Value"),
+    ("Base ICMS", "ICMS Mont.base excl."),
+    ("CST PIS", "PIS Mont."),
+    ("Tipo de Imposto CBS", "Tax Classification Code for CBS and IBS"),
+    ("Nº item do documento", "SAP Nº do NF"),
+    ("Aliquota ICMS_ST", "ICMS Taxa"),
+    ("ICMS Taxa", "Aliquota ICMS_ST"),
+    ("Grupo de imposto", "Grupo de mercadorias"),
+    ("Valor ICMS", "Valor COFINS e PIS"),
+    ("Lei COFINS", "Aliq. COFINS"),
+    ("Chave de acesso", "X9"),
+    ("Base ICMS", "ICMS Monta"),
+    ("Valor líquido", "TOTAL DO ITEM"),
+]
+
+
+def test_the_header_conflict_is_described_in_portuguese_for_people() -> None:
+    # O texto em inglês continua sendo a entrada da IA; o gêmeo em português
+    # é o que vai para a justificativa, com rótulos fiscais legíveis.
+    assert describe_header_conflict_pt("Base IBS", "IBSS Rate") == (
+        "conflito de papel semântico (base de cálculo vs alíquota)"
+    )
+    assert describe_header_conflict_pt("Valor ICMS", "IPI Value") == (
+        "conflito de família de tributo (ICMS vs IPI)"
+    )
+    assert describe_header_conflict_pt("Valor ICMS", "Valor COFINS e PIS") == (
+        "conflito de família de tributo (ICMS vs COFINS, PIS)"
+    )
+    assert describe_header_conflict_pt("CST PIS", "PIS Mont.") == (
+        "conflito de papel semântico (situação tributária vs base de cálculo)"
+    )
+    assert describe_header_conflict_pt("Aliquota ICMS_ST", "ICMS Taxa") == (
+        "conflito de qualificador do tributo (ST vs normal)"
+    )
+    assert describe_header_conflict_pt("Grupo de imposto", "Grupo de mercadorias") == (
+        "conflito de papel semântico (grupo de imposto vs grupo de produto)"
+    )
+    assert describe_header_conflict_pt("Chave de acesso", "X9") is None
+
+
+@pytest.mark.parametrize(("left", "right"), CONFLICT_PAIRS)
+def test_the_portuguese_conflict_always_agrees_with_the_english_one(left, right) -> None:
+    # Os dois saem da mesma análise estruturada: existe um quando existe o
+    # outro, e o tipo de conflito é o mesmo.
+    english = semantic_header_conflict(left, right)
+    portuguese = describe_header_conflict_pt(left, right)
+    assert (english is None) == (portuguese is None)
+    if english is None:
+        return
+    kinds = {
+        "tax-family conflict": "conflito de família de tributo",
+        "tax-qualifier conflict": "conflito de qualificador do tributo",
+        "semantic-role conflict": "conflito de papel semântico",
+    }
+    english_kind = english.split(" (", 1)[0]
+    assert portuguese.startswith(kinds[english_kind] + " (")
+
+
 def test_one_word_subset_header_is_not_decisive_by_itself() -> None:
     assert underspecified_header_match("Centro custo", "Centro")
     assert underspecified_header_match("Base ICMS", "ICMS")
@@ -272,6 +385,8 @@ def test_duplicate_headers_keep_unique_column_ids(tmp_path) -> None:
 
     sheet = SheetTable.from_excel(path)
 
+    # Em memória o sufixo de ocorrência fica em inglês: o nome de exibição é
+    # comparado pelo apply e só vira "(ocorrência 2)" nas células gravadas.
     assert [column.id for column in sheet.columns] == ["column_001", "column_002"]
     assert sheet.columns[0].display_name == "Document Number"
     assert sheet.columns[1].display_name == "Document Number (occurrence 2)"
@@ -287,9 +402,9 @@ def test_mapping_report_contains_reviewer_columns(tmp_path) -> None:
 
     columns = pd.read_excel(output, nrows=0).columns.tolist()
     assert columns[-3:] == [
-        "reviewer_status",
-        "correct_client_column",
-        "reviewer_note",
+        "parecer_revisor",
+        "coluna_cliente_correta",
+        "observacao_revisor",
     ]
 
 
@@ -299,14 +414,28 @@ def test_mapping_report_writes_run_metadata(tmp_path) -> None:
     result = map_columns(model, client, LexicalHeaderScorer(), data_resolver=None)
     output = tmp_path / "mapping.xlsx"
 
-    write_results(result, output, metadata={"mapping_schema_version": 2})
+    write_results(
+        result,
+        output,
+        metadata={
+            "mapping_schema_version": MAPPING_SCHEMA_VERSION,
+            "embedding_model": "offline",
+            "reference_manifest_sha256": "disabled",
+        },
+    )
 
     workbook = pd.ExcelFile(output)
-    assert workbook.sheet_names == ["Mappings", "Run Metadata"]
-    metadata = pd.read_excel(workbook, sheet_name="Run Metadata")
+    assert workbook.sheet_names == ["Mapeamentos", "Metadados da Execução"]
+    metadata = pd.read_excel(workbook, sheet_name="Metadados da Execução")
     assert metadata.to_dict("records") == [
-        {"key": "mapping_schema_version", "value": 2}
+        {"chave": "versao_esquema_mapeamento", "valor": 3},
+        {"chave": "modelo_embedding", "valor": "offline"},
+        {"chave": "sha256_manifesto_referencia", "valor": "desativado"},
     ]
+
+
+def test_the_report_schema_version_is_the_portuguese_one() -> None:
+    assert MAPPING_SCHEMA_VERSION == rs.SCHEMA_VERSION_PT == 3
 
 
 def test_sheet_table_supports_an_explicit_header_row(tmp_path) -> None:
@@ -670,6 +799,7 @@ def test_ambiguous_names_with_all_zero_rows_remain_for_review() -> None:
 
     assert result.client_column == "Tax value"
     assert result.status == "review"
+    # Abaixo do limiar, a justificativa é a prosa da IA, que passa intacta.
     assert "zero" in result.reason
 
 
@@ -697,7 +827,7 @@ def test_weak_rows_do_not_replace_a_clear_near_threshold_name_match() -> None:
     assert result.data_confidence == 0.0
     assert result.final_confidence == 0.89
     assert result.status == "review"
-    assert "preserve" in result.reason
+    assert result.reason == REASON_PRESERVE_BEST
 
 
 def test_exact_distinctive_overlap_can_resolve_a_supported_null_decision() -> None:
@@ -722,7 +852,7 @@ def test_exact_distinctive_overlap_can_resolve_a_supported_null_decision() -> No
 
     assert result.client_column == "Product Group"
     assert result.status == "accepted"
-    assert "overlap" in result.reason
+    assert result.reason == REASON_OVERLAP
 
 
 def test_all_zero_profile_is_marked_as_weak_evidence() -> None:
@@ -937,9 +1067,9 @@ def test_data_resolver_preserves_name_confidence_when_rows_are_all_zero() -> Non
     ],
 )
 def test_a_family_name_does_not_smuggle_a_rate_role(header: str, role: str) -> None:
-    # DIF_ALIQ tokenises to include "aliq", which the alias table expands to
-    # "aliquota". Five of these seven model columns reported role "rate", so
-    # semantic_header_conflict misfired across the whole block.
+    # DIF_ALIQ gera a palavra "aliq", que a tabela de sinônimos expande para
+    # "aliquota". Cinco destas sete colunas do modelo tinham papel "rate", e
+    # semantic_header_conflict disparava errado no bloco inteiro.
     assert header_semantic_role(header) == role
 
 
@@ -948,18 +1078,20 @@ def test_a_family_name_does_not_smuggle_a_rate_role(header: str, role: str) -> N
     ["Aliq. PIS", "Alíq. ICMS", "ICMS Taxa", "Tx.imposto 4 c.decs.", "Tax rate (Tax/Base)"],
 )
 def test_real_rate_headers_keep_the_rate_role(header: str) -> None:
-    # The guard above must stay narrow. "Aliq." really is the rate word in the
-    # Datasul exports, and "Tax rate (Tax/Base)" is a rate despite naming a
-    # base - a broader guard demoted it, which is why the rule keys on whether
-    # the rate signal rests on the abbreviation alone.
+    # A proteção acima precisa continuar estreita. "Aliq." é de fato a palavra
+    # de alíquota nas exportações do Datasul, e "Tax rate (Tax/Base)" é uma
+    # alíquota apesar de citar a base - uma proteção mais ampla a rebaixava, e
+    # é por isso que a regra depende de o sinal de alíquota vir só da
+    # abreviação.
     assert header_semantic_role(header) == "rate"
 
 
 def test_a_column_with_no_data_is_vacuous_but_a_column_of_zeros_is_not() -> None:
-    # The distinction is load-bearing. datasul carries 200 all-zero columns and
-    # six of oracle's are client-authored ground truth, so a guard keyed on
-    # all-zero would destroy verified-correct mappings; a guard keyed on
-    # emptiness removes only mappings that ship a silently blank column.
+    # A distinção é essencial. O datasul tem 200 colunas zeradas e seis das do
+    # oracle estão no gabarito escrito pelo cliente, então uma trava baseada
+    # em "tudo zero" eliminaria mapeamentos verificados como corretos; uma
+    # trava baseada em "vazia" remove só os mapeamentos que entregariam uma
+    # coluna silenciosamente em branco.
     table = SheetTable(
         columns=[
             ColumnRef(id="column_001", index=0, name="Empty", occurrence=1),
@@ -976,9 +1108,9 @@ def test_a_column_with_no_data_is_vacuous_but_a_column_of_zeros_is_not() -> None
 
 
 def test_a_trio_is_discovered_from_the_client_alone() -> None:
-    # No model, no prior acceptance, no vocabulary beyond family and role.
-    # valor = base x aliquota is tax law, so a trio proven here is evidence
-    # that transfers to an ERP nobody has seen.
+    # Sem modelo, sem aceite anterior, sem vocabulário além de família e papel.
+    # valor = base x alíquota é legislação tributária, então um trio
+    # comprovado aqui é evidência que vale para um ERP que ninguém viu.
     base = [1000.0 + index for index in range(60)]
     rate = [18.0] * 60
     sheet = table(
@@ -998,8 +1130,8 @@ def test_a_trio_is_discovered_from_the_client_alone() -> None:
 
 
 def test_a_trio_needs_enough_rows_to_be_proof() -> None:
-    # A perfect fit over a handful of rows proves nothing; the real corpus
-    # contains 12-row degenerate fits indistinguishable from genuine ones.
+    # Um encaixe perfeito em poucas linhas não prova nada; o corpus real tem
+    # encaixes degenerados de 12 linhas indistinguíveis dos verdadeiros.
     base = [1000.0 + index for index in range(10)]
     sheet = table(
         ["IPI Base", "IPI Taxa", "IPI Valor"],
@@ -1016,25 +1148,25 @@ def test_corroboration_matches_the_slot_not_merely_the_family() -> None:
     )
     trios = discover_client_tax_trios(sheet)
     assert trio_corroboration(trios, "Base ICMS", 0) is not None
-    # right family, wrong slot
+    # família certa, posição errada
     assert trio_corroboration(trios, "Base ICMS", 1) is None
-    # a role the identity says nothing about
+    # um papel sobre o qual a identidade não diz nada
     assert trio_corroboration(trios, "Isentas ICMS", 0) is None
 
 
 def test_the_role_vocabulary_is_prefix_unambiguous() -> None:
-    # This is the property that makes truncation expansion safe by
-    # construction rather than by tuning: no prefix of any role word reaches
-    # two different concepts, so a truncation cannot resolve two ways. A
-    # future addition that breaks this must fail here rather than silently
-    # start mis-labelling roles.
+    # Esta é a propriedade que torna a expansão de truncamentos segura por
+    # construção, e não por ajuste fino: nenhum prefixo de palavra de papel
+    # alcança dois conceitos diferentes, então um truncamento não pode ter
+    # duas leituras. Um acréscimo futuro que quebre isso precisa falhar aqui,
+    # em vez de começar a rotular papéis errado em silêncio.
     seen: dict[str, str] = {}
     for concept, words in _ROLE_CONCEPT_WORDS.items():
         for word in words:
             for size in range(_MIN_ROLE_PREFIX, len(word)):
                 prefix = word[:size]
                 assert seen.setdefault(prefix, concept) == concept, (
-                    f"prefix {prefix!r} reaches both {seen[prefix]} and {concept}"
+                    f"o prefixo {prefix!r} alcança {seen[prefix]} e {concept}"
                 )
 
 
@@ -1048,21 +1180,23 @@ def test_the_role_vocabulary_is_prefix_unambiguous() -> None:
     ],
 )
 def test_truncated_role_words_still_name_their_role(header: str, role: str) -> None:
-    # Datasul truncates headers to 12 characters, so the role word arrives cut
-    # short. These four read as "value", which made semantic_header_conflict
-    # veto the CORRECT pair and put them beyond acceptance at any confidence.
+    # O Datasul trunca os cabeçalhos em 12 caracteres, então a palavra de
+    # papel chega cortada. Estes quatro eram lidos como "value", o que fazia
+    # semantic_header_conflict vetar o par CORRETO e os deixava fora do
+    # aceite com qualquer confiança.
     assert header_semantic_role(header) == role
 
 
 def test_expansion_leaves_full_words_and_short_tokens_alone() -> None:
     assert expand_truncated_role_words({"outras"}) == {"outras"}
-    assert expand_truncated_role_words({"ou"}) == {"ou"}          # too short
-    assert expand_truncated_role_words({"icms"}) == {"icms"}      # not a role word
-    # additive: the original token survives alongside the expansion
+    assert expand_truncated_role_words({"ou"}) == {"ou"}          # curta demais
+    assert expand_truncated_role_words({"icms"}) == {"icms"}      # não é palavra de papel
+    # aditiva: a palavra original continua ao lado da expansão
     assert expand_truncated_role_words({"isen"}) == {"isen", "isentas"}
 
 
 def _unmatched(results: dict[int, MappingResult], client: SheetTable, model: SheetTable):
+    """Colunas do cliente sem uso, sem catálogos e sem trios."""
     return summarize_unmatched_columns(
         model_table=model,
         client_table=client,
@@ -1077,10 +1211,11 @@ def _unmatched(results: dict[int, MappingResult], client: SheetTable, model: She
 
 
 def test_unmatched_means_not_consumed_not_merely_unreferenced() -> None:
-    # The distinction decides whether the report finds real misses. Defining
-    # unmatched as "never referenced" hides every column a review proposal
-    # touched, and measured against the client answer keys that hides more
-    # than half of the truths the mapper failed to deliver.
+    # A distinção decide se o relatório encontra as perdas reais. Definir
+    # "sem uso" como "nunca citada" esconde toda coluna tocada por uma
+    # proposta em revisão, e, medido contra os gabaritos dos clientes, isso
+    # esconde mais da metade das respostas certas que o mapeador deixou de
+    # entregar.
     client = table(["Base ICMS", "Vlr Frete", "Ruido"], [[10, 20, 30]] * 40)
     model = table(["Base ICMS", "Frete"], [[10, 20]] * 40)
     results = {
@@ -1100,22 +1235,59 @@ def test_unmatched_means_not_consumed_not_merely_unreferenced() -> None:
         ),
     }
     rows = {row.client_column_number: row for row in _unmatched(results, client, model)}
-    assert 1 not in rows                                   # consumed
-    assert rows[2].disposition == "proposed_not_accepted"  # proposed, not delivered
+    assert 1 not in rows                                   # consumida
+    assert rows[2].disposition == "proposed_not_accepted"  # proposta, não entregue
     assert rows[3].disposition == "never_referenced"
 
 
 def test_nothing_is_omitted_only_demoted() -> None:
-    # Two candidate cut rules were each measured to destroy a real answer, so
-    # a column that matches nothing is still written, with a sentence saying
-    # why it was set aside.
+    # Duas regras de corte candidatas foram medidas e cada uma eliminava uma
+    # resposta certa, então uma coluna que não casa com nada continua gravada,
+    # com uma frase dizendo por que ficou de lado.
     client = table(["Vazio", "Ruido"], [[None, 7]] * 40)
     model = table(["Frete"], [[1]] * 40)
     rows = _unmatched({}, client, model)
     assert {r.client_column_number for r in rows} == {1, 2}
     empty = next(r for r in rows if r.client_column_number == 1)
     assert empty.review_priority == "low"
-    assert "No values in this column." in empty.signal_detail
+    assert empty.signal_detail == SIGNAL_EMPTY == "Esta coluna não tem valores."
+
+
+def test_signal_details_are_portuguese_with_a_decimal_comma() -> None:
+    # Os ids de sinal ficam internos (traduzidos na gravação); o detalhe sai
+    # em português, com rótulos fiscais legíveis e vírgula decimal.
+    base = [1000.0 + index for index in range(60)]
+    sheet = table(
+        ["ICMS Base", "ICMS Taxa", "ICMS Valor"],
+        [[base[i], 18.0, round(base[i] * 0.18, 2)] for i in range(60)],
+    )
+    trios = discover_client_tax_trios(sheet)
+    slots = {
+        int(trio[slot]): slot for trio in trios[("icms", ())] for slot in ("base", "rate", "value")
+    }
+    column = sheet.columns[1]
+    values = sheet.series(column)
+    signals, detail = _unmatched_signals(
+        column=column,
+        profile=summarize_values(values),
+        values=values,
+        reference_catalogs=None,
+        trio_slots=slots,
+    )
+    assert signals == ["arithmetic"]
+    assert detail == SIGNAL_TRIO.format(slot="alíquota")
+    assert detail == "participa como alíquota de um trio comprovado de valor = base x alíquota"
+
+    cnpjs = pd.Series(["11.222.333/0001-81"] * 7 + ["123"])
+    signals, detail = _unmatched_signals(
+        column=ColumnRef("column_001", 0, "CNPJ", 1),
+        profile=summarize_values(cnpjs),
+        values=cnpjs,
+        reference_catalogs=None,
+        trio_slots={},
+    )
+    assert signals == ["cnpj_checkdigit"]
+    assert detail == SIGNAL_CHECKDIGIT.format(fraction="87,5%", kind="CNPJ")
 
 
 def test_shortlist_leads_and_the_rest_follow_in_column_order() -> None:
@@ -1127,10 +1299,10 @@ def test_shortlist_leads_and_the_rest_follow_in_column_order() -> None:
 
 
 def test_two_disjoint_blocks_for_one_tax_are_both_kept() -> None:
-    # datasul runs an apuracao PIS block and an escrituracao PIS block. Neither
-    # 'Ap' nor the bare name is a recognised qualifier, so both collapse to the
-    # scope ('pis', ()) and the argmax kept only the larger - discarding the
-    # block the model's own slots actually want.
+    # O datasul tem um bloco de PIS de apuração e um de escrituração. Nem 'Ap'
+    # nem o nome puro são qualificadores reconhecidos, então os dois caem no
+    # escopo ('pis', ()) e guardar só o melhor mantinha apenas o maior -
+    # descartando o bloco que as posições do próprio modelo querem.
     base_a = [1000.0 + index for index in range(60)]
     base_b = [500.0 + index for index in range(60)]
     sheet = table(
@@ -1150,20 +1322,36 @@ def test_two_disjoint_blocks_for_one_tax_are_both_kept() -> None:
 
 
 def test_a_proof_says_so_when_it_cannot_single_out_a_column() -> None:
-    # The identity corroborates a scope, not a column. Where two disjoint
-    # blocks each satisfy it, an unqualified proof on the losing block reads as
-    # an endorsement - which is how datasul m213 -> c96 came to carry one.
+    # A identidade confirma um escopo, não uma coluna. Quando dois blocos
+    # disjuntos a satisfazem, uma prova sem ressalva no bloco errado parece um
+    # aval - foi assim que o m213 -> c96 do datasul acabou com uma.
     lone = {"tax_scope": "icms", "rows_tested": 500, "fit_score": 0.99, "alternatives": 1}
     rival = {"tax_scope": "pis", "rows_tested": 5501, "fit_score": 0.9996, "alternatives": 2}
-    assert "does not single out" not in _trio_proof_text(lone)
-    assert "2 disjoint pis blocks" in _trio_proof_text(rival)
-    assert "does not single out this column" in _trio_proof_text(rival)
+    assert _trio_proof_text(lone) == (
+        "valor = base x alíquota se confirma para ICMS em 500 linhas, com aderência 0,99"
+    )
+    assert rs.PROOF_NOT_DECISIVE_PT not in _trio_proof_text(lone)
+    assert rs.proof_is_decisive(_trio_proof_text(lone))
+    assert _trio_proof_text(rival) == (
+        "valor = base x alíquota se confirma para PIS em 5501 linhas, com aderência 0,9996"
+        " - mas este cliente tem 2 blocos disjuntos de PIS que satisfazem a equação, "
+        "portanto ela não distingue esta coluna"
+    )
+    assert _trio_proof_text(rival).endswith(rs.PROOF_NOT_DECISIVE_PT)
+    assert not rs.proof_is_decisive(_trio_proof_text(rival))
+
+
+def test_the_proof_templates_carry_the_marker_the_readers_look_for() -> None:
+    # mapeval e _supporting_step_ids decidem pela presença deste trecho exato.
+    assert rs.PROOF_NOT_DECISIVE_PT in PROOF_NOT_DECISIVE_SUFFIX
+    assert rs.PROOF_NOT_DECISIVE_PT not in PROOF_TEXT
 
 
 def test_rate_aliases_for_one_block_are_not_counted_as_rival_blocks() -> None:
-    # sap_terumo names every rate twice - 'ICMS Taxa' and 'Tax rate ICMS' -
-    # and both close on the same base and value. Sharing a column makes them
-    # one block described twice, not two readings of the model's slots.
+    # O sap_terumo nomeia cada alíquota duas vezes - 'ICMS Taxa' e 'Tax rate
+    # ICMS' - e as duas fecham com a mesma base e o mesmo valor. Compartilhar
+    # uma coluna faz delas um bloco descrito duas vezes, e não duas leituras
+    # das posições do modelo.
     base = [1000.0 + index for index in range(60)]
     sheet = table(
         ["ICMS Base", "ICMS Taxa", "ICMS Valor", "Tax rate ICMS"],
@@ -1175,18 +1363,18 @@ def test_rate_aliases_for_one_block_are_not_counted_as_rival_blocks() -> None:
 
 
 def test_valor_contabil_is_the_document_total_not_a_bookkeeping_field() -> None:
-    # SPED EFD registro C100 field VL_DOC: in the fiscal register "valor
-    # contabil" is the document total. datasul's own rows prove it - Vlr
-    # Contabil == Vlr Total + Valor IPI holds on 6,737 of 6,800 rows (0.9907)
-    # while plain equality with Vlr Total holds on 51%.
+    # Campo VL_DOC do registro C100 da EFD: no livro fiscal, "valor contábil"
+    # é o total do documento. As linhas do próprio datasul provam isso - Vlr
+    # Contabil == Vlr Total + Valor IPI vale em 6.737 de 6.800 linhas
+    # (0,9907), enquanto a igualdade simples com Vlr Total vale em 51%.
     target = semantic_header_signature("Val.Total NF")
     for header in ("Vlr Contábil", "Valor Contabil", "Val Contab", "VL CONTABIL"):
         assert semantic_header_signature(header) == target, header
 
 
 def test_the_value_word_is_what_spares_the_bookkeeping_false_friends() -> None:
-    # The rewrite needs a value word in front. Without that anchor it would
-    # swallow the chart-of-accounts vocabulary that shares the same adjective.
+    # A troca precisa de uma palavra de valor na frente. Sem essa âncora, ela
+    # engoliria o vocabulário do plano de contas que usa o mesmo adjetivo.
     target = semantic_header_signature("Val.Total NF")
     for header in ("Conta Contábil", "Lançamento Contábil", "Data Contábil",
                    "Contábil", "Plano de Contas Contábil", "Centro de Custo Contábil"):
@@ -1195,6 +1383,7 @@ def test_the_value_word_is_what_spares_the_bookkeeping_false_friends() -> None:
 
 def _queue_result(model_number, model_name, client_number, client_name,
                   final, margin=0.0, status="review", **kw):
+    """Uma proposta mínima para a fila de revisão."""
     return MappingResult(
         model_column_number=model_number, model_column=model_name,
         client_column_number=client_number, client_column=client_name,
@@ -1216,12 +1405,14 @@ def test_the_queue_holds_only_proposals_the_gate_did_not_deliver() -> None:
     )
     assert [r.model_column_number for r in rows] == [2]
     assert rows[0].gate_distance == pytest.approx(0.02)
+    assert rows[0].why_held == WHY_HELD_BELOW_THRESHOLD == "abaixo do limiar de aceite"
 
 
 def test_a_proposal_onto_an_empty_column_can_never_be_confirmed() -> None:
-    # Confirming it ships a blank column under a reviewer's signature, so it
-    # cannot hold a top slot however well the header matched. sap_terumo's
-    # 'FCI number' matches 'Nº FCI' at 0.98 and is empty on all 727 rows.
+    # Confirmá-la entrega uma coluna em branco com a assinatura do revisor,
+    # então ela não pode ocupar as primeiras posições, por mais que o
+    # cabeçalho tenha casado. 'FCI number' do sap_terumo casa com 'Nº FCI' a
+    # 0.98 e está vazia nas 727 linhas.
     sheet = table(["Full", "Empty"], [["x", None], ["y", None]])
     rows = summarize_adjudication_queue(
         client_table=sheet,
@@ -1233,13 +1424,14 @@ def test_a_proposal_onto_an_empty_column_can_never_be_confirmed() -> None:
     )
     assert [r.model_column for r in rows] == ["Weak but real", "Strong but empty"]
     assert rows[-1].rows_with_value == 0
-    assert "no populated rows" in rows[-1].why_held
+    assert rows[-1].why_held == WHY_HELD_VACUOUS
 
 
 def test_margin_breaks_ties_only_inside_the_clamped_band() -> None:
-    # The clamp pins a whole class of rows to one confidence, so the confidence
-    # column stops ordering them. Outside the band confidence must still win,
-    # because the margin's apparent lead is one client's artefact.
+    # A trava prende uma classe inteira de linhas numa só confiança, então a
+    # coluna de confiança deixa de ordená-las. Fora da faixa a confiança ainda
+    # precisa vencer, porque a vantagem aparente da margem é um artefato de um
+    # cliente só.
     sheet = table(["A", "B", "C"], [["x", "y", "z"], ["x", "y", "z"]])
     rows = summarize_adjudication_queue(
         client_table=sheet,
@@ -1260,13 +1452,32 @@ def test_the_queue_says_when_the_branch_rather_than_the_evidence_held_a_row() ->
         results=[_queue_result(1, "One", 1, "A", 0.8999)],
         final_threshold=0.90, sample_size=8,
     )
-    assert "cannot auto-accept" in rows[0].why_held
+    assert rows[0].why_held == WHY_HELD_NAME_ONLY
+
+
+def test_the_queue_phrases_are_the_portuguese_values_of_the_schema() -> None:
+    # A fila é escrita em português na origem; report_schema reconhece as
+    # mesmas frases e traduz as legadas em inglês para elas.
+    assert set(rs.ENUMS["why_held"].values()) == {
+        WHY_HELD_BELOW_THRESHOLD, WHY_HELD_NAME_ONLY, WHY_HELD_VACUOUS,
+    }
+
+
+def test_the_resolver_disagreement_uses_a_decimal_comma() -> None:
+    sheet = table(["A"], [["x"], ["y"]])
+    rows = summarize_adjudication_queue(
+        client_table=sheet,
+        results=[_queue_result(1, "One", 1, "A", 0.88, llm_final_confidence=0.75)],
+        final_threshold=0.90, sample_size=8,
+    )
+    assert rows[0].resolver_disagrees == RESOLVER_DISAGREES.format(llm_final="0,75")
+    assert rows[0].resolver_disagrees == "o resolvedor de IA atribuiu confiança 0,75"
 
 
 def test_the_report_names_the_step_that_carried_each_decision() -> None:
-    # "which step of our code made this possible" has to be answerable per
-    # column, and the answer must come from the same scores the decision was
-    # made on rather than from a label chosen after the fact.
+    # "qual etapa do nosso código tornou isto possível" precisa ter resposta
+    # por coluna, e a resposta precisa vir das mesmas pontuações em que a
+    # decisão foi tomada, e não de um rótulo escolhido depois.
     base = [1000.0 + index for index in range(60)]
     model = table(["Base ICMS", "Aliquota ICMS", "Valor ICMS", "Série"], [])
     client = table(
@@ -1276,19 +1487,20 @@ def test_the_report_names_the_step_that_carried_each_decision() -> None:
     results = map_columns(model, client, LexicalHeaderScorer(), None)
     by_name = {r.model_column: r for r in results}
     icms = by_name["Base ICMS"]
-    # the header matched AND the trio closed, so both are listed - but the
-    # decision is reported as the claim that survives an unknown vocabulary
+    # o cabeçalho casou E o trio fechou, então os dois aparecem - mas a
+    # decisão é atribuída à alegação que sobrevive a um vocabulário desconhecido
     assert icms.supported_by == "lexical + arithmetic"
     assert icms.decided_by == "arithmetic"
-    # a column with nothing but its header says so, and says only that
+    assert icms.reason == REASON_PASS_ONE_ACCEPTED
+    # uma coluna que só tem o cabeçalho diz isso, e só isso
     serie = by_name["Série"]
     assert serie.supported_by == "lexical"
     assert serie.decided_by == "lexical"
 
 
 def test_an_offline_run_never_claims_the_semantic_step() -> None:
-    # The header step is a property of the scorer. Reporting 'semantic' for a
-    # lexical run would credit evidence that never ran.
+    # A etapa de cabeçalho é uma propriedade do avaliador. Informar 'semantic'
+    # numa execução léxica atribuiria crédito a uma evidência que nunca rodou.
     model = table(["Série"], [])
     client = table(["SERIE"], [["1"], ["2"]])
     results = map_columns(model, client, LexicalHeaderScorer(), None)
@@ -1296,14 +1508,504 @@ def test_an_offline_run_never_claims_the_semantic_step() -> None:
     assert all("resolver" not in (r.supported_by or "") for r in results)
 
 
-def test_a_non_discriminating_proof_is_not_reported_as_arithmetic_support() -> None:
-    # A proof that cannot single out a column corroborates the tax scope, not
-    # the mapping, so it must not appear as evidence for it.
+@pytest.mark.parametrize(
+    "proof",
+    [
+        _trio_proof_text(
+            {"tax_scope": "pis", "rows_tested": 5501, "fit_score": 0.9996, "alternatives": 2}
+        ),
+        # A mesma prova no texto legado em inglês, como nos relatórios antigos.
+        "valor = base x aliquota holds for pis on 5501 rows at fit "
+        "0.9996 - but this client has 2 disjoint pis blocks that each satisfy it, "
+        "so this does not single out this column",
+    ],
+    ids=["portugues", "legado_ingles"],
+)
+def test_a_non_discriminating_proof_is_not_reported_as_arithmetic_support(proof) -> None:
+    # Uma prova que não distingue uma coluna confirma o escopo do tributo, não
+    # o mapeamento, então não pode aparecer como evidência para ele.
     steps = _supporting_step_ids(
         header_step="lexical",
         name_confidence=0.9,
-        arithmetic_proof="valor = base x aliquota holds for pis on 5501 rows at fit "
-        "0.9996 - but this client has 2 disjoint pis blocks that each satisfy it, "
-        "so this does not single out this column",
+        arithmetic_proof=proof,
     )
     assert steps == ["lexical"]
+
+
+def test_a_decisive_proof_is_reported_as_arithmetic_support() -> None:
+    proof = _trio_proof_text(
+        {"tax_scope": "icms", "rows_tested": 5570, "fit_score": 0.998, "alternatives": 1}
+    )
+    steps = _supporting_step_ids(
+        header_step="lexical", name_confidence=0.9, arithmetic_proof=proof
+    )
+    assert steps == ["lexical", "arithmetic"]
+
+
+# ---------------------------------------------------------------------------
+# Frases escritas em português na origem
+# ---------------------------------------------------------------------------
+
+
+def _cfop_catalogs():
+    """Catálogo de CFOP em memória, para não depender de reference_data/."""
+    from pathlib import Path
+
+    from reference_catalog import CatalogSpec, LoadedCatalog, ReferenceCatalogs
+
+    spec = CatalogSpec(
+        name="cfop",
+        file="cfop.csv",
+        width=4,
+        normalizer="cfop",
+        specificity=1.0,
+        source_version="teste",
+        source_url="https://example.invalid/cfop",
+        sha256="0" * 64,
+    )
+    codes = frozenset({"5102", "6102", "5405", "1102", "2102", "6108"})
+    return ReferenceCatalogs(Path("teste"), {"cfop": LoadedCatalog(spec=spec, codes=codes)})
+
+
+def test_a_catalog_decision_explains_itself_in_portuguese() -> None:
+    # Seis dos sete códigos distintos são oficiais: 85,7%, com vírgula
+    # decimal, e o catálogo pelo nome legível (CFOP), não pelo id interno.
+    values = pd.Series(["5102", "6102", "5405", "1102", "2102", "6108", "5949"] * 6)
+    column = ColumnRef("column_001", 0, "Cod. Fiscal", 1)
+    evidence = _cfop_catalogs().analyze(values, "cfop")
+
+    decision = _unique_distinctive_catalog_decision(
+        candidates=[(column, values, 0.42)],
+        catalog_evidence={0: [evidence]},
+    )
+
+    assert decision is not None
+    assert decision.client_column_id == "column_001"
+    assert decision.reason == REASON_CATALOG_DECISION.format(
+        catalog="CFOP",
+        distinct_coverage="85,7%",
+        unique_formatted_count=7,
+        coverage="85,7%",
+    )
+    assert decision.reason.startswith(
+        "A tabela oficial versionada de CFOP cobre 85,7% dos 7 códigos distintos usados"
+    )
+
+
+def test_a_vacuous_proposal_names_the_column_in_portuguese() -> None:
+    # A segunda ocorrência de 'Nº FCI' casa perfeitamente pelo cabeçalho e
+    # está vazia: a trava de coluna vazia recusa o aceite e a justificativa
+    # cita a coluna com o sufixo em português; em memória ele segue em inglês.
+    model = table(["Nº FCI"], [["A1"], ["B2"]])
+    client = table(["Outra", "Nº FCI", "Nº FCI"], [["x", "F1", None], ["y", "F2", None]])
+    scorer = FixedScorer(np.array([[0.10, 0.50, 0.98]]))
+    resolver = FixedResolver(
+        {
+            "Nº FCI": DataMappingDecision(
+                client_column_id="column_003",
+                data_confidence=0.9,
+                final_confidence=0.95,
+                reason="Same header.",
+            )
+        }
+    )
+
+    result = map_columns(model, client, scorer, resolver)[0]
+
+    assert result.client_column == "Nº FCI (occurrence 2)"
+    assert result.status == "review"
+    assert result.vetoed_by == "vacuity"
+    assert result.reason == REASON_VACUITY.format(client_column="Nº FCI (ocorrência 2)")
+    assert result.reason.startswith("'Nº FCI (ocorrência 2)' não tem linhas preenchidas")
+
+
+def test_an_offline_review_explains_itself_in_portuguese() -> None:
+    model = table(["Base ICMS"], [[100.0]])
+    client = table(["ICMS"], [[100.0]])
+    result = map_columns(model, client, FixedScorer(np.array([[0.70]])), None)[0]
+    assert result.method == "name_only"
+    assert result.reason == REASON_OFFLINE
+
+
+# ---------------------------------------------------------------------------
+# Gravação no esquema em português e ida e volta pelo report_schema
+# ---------------------------------------------------------------------------
+
+#: Colunas do revisor, acrescentadas em branco ao fim da aba Mapeamentos.
+REVIEWER_FIELDS = ("reviewer_status", "correct_client_column", "reviewer_note")
+
+
+def _result(**fields) -> MappingResult:
+    base = dict(
+        name_runner_up_confidence=0.0, name_margin=0.0, data_confidence=None,
+        final_confidence=0.0, method="data", status="review", reason="",
+    )
+    base.update(fields)
+    return MappingResult(**base)
+
+
+def _varied_results() -> list[MappingResult]:
+    """Linhas que cobrem cada situação, método, veto, catálogo, etapa e forma de nome de exibição."""
+    decisive = _trio_proof_text(
+        {"tax_scope": "icms", "rows_tested": 5570, "fit_score": 0.998, "alternatives": 1}
+    )
+    rival = _trio_proof_text(
+        {"tax_scope": "pis", "rows_tested": 70, "fit_score": 0.9857, "alternatives": 2}
+    )
+    return [
+        _result(
+            model_column_number=1, model_column="CFOP", client_column_number=3,
+            client_column="Cod. Fiscal", name_confidence=0.61, final_confidence=0.9,
+            data_confidence=0.8571, method="catalog", status="accepted",
+            reason=REASON_CATALOG_DECISION.format(
+                catalog="CFOP", distinct_coverage="85,7%", unique_formatted_count=7,
+                coverage="85,7%",
+            ),
+            catalog_name="cfop", catalog_coverage=0.8571, catalog_distinct_coverage=0.8571,
+            catalog_confidence=0.8571, supported_by="lexical + catalog", decided_by="catalog",
+        ),
+        _result(
+            model_column_number=2, model_column="Valor ICMS", client_column_number=12,
+            client_column="Valor ICMS (occurrence 2)", name_confidence=1.0,
+            name_runner_up_confidence=0.5, name_margin=0.5, final_confidence=1.0,
+            method="name", status="accepted", reason=REASON_PASS_ONE_ACCEPTED,
+            arithmetic_proof=decisive, supported_by="lexical + arithmetic",
+            decided_by="arithmetic",
+        ),
+        _result(
+            model_column_number=3, model_column="Base PIS", client_column_number=4,
+            client_column="Unnamed column 4", name_confidence=0.88,
+            name_runner_up_confidence=0.8, name_margin=0.08, final_confidence=0.88,
+            method="name_only", reason=REASON_OFFLINE, arithmetic_proof=rival,
+            supported_by="lexical", decided_by="lexical",
+        ),
+        _result(
+            model_column_number=4, model_column="Município", client_column_number=7,
+            client_column="Cidade", name_confidence=0.7, final_confidence=0.89,
+            data_confidence=0.95, reason="The resolver's own prose stays in English.",
+            catalog_name="ibge_municipality", catalog_coverage=0.97, catalog_confidence=0.97,
+            supported_by="resolver + semantic + profile + identifier", decided_by="identifier",
+            llm_data_confidence=0.9, llm_final_confidence=0.8,
+        ),
+        _result(
+            model_column_number=5, model_column="Nº FCI", client_column_number=9,
+            client_column="Nº FCI (occurrence 2)", name_confidence=0.98, name_margin=0.48,
+            final_confidence=0.98, data_confidence=0.0,
+            reason=REASON_VACUITY.format(client_column="Nº FCI (ocorrência 2)"),
+            supported_by="resolver + semantic", decided_by="semantic", vetoed_by="vacuity",
+            llm_data_confidence=0.9, llm_final_confidence=0.95,
+        ),
+        _result(
+            model_column_number=6, model_column="Tipo de Imposto CBS", client_column_number=2,
+            client_column="CBS Base", name_confidence=0.89, final_confidence=0.95,
+            data_confidence=0.95,
+            reason=REASON_CONFLICT_REVIEW.format(
+                header_conflict=describe_header_conflict_pt("Tipo de Imposto CBS", "CBS Base")
+            ),
+            supported_by="semantic + profile", decided_by="profile",
+            vetoed_by="family_conflict", catalog_name="ibs_cbs_classification",
+        ),
+        _result(
+            model_column_number=7, model_column="cClassTrib", client_column_number=5,
+            client_column="Class", name_confidence=0.5, final_confidence=0.5,
+            method="data_error", reason="A comparação de dados falhou: RuntimeError: falhou",
+        ),
+        _result(
+            model_column_number=8, model_column="Campo Inexistente", client_column_number=None,
+            client_column=None, name_confidence=0.0, method="data", status="no_match",
+            reason=REASON_UNSUPPORTED_NO_MATCH,
+        ),
+    ]
+
+
+def _varied_unmatched() -> list[UnmatchedColumn]:
+    def row(number, name, disposition, priority, signals, detail):
+        return UnmatchedColumn(
+            client_column_number=number, client_column=name, disposition=disposition,
+            review_priority=priority, rows_with_value=40, distinct_values=12,
+            signals=signals, signal_detail=detail, closest_model_column="Base ICMS",
+            closest_name_confidence=0.4567,
+        )
+
+    return [
+        row(1, "Base ICMS (occurrence 2)", "never_referenced", "shortlist", "arithmetic,catalog",
+            SIGNAL_TRIO.format(slot="base de cálculo") + "; "
+            + SIGNAL_CATALOG.format(distinct_coverage="88,2%", unique_formatted_count=17,
+                                    catalog="CFOP")),
+        row(2, "CNPJ", "proposed_not_accepted", "shortlist", "cnpj_checkdigit",
+            SIGNAL_CHECKDIGIT.format(fraction="97,5%", kind="CNPJ")),
+        row(3, "Chave", "never_referenced", "shortlist", "nfe_key_checkdigit",
+            SIGNAL_CHECKDIGIT.format(fraction="100,0%", kind="chave de acesso da NF-e")),
+        row(4, "CPF", "never_referenced", "shortlist", "cpf_checkdigit",
+            SIGNAL_CHECKDIGIT.format(fraction="90,0%", kind="CPF")),
+        row(5, "Unnamed column 5", "never_referenced", "low", "", SIGNAL_EMPTY),
+        row(6, "Data", "never_referenced", "shortlist", "date", "contém datas"),
+    ]
+
+
+def _varied_queue() -> list[AdjudicationRow]:
+    def row(rank, number, name, client_number, client_name, why, disagrees="", proof=""):
+        return AdjudicationRow(
+            rank=rank, model_column_number=number, model_column=name,
+            proposed_client_column_number=client_number, proposed_client_column=client_name,
+            final_confidence=0.8999, gate_distance=0.0001, name_margin=0.05,
+            rows_with_value=0 if why == WHY_HELD_VACUOUS else 40,
+            resolver_disagrees=disagrees, arithmetic_proof=proof,
+            client_sample_values="1 | 2 | 3", why_held=why,
+        )
+
+    return [
+        row(1, 3, "Base PIS", 4, "Unnamed column 4", WHY_HELD_NAME_ONLY,
+            proof=_varied_results()[2].arithmetic_proof),
+        row(2, 4, "Município", 7, "Cidade", WHY_HELD_BELOW_THRESHOLD,
+            disagrees=RESOLVER_DISAGREES.format(llm_final="0,75")),
+        row(3, 5, "Nº FCI", 9, "Nº FCI (occurrence 2)", WHY_HELD_VACUOUS),
+    ]
+
+
+def _is_missing(value) -> bool:
+    return value is None or value == "" or (isinstance(value, float) and math.isnan(value))
+
+
+def _assert_same_cell(expected, actual, where) -> None:
+    if _is_missing(expected) or _is_missing(actual):
+        assert _is_missing(expected) and _is_missing(actual), (where, expected, actual)
+    elif isinstance(expected, (int, float)) and not isinstance(expected, bool):
+        assert math.isclose(float(expected), float(actual)), (where, expected, actual)
+    else:
+        assert expected == actual, (where, expected, actual)
+
+
+def _assert_round_trip(rows, frame: pd.DataFrame, table_name: str, extra=()) -> None:
+    """O quadro lido do arquivo, convertido pelo report_schema, é igual a asdict(linhas).
+
+    Os campos de máquina (situação, método, etapas, veto, catálogo, sinais,
+    nomes de exibição) voltam ao valor interno; as frases, já escritas em
+    português na origem, voltam intactas; os números voltam iguais.
+    """
+    internal, schema = rs.to_internal_frame(frame, table_name)
+    assert schema == rs.PT_BR
+    expected = [asdict(row) for row in rows]
+    fields = list(expected[0]) + list(extra)
+    assert list(internal.columns) == fields
+    assert len(internal) == len(expected)
+    for position, record in enumerate(expected):
+        for field in fields:
+            _assert_same_cell(
+                record.get(field, ""), internal[field].iloc[position], (table_name, position, field)
+            )
+
+
+def test_write_results_round_trips_through_report_schema(tmp_path) -> None:
+    results = _varied_results()
+    unmatched = _varied_unmatched()
+    queue = _varied_queue()
+    output = tmp_path / "relatorio.xlsx"
+
+    write_results(
+        results, output, metadata={"mapping_schema_version": MAPPING_SCHEMA_VERSION},
+        unmatched=unmatched, queue=queue,
+    )
+
+    workbook = pd.ExcelFile(output)
+    assert workbook.sheet_names == [
+        "Mapeamentos", "Metadados da Execução", "Colunas do Cliente sem Uso", "Fila de Revisão",
+    ]
+    _assert_round_trip(
+        results, pd.read_excel(workbook, sheet_name="Mapeamentos"), "mappings",
+        extra=REVIEWER_FIELDS,
+    )
+    _assert_round_trip(
+        unmatched, pd.read_excel(workbook, sheet_name="Colunas do Cliente sem Uso"), "unmatched"
+    )
+    _assert_round_trip(queue, pd.read_excel(workbook, sheet_name="Fila de Revisão"), "queue")
+
+
+def test_the_written_cells_are_in_portuguese(tmp_path) -> None:
+    output = tmp_path / "relatorio.xlsx"
+    write_results(
+        _varied_results(), output, unmatched=_varied_unmatched(), queue=_varied_queue()
+    )
+    mappings = pd.read_excel(output, sheet_name="Mapeamentos")
+    assert list(mappings.columns) == list(rs.COLUMNS["mappings"].values())
+    assert list(mappings["situacao"]) == [
+        "aceito", "aceito", "revisao", "revisao", "revisao", "revisao", "revisao",
+        "sem_correspondencia",
+    ]
+    assert list(mappings["metodo"]) == [
+        "catalogo", "nome", "somente_nome", "dados", "dados", "dados", "erro_dados", "dados",
+    ]
+    assert list(mappings["coluna_cliente"].fillna("")) == [
+        "Cod. Fiscal", "Valor ICMS (ocorrência 2)", "Coluna sem nome 4", "Cidade",
+        "Nº FCI (ocorrência 2)", "CBS Base", "Class", "",
+    ]
+    assert list(mappings["apoiado_por"].fillna("")) == [
+        "lexico + catalogo", "lexico + aritmetica", "lexico",
+        "resolvedor_ia + semantico + perfil + identificador", "resolvedor_ia + semantico",
+        "semantico + perfil", "", "",
+    ]
+    assert list(mappings["decidido_por"].fillna("")) == [
+        "catalogo", "aritmetica", "lexico", "identificador", "semantico", "perfil", "", "",
+    ]
+    assert list(mappings["vetado_por"].fillna("")) == [
+        "", "", "", "", "coluna_vazia", "conflito_tributario", "", "",
+    ]
+    assert list(mappings["nome_catalogo"].fillna("")) == [
+        "cfop", "", "", "municipio_ibge", "", "cclasstrib", "", "",
+    ]
+    # A prova não decisiva em português chega ao arquivo com o marcador que os
+    # leitores (mapeval) procuram.
+    proofs = list(mappings["prova_aritmetica"].fillna(""))
+    assert rs.proof_is_decisive(proofs[1])
+    assert proofs[2].endswith(rs.PROOF_NOT_DECISIVE_PT)
+    assert not rs.proof_is_decisive(proofs[2])
+
+    unmatched = pd.read_excel(output, sheet_name="Colunas do Cliente sem Uso")
+    assert list(unmatched.columns) == list(rs.COLUMNS["unmatched"].values())
+    assert list(unmatched["sinais"].fillna("")) == [
+        "aritmetica,catalogo", "dv_cnpj", "dv_chave_nfe", "dv_cpf", "", "data",
+    ]
+    assert set(unmatched["disposicao"]) == {"nunca_referenciada", "proposta_nao_aceita"}
+    assert set(unmatched["prioridade_revisao"]) == {"prioritaria", "baixa"}
+    assert list(unmatched["coluna_cliente"])[0] == "Base ICMS (ocorrência 2)"
+    assert list(unmatched["coluna_cliente"])[4] == "Coluna sem nome 5"
+
+    queue = pd.read_excel(output, sheet_name="Fila de Revisão")
+    assert list(queue.columns) == list(rs.COLUMNS["queue"].values())
+    assert list(queue["coluna_cliente_proposta"]) == [
+        "Coluna sem nome 4", "Cidade", "Nº FCI (ocorrência 2)",
+    ]
+    assert list(queue["motivo_retencao"]) == [
+        WHY_HELD_NAME_ONLY, WHY_HELD_BELOW_THRESHOLD, WHY_HELD_VACUOUS,
+    ]
+
+
+def test_empty_auxiliary_sheets_keep_their_portuguese_headers(tmp_path) -> None:
+    # Uma lista vazia ainda grava a aba: ela afirma que nada ficou de fora. A
+    # linha em branco que leva os cabeçalhos sai com células vazias, então a
+    # leitura devolve só o cabeçalho.
+    output = tmp_path / "relatorio.xlsx"
+    write_results(_varied_results(), output, unmatched=[], queue=[])
+
+    workbook = pd.ExcelFile(output)
+    assert workbook.sheet_names == [
+        "Mapeamentos", "Colunas do Cliente sem Uso", "Fila de Revisão",
+    ]
+    for sheet, table_name in (
+        ("Colunas do Cliente sem Uso", "unmatched"),
+        ("Fila de Revisão", "queue"),
+    ):
+        frame = pd.read_excel(workbook, sheet_name=sheet)
+        assert list(frame.columns) == list(rs.COLUMNS[table_name].values())
+        assert frame.empty
+        internal, schema = rs.to_internal_frame(frame, table_name)
+        assert schema == rs.PT_BR
+        assert list(internal.columns) == list(rs.COLUMNS[table_name])
+
+
+def test_a_csv_report_uses_the_portuguese_schema_too(tmp_path) -> None:
+    results = _varied_results()
+    output = tmp_path / "relatorio.csv"
+
+    write_results(results, output)
+
+    frame = pd.read_csv(output)
+    assert list(frame.columns) == list(rs.COLUMNS["mappings"].values())
+    assert frame["situacao"].iloc[0] == "aceito"
+    _assert_round_trip(results, frame, "mappings", extra=REVIEWER_FIELDS)
+
+
+def test_an_unknown_output_extension_is_refused_in_portuguese(tmp_path) -> None:
+    with pytest.raises(ValueError, match="A saída deve terminar em .xlsx ou .csv"):
+        write_results(_varied_results(), tmp_path / "relatorio.txt")
+
+
+# ---------------------------------------------------------------------------
+# Linha de comando
+# ---------------------------------------------------------------------------
+
+
+def _write_sheet(path, rows) -> None:
+    pd.DataFrame(rows).to_excel(path, header=False, index=False)
+
+
+def test_the_cli_help_is_in_portuguese() -> None:
+    parser = build_parser()
+    text = parser.format_help()
+    assert text.startswith("uso: ")
+    assert "argumentos posicionais:" in text
+    assert "opções:" in text
+    assert "mostra esta mensagem de ajuda e sai" in text
+    for english in ("usage:", "positional arguments", "options:", "show this help"):
+        assert english not in text, english
+    # Toda opção tem ajuda, inclusive as que não tinham nenhuma.
+    assert all(action.help for action in parser._actions)
+    # As flags continuam em inglês.
+    for flag in ("--offline", "--output", "--name-threshold", "--no-reference-data"):
+        assert flag in text
+
+
+def test_main_writes_a_portuguese_report(tmp_path, capsys) -> None:
+    model = tmp_path / "modelo.xlsx"
+    client = tmp_path / "cliente.xlsx"
+    output = tmp_path / "relatorio.xlsx"
+    _write_sheet(model, [["CFOP", "Valor Frete"], ["5102", 10.0]])
+    _write_sheet(client, [["CFOP", "Frete"], ["5102", 10.0]])
+
+    code = main(
+        [str(client), "--model", str(model), "--output", str(output),
+         "--offline", "--no-reference-data"]
+    )
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert f"Arquivo gravado: {output}" in out
+    assert "aceito=1 revisao=1 sem_correspondencia=0" in out
+    workbook = pd.ExcelFile(output)
+    assert workbook.sheet_names == [
+        "Mapeamentos", "Metadados da Execução", "Colunas do Cliente sem Uso", "Fila de Revisão",
+    ]
+    metadata = dict(
+        pd.read_excel(workbook, sheet_name="Metadados da Execução")[["chave", "valor"]].values
+    )
+    assert metadata["versao_esquema_mapeamento"] == 3
+    assert metadata["modelo_embedding"] == "offline"
+    assert metadata["modelo_ia"] == "offline"
+    assert metadata["sha256_manifesto_referencia"] == "desativado"
+    assert set(metadata) == set(rs.METADATA_KEYS.values()) - {"migrado_da_versao_esquema"}
+
+
+def test_main_rejects_a_threshold_out_of_range_in_portuguese(tmp_path) -> None:
+    with pytest.raises(SystemExit) as stop:
+        main([str(tmp_path / "cliente.xlsx"), "--name-threshold", "1.5", "--offline"])
+    assert stop.value.code == "--name-threshold deve estar entre 0 e 1"
+
+
+def test_main_reports_a_missing_file_in_portuguese_without_a_traceback(tmp_path) -> None:
+    model = tmp_path / "modelo.xlsx"
+    _write_sheet(model, [["CFOP"], ["5102"]])
+    missing = tmp_path / "nao_existe.xlsx"
+
+    with pytest.raises(SystemExit) as stop:
+        main([str(missing), "--model", str(model), "--offline", "--no-reference-data"])
+
+    # SystemExit com texto: o Python imprime a mensagem e sai com código 1.
+    assert stop.value.code == f"Arquivo não encontrado: {missing}"
+
+
+def test_main_reports_a_bad_header_row_in_portuguese(tmp_path) -> None:
+    model = tmp_path / "modelo.xlsx"
+    client = tmp_path / "cliente.xlsx"
+    _write_sheet(model, [["CFOP"], ["5102"]])
+    _write_sheet(client, [["CFOP"], ["5102"]])
+
+    with pytest.raises(SystemExit) as stop:
+        main(
+            [str(client), "--model", str(model), "--client-header-row", "5",
+             "--offline", "--no-reference-data", "--output", str(tmp_path / "r.xlsx")]
+        )
+
+    assert stop.value.code == (
+        "Não foi possível gerar o relatório de mapeamento: A linha de cabeçalho 5 "
+        f"está fora das linhas da planilha: {client}"
+    )
