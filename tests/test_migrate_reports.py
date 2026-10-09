@@ -6,22 +6,25 @@ Quatro grupos:
   ocorrência, ``unrecorded``, ``(agrees)``, prosa da IA e uma observação
   humana, migrado e comparado com o português esperado; migrar duas vezes dá
   o mesmo arquivo; a verificação embutida barra uma migração errada sem
-  tocar no original;
+  tocar no original; arquivos mistos, que não são planilha ou com a aba de
+  mapeamentos fora do lugar são recusados sem gravar; a regeneração
+  divergente recusa a migração; o texto vazio continua texto vazio;
 * antidesvio: para cada modelo de frase inglês legado, a tradução da saída
   do código antigo (copiado de ``2ae4b6d:invoice_mapper.py``) é exatamente o
   que a função produtora atual grava para as mesmas entradas;
-* ``@requires_workbooks``: a saída offline em inglês da linha de base
-  (gravada em 2ae4b6d), traduzida célula a célula, é exatamente o texto de
-  uma execução offline nova do código atual;
+* ``@requires_workbooks``: a saída offline em inglês do código de 2ae4b6d,
+  traduzida, é exatamente o texto de uma execução offline nova do código
+  atual; e, migrada pelo ``migrate_reports``, é célula a célula (valor, tipo,
+  formato e estilo) a execução nova, menos a data e a linha da migração;
 * ``@requires_workbooks``: migrar uma cópia do relatório arquivado de
   sap_procosa preserva os 26 pareceres e o ``apply`` continua entregando 62
   colunas; o de oracle passa na prova cruzada por regeneração.
 
-A linha de base em inglês fica fora do repositório. Para recriá-la: faça
-``git worktree add /tmp/base 2ae4b6d`` e rode, para cada cliente,
-``python /tmp/base/invoice_mapper.py data/clients/<exportação> --offline
---output <pasta>/mapping_<cliente>_offline.xlsx``. Aponte a variável
-``MIGRACAO_BASELINE_EN`` para a pasta.
+A linha de base em inglês não fica no repositório: o teste extrai o código
+de 2ae4b6d com ``git archive`` numa pasta temporária e roda nele o mapeador
+offline para os quatro clientes. Para usar uma linha de base já gravada,
+aponte a variável ``MIGRACAO_BASELINE_EN`` para a pasta com os arquivos
+``mapping_<cliente>_offline.xlsx``.
 """
 
 from __future__ import annotations
@@ -32,6 +35,7 @@ import subprocess
 import sys
 from collections import Counter
 from pathlib import Path
+from typing import Sequence
 
 import openpyxl
 import pandas as pd
@@ -64,17 +68,10 @@ requires_workbooks = pytest.mark.skipif(
     reason="planilhas dos clientes ausentes",
 )
 
-BASELINE_EN = Path(
-    os.environ.get(
-        "MIGRACAO_BASELINE_EN",
-        "/private/tmp/claude-501/-Users-ubaldino-Downloads-cbs-base-fiscal/"
-        "a2a8298b-236d-48ac-b1cf-1eb96f6a9adb/scratchpad/baseline-en",
-    )
-)
-requires_baseline = pytest.mark.skipif(
-    not all((BASELINE_EN / f"mapping_{client}_offline.xlsx").exists() for client in EXPORTS),
-    reason="linha de base offline em inglês (2ae4b6d) ausente",
-)
+#: Linha de base em inglês já gravada (opcional). Sem ela, o teste a gera a
+#: partir do código de 2ae4b6d (ver ``baseline_offline_reports``).
+_BASELINE_ENV = os.environ.get("MIGRACAO_BASELINE_EN", "")
+BASELINE_EN = Path(_BASELINE_ENV) if _BASELINE_ENV else None
 
 
 # ---------------------------------------------------------------------------
@@ -371,9 +368,9 @@ def test_synthetic_legacy_report_becomes_the_portuguese_schema(legacy_report, ca
     assert _migrate(report, export, model) == 0
     out = capsys.readouterr().out
     # Os hashes do relatório sintético não conferem: só a tradução por modelo.
-    assert "Conferência por regeneração não feita: sha256_cliente" in out
-    assert "Verificação: ok." in out
-    assert "aceito=3 revisao=4 sem_correspondencia=1" in out
+    assert "Aviso: conferência por regeneração não feita: o sha256_cliente gravado" in out
+    assert "Verificação: ok (aceito=3 revisao=4 sem_correspondencia=1)." in out
+    assert "Preservados linha a linha: 3 pareceres e 2 observações do revisor." in out
     assert f"Arquivo gravado: {report}" in out
 
     book = openpyxl.load_workbook(report)
@@ -510,7 +507,7 @@ def test_dry_run_leaves_the_report_untouched(legacy_report, capsys) -> None:
     before = report.read_bytes()
     assert _migrate(report, export, model, "--dry-run") == 0
     out = capsys.readouterr().out
-    assert "Verificação: ok." in out
+    assert "Verificação: ok (" in out
     assert "Simulação (--dry-run): o relatório não foi alterado." in out
     assert report.read_bytes() == before
     assert list(report.parent.glob("*.migrando.xlsx")) == []
@@ -547,7 +544,101 @@ def test_a_mixed_schema_report_is_refused_without_writing(tmp_path) -> None:
     assert report.read_bytes() == before
 
 
-def test_a_regeneration_mismatch_warns_and_translates_by_template(tmp_path, capsys) -> None:
+def test_a_portuguese_report_with_a_legacy_sheet_is_mixed_not_already_migrated(
+    legacy_report, capsys
+) -> None:
+    report, export, model = legacy_report
+    assert _migrate(report, export, model) == 0
+    capsys.readouterr()
+    book = openpyxl.load_workbook(report)
+    book[rs.sheet_name("run_metadata")].title = rs.sheet_name("run_metadata", rs.LEGACY_EN)
+    book.save(report)
+    before = report.read_bytes()
+    with pytest.raises(SystemExit) as failure:
+        _migrate(report, export, model)
+    message = str(failure.value.code)
+    assert message.startswith("Esquema misto: o relatório está no esquema em português")
+    assert "já está no esquema em português" not in capsys.readouterr().out
+    assert report.read_bytes() == before
+
+
+def test_portuguese_machine_values_in_a_legacy_report_are_refused(tmp_path) -> None:
+    export, model = _write_tables(tmp_path)
+    report = _write_legacy_report(tmp_path / "mapping_cliente_full.xlsx")
+    book = openpyxl.load_workbook(report)
+    mappings = book["Mappings"]
+    mappings.cell(2, LEGACY_MAPPINGS_HEADER.index("status") + 1).value = "aceito"
+    mappings.cell(2, LEGACY_MAPPINGS_HEADER.index("decided_by") + 1).value = "lexico"
+    # O parecer em português é entrada legítima do revisor em qualquer esquema.
+    mappings.cell(3, LEGACY_MAPPINGS_HEADER.index("reviewer_status") + 1).value = "Incorreto"
+    book.save(report)
+    before = report.read_bytes()
+    with pytest.raises(SystemExit) as failure:
+        _migrate(report, export, model)
+    message = str(failure.value.code)
+    assert message.startswith(
+        "Esquema misto: o relatório está no esquema legado em inglês, mas 2 células já têm o "
+        "valor em português: Mappings!K2 (status): 'aceito'; Mappings!Q2 (decided_by): 'lexico'."
+    )
+    assert "reviewer_status" not in message
+    assert report.read_bytes() == before
+
+
+def test_a_file_that_is_not_a_workbook_or_has_mappings_out_of_place_is_refused(
+    tmp_path,
+) -> None:
+    export, model = _write_tables(tmp_path)
+    text = tmp_path / "nao_e_planilha.xlsx"
+    text.write_text("isto não é uma planilha\n", encoding="utf-8")
+    with pytest.raises(SystemExit) as failure:
+        _migrate(text, export, model)
+    assert str(failure.value.code).startswith(f"{text} não é uma planilha .xlsx válida")
+
+    report = _write_legacy_report(tmp_path / "mapping_cliente_full.xlsx")
+    book = openpyxl.load_workbook(report)
+    book.move_sheet("Run Metadata", offset=-1)
+    book.save(report)
+    before = report.read_bytes()
+    with pytest.raises(SystemExit) as failure:
+        _migrate(report, export, model)
+    assert str(failure.value.code).startswith(
+        "A aba 'Mappings' precisa ser a primeira do relatório"
+    )
+    assert report.read_bytes() == before
+
+    with pytest.raises(SystemExit) as failure:
+        _migrate(tmp_path, export, model)
+    assert str(failure.value.code) == f"Esperava um arquivo, mas {tmp_path} é uma pasta."
+
+
+def test_empty_text_cells_keep_their_type_and_the_check_sees_it(
+    legacy_report, monkeypatch
+) -> None:
+    report, export, model = legacy_report
+    book = openpyxl.load_workbook(report)
+    # O mapeador grava os campos vazios como texto vazio.
+    book["Mappings"].cell(2, LEGACY_MAPPINGS_HEADER.index("vetoed_by") + 1).value = ""
+    book.save(report)
+    coordinate = f"{openpyxl.utils.get_column_letter(LEGACY_MAPPINGS_HEADER.index('vetoed_by') + 1)}2"
+    assert openpyxl.load_workbook(report)["Mappings"][coordinate].data_type == "inlineStr"
+    before = report.read_bytes()
+
+    # Sem a regravação do texto vazio, a célula viraria uma célula em branco,
+    # e a verificação embutida precisa barrar isso.
+    monkeypatch.setattr(migrate_reports, "_keep_empty_text_cells", lambda workbook: None)
+    with pytest.raises(SystemExit) as failure:
+        _migrate(report, export, model)
+    assert f"Mapeamentos!{coordinate}" in str(failure.value.code)
+    assert "tipo ou formatação da célula diferente" in str(failure.value.code)
+    assert report.read_bytes() == before
+
+    monkeypatch.undo()
+    assert _migrate(report, export, model) == 0
+    cell = openpyxl.load_workbook(report)["Mapeamentos"][coordinate]
+    assert cell.value is None and cell.data_type == "inlineStr"
+
+
+def test_a_regeneration_mismatch_refuses_without_writing(tmp_path) -> None:
     export, model = _write_tables(tmp_path)
     metadata = [
         (key, im.file_sha256(export) if key == "client_sha256"
@@ -555,13 +646,18 @@ def test_a_regeneration_mismatch_warns_and_translates_by_template(tmp_path, caps
         for key, value in LEGACY_METADATA
     ]
     report = _write_legacy_report(tmp_path / "mapping_cliente_full.xlsx", metadata=metadata)
-    assert _migrate(report, export, model) == 0
-    out = capsys.readouterr().out
-    # As abas derivadas do relatório sintético não saem desta exportação.
-    assert "Aviso: a regeneração diverge do arquivado" in out
-    assert "Verificação: ok." in out
-    mappings = openpyxl.load_workbook(report)["Mapeamentos"]
-    assert _column(mappings, "justificativa") == EXPECTED_REASONS
+    before = report.read_bytes()
+    with pytest.raises(SystemExit) as failure:
+        _migrate(report, export, model)
+    # Os hashes conferem, mas as abas derivadas do relatório sintético não saem
+    # desta exportação: com as mesmas entradas, o mapeador atual não reproduz o
+    # arquivado, e a migração não grava nada.
+    message = str(failure.value.code)
+    assert message.startswith("A conferência por regeneração encontrou ")
+    assert " com o arquivado; o relatório não foi alterado:" in message
+    assert "o relatório não foi alterado" in message
+    assert report.read_bytes() == before
+    assert list(report.parent.glob("*.migrando.xlsx")) == []
 
 
 def test_command_line_is_in_portuguese(capsys, tmp_path) -> None:
@@ -977,37 +1073,97 @@ def _clean_environment() -> dict[str, str]:
     return environment
 
 
-@pytest.fixture(scope="module")
-def fresh_offline_reports(tmp_path_factory) -> dict[str, Path]:
-    """Uma execução offline nova do código atual para cada cliente, em paralelo."""
-    folder = tmp_path_factory.mktemp("offline_atual")
-    processes = {}
-    for client, export in EXPORTS.items():
-        output = folder / f"mapping_{client}_offline.xlsx"
-        processes[client] = (
-            output,
+def _start_offline_runs(
+    mapper: Path, folder: Path, cwd: Path, extra: Sequence[str] = ()
+) -> dict[str, tuple[Path, subprocess.Popen]]:
+    """Dispara ``mapper --offline`` para os quatro clientes, sem esperar."""
+    return {
+        client: (
+            folder / f"mapping_{client}_offline.xlsx",
             subprocess.Popen(
-                [sys.executable, str(ROOT / "invoice_mapper.py"), str(ROOT / export),
-                 "--offline", "--output", str(output)],
-                cwd=ROOT, env=_clean_environment(),
+                [sys.executable, str(mapper), str(ROOT / export), "--offline",
+                 "--output", str(folder / f"mapping_{client}_offline.xlsx"), *extra],
+                cwd=cwd, env=_clean_environment(),
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             ),
         )
+        for client, export in EXPORTS.items()
+    }
+
+
+def _finish_offline_runs(runs: dict[str, tuple[Path, subprocess.Popen]]) -> dict[str, Path]:
     reports = {}
-    for client, (output, process) in processes.items():
+    for client, (output, process) in runs.items():
         _, errors = process.communicate(timeout=1800)
         assert process.returncode == 0, errors
         reports[client] = output
     return reports
 
 
+def _legacy_code(folder: Path) -> Path | None:
+    """Extrai com ``git archive`` o código Python e os catálogos de 2ae4b6d."""
+    archive = subprocess.run(
+        ["git", "archive", "--format=tar", LEGACY_COMMIT, "--", "*.py", "reference_data"],
+        cwd=ROOT, capture_output=True,
+    )
+    if archive.returncode != 0:
+        return None
+    extracted = subprocess.run(["tar", "-x", "-C", str(folder)], input=archive.stdout)
+    return folder if extracted.returncode == 0 else None
+
+
+@pytest.fixture(scope="module")
+def offline_runs(tmp_path_factory) -> dict[str, dict[str, Path]]:
+    """Execuções offline do código atual e do de 2ae4b6d, todas em paralelo.
+
+    ``"atual"``: o mapeador de hoje, em português. ``"legado"``: a saída
+    offline em inglês do código que gravou os relatórios legados. Usa
+    ``MIGRACAO_BASELINE_EN`` se a variável aponta para os quatro arquivos;
+    senão roda o mapeador antigo extraído do git, com as exportações e o
+    modelo atuais (que não mudaram desde então).
+    """
+    fresh = _start_offline_runs(
+        ROOT / "invoice_mapper.py", tmp_path_factory.mktemp("offline_atual"), ROOT
+    )
+    legacy: dict[str, tuple[Path, subprocess.Popen]] | None = None
+    baseline: dict[str, Path] = {}
+    if BASELINE_EN is not None:
+        baseline = {client: BASELINE_EN / f"mapping_{client}_offline.xlsx" for client in EXPORTS}
+    if not baseline or not all(path.exists() for path in baseline.values()):
+        code = _legacy_code(tmp_path_factory.mktemp(f"codigo_{LEGACY_COMMIT}"))
+        if code is not None:
+            legacy = _start_offline_runs(
+                code / "invoice_mapper.py", tmp_path_factory.mktemp("offline_legado"), code,
+                ["--model", str(ROOT / "data/model.xlsx")],
+            )
+        baseline = {}
+    runs = {"atual": _finish_offline_runs(fresh)}
+    if legacy is not None:
+        baseline = _finish_offline_runs(legacy)
+    if not baseline:
+        pytest.skip(f"código de {LEGACY_COMMIT} indisponível no git")
+    runs["legado"] = baseline
+    return runs
+
+
+@pytest.fixture(scope="module")
+def fresh_offline_reports(offline_runs) -> dict[str, Path]:
+    """Uma execução offline nova do código atual para cada cliente."""
+    return offline_runs["atual"]
+
+
+@pytest.fixture(scope="module")
+def baseline_offline_reports(offline_runs) -> dict[str, Path]:
+    """A saída offline em inglês do código de 2ae4b6d para cada cliente."""
+    return offline_runs["legado"]
+
+
 @requires_workbooks
-@requires_baseline
 @pytest.mark.parametrize("client", list(EXPORTS))
 def test_old_english_output_translated_is_the_new_portuguese_output(
-    client, fresh_offline_reports
+    client, fresh_offline_reports, baseline_offline_reports
 ) -> None:
-    old_book = openpyxl.load_workbook(BASELINE_EN / f"mapping_{client}_offline.xlsx")
+    old_book = openpyxl.load_workbook(baseline_offline_reports[client])
     new_book = openpyxl.load_workbook(fresh_offline_reports[client])
     compared = 0
     for table in migrate_reports.TABLES:
@@ -1028,6 +1184,50 @@ def test_old_english_output_translated_is_the_new_portuguese_output(
                 assert translated == new, (table, name, line)
                 compared += 1
     assert compared > 0
+
+
+_CELL_STYLES = ("font", "fill", "alignment", "border", "protection")
+
+
+def _cells(path: Path) -> dict[str, list[list[tuple[object, ...]]]]:
+    """Valor, tipo, tipo da célula no arquivo, formato e estilo de cada célula."""
+    book = openpyxl.load_workbook(path)
+    return {
+        sheet.title: [
+            [
+                (cell.value, type(cell.value).__name__, cell.data_type, cell.number_format)
+                + tuple(repr(getattr(cell, name)) for name in _CELL_STYLES)
+                for cell in row
+            ]
+            for row in sheet.iter_rows()
+        ]
+        for sheet in book.worksheets
+    }
+
+
+@requires_workbooks
+@pytest.mark.parametrize("client", list(EXPORTS))
+def test_a_migrated_old_offline_report_is_a_fresh_run_cell_by_cell(
+    client, tmp_path, fresh_offline_reports, baseline_offline_reports
+) -> None:
+    report = tmp_path / f"mapping_{client}_offline.xlsx"
+    shutil.copyfile(baseline_offline_reports[client], report)
+    assert migrate_reports.migrate_report(
+        report, ROOT / EXPORTS[client], ROOT / "data/model.xlsx", ROOT / "reference_data",
+        log=lambda message: None,
+    ).written
+    migrated, fresh = _cells(report), _cells(fresh_offline_reports[client])
+    assert list(migrated) == list(fresh)
+    metadata = rs.sheet_name("run_metadata")
+    *rows, marker = migrated.pop(metadata)
+    fresh_rows = fresh.pop(metadata)
+    # Só mudam a data da execução e a linha que registra a migração.
+    assert (marker[0][0], marker[1][0]) == ("migrado_da_versao_esquema", 2)
+    differing = [
+        row[0][0] for row, other in zip(rows, fresh_rows, strict=True) if row != other
+    ]
+    assert differing == ["gerado_em_utc"]
+    assert migrated == fresh
 
 
 def _legacy_archived_report(client: str, folder: Path) -> Path:
@@ -1076,7 +1276,7 @@ def test_migrating_archived_sap_procosa_keeps_the_26_verdicts_and_apply_delivers
     export = ROOT / EXPORTS["sap_procosa"]
     assert _migrate(report, export, ROOT / "data/model.xlsx") == 0
     out = capsys.readouterr().out
-    assert "26 parecer(es) e 26 observação(ões)" in out
+    assert "Preservados linha a linha: 26 pareceres e 26 observações do revisor." in out
 
     book = openpyxl.load_workbook(report)
     # Layout antigo mantido: nenhuma aba nem coluna acrescentada.
@@ -1121,7 +1321,7 @@ def test_archived_oracle_report_passes_the_regeneration_cross_check(tmp_path) ->
     assert summary.regeneration is not None and summary.regeneration.ran
     assert summary.regeneration.mismatches == []
     assert summary.regeneration.compared == {
-        "provas aritméticas": 227, "Colunas do Cliente sem Uso": 30, "Fila de Revisão": 37,
+        migrate_reports.PROOFS_LABEL: 227, "Colunas do Cliente sem Uso": 30, "Fila de Revisão": 37,
     }
     assert summary.status_counts == {"accepted": 18, "review": 37, "no_match": 172}
     assert summary.unexpected_english == []

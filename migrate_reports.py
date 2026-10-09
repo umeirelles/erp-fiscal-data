@@ -27,21 +27,27 @@ O que passa intacto: a prosa escrita pela IA (o prompt continua em inglês),
 as observações do revisor, ``model_column``, os valores de amostra do cliente
 e todo número (os inteiros digitados em ``correct_client_column`` continuam
 inteiros). O relatório é editado célula a célula com o openpyxl, então a
-ordem das colunas, os tipos e a formatação do revisor ficam como estão, e
-nenhuma aba ou coluna é acrescentada (sap_procosa mantém o layout antigo).
+ordem das colunas, os tipos (inclusive as células de texto vazio) e a
+formatação do revisor ficam como estão, e nenhuma aba ou coluna é
+acrescentada (sap_procosa mantém o layout antigo).
 
 Antes de traduzir, quando os hashes gravados nos metadados conferem com a
 exportação, o modelo e o manifesto de referência atuais, a ferramenta
 regenera as partes derivadas (provas pelos trios, abas de colunas sem uso e
 fila de revisão pelas funções ``summarize_*``) e as compara com o arquivado.
-É uma prova cruzada: se algo diverge, ela avisa e traduz só pelos modelos de
+É a prova cruzada independente da tradução: com as mesmas entradas, o
+mapeador atual precisa gravar exatamente o português que a migração vai
+gravar. Se algo diverge, a migração é recusada e o relatório não muda. Se os
+hashes não conferem (outra exportação, outro modelo, outros catálogos), a
+conferência não é possível: a ferramenta avisa e traduz só pelos modelos de
 frase.
 
 A gravação é segura: o resultado vai para um arquivo temporário, passa pela
 verificação embutida (quadros internos iguais nas colunas que não são texto,
 frases iguais à tradução das originais, observações idênticas, contagem por
 situação igual, pareceres linha a linha) e só então substitui o original.
-Num relatório que já está em português, a ferramenta avisa e sai sem gravar.
+Num relatório que já está inteiro em português, a ferramenta avisa e sai sem
+gravar; um relatório com abas ou valores dos dois esquemas é recusado.
 """
 
 from __future__ import annotations
@@ -53,6 +59,7 @@ import os
 import shutil
 import sys
 import tempfile
+import zipfile
 from collections import Counter
 from dataclasses import MISSING, dataclass, field, fields, replace
 from pathlib import Path
@@ -60,6 +67,7 @@ from typing import Callable, Sequence
 
 import openpyxl
 import pandas as pd
+from openpyxl.utils.exceptions import InvalidFileException
 
 import invoice_mapper as im
 import legacy_reports
@@ -83,9 +91,14 @@ _METHODS_WITHOUT_PROOF = frozenset({"name_only", "data_error"})
 #: Quantas divergências citar numa mensagem.
 _SHOWN = 5
 
+#: Rótulo, nas mensagens, da conferência das provas aritméticas, que compara
+#: todas as linhas da aba Mapeamentos (com ou sem prova).
+PROOFS_LABEL = "prova aritmética de Mapeamentos"
+
 
 class MigrationError(ValueError):
-    """A verificação da migração falhou; o relatório original não foi alterado."""
+    """A migração foi recusada pela verificação embutida ou pela conferência por
+    regeneração; o relatório original não foi alterado."""
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +112,10 @@ class RegenerationCheck:
 
     ran: bool
     skipped_reason: str = ""
+    #: A conferência não foi feita por um problema nas entradas (hash que não
+    #: confere, arquivo ausente, falha da própria regeneração), e não só
+    #: porque o relatório não tem partes derivadas: a ferramenta avisa.
+    warning: bool = False
     #: Rótulo -> quantidade de linhas comparadas.
     compared: dict[str, int] = field(default_factory=dict)
     mismatches: list[str] = field(default_factory=list)
@@ -152,6 +169,16 @@ def _missing(value: object) -> bool:
     return value is None or (isinstance(value, float) and math.isnan(value))
 
 
+def _plural(count: int, singular: str, plural: str) -> str:
+    """``1 célula``, ``2 células``: a quantidade com a palavra concordando."""
+    return f"{count} {singular if count == 1 else plural}"
+
+
+def _label(table: str, field_name: str) -> str:
+    """Cabeçalho em português de um campo interno, para citar em mensagens."""
+    return rs.header_label(table, field_name, rs.PT_BR)
+
+
 def _same_cell(left: object, right: object) -> bool:
     """Igualdade estrita de célula: mesmo tipo e mesmo valor (vazio = vazio)."""
     if _missing(left) or _missing(right):
@@ -179,12 +206,16 @@ def _legacy_sheet_kinds(workbook) -> dict[str, str]:
             kinds[kind] = name
     first = names[0]
     if kinds.get("mappings", first) != first:
-        raise ValueError(
-            f"A aba {kinds['mappings']!r} precisa ser a primeira do relatório, como o "
-            "apply_invoice_mapping a lê."
-        )
+        raise ValueError(_not_first_message(kinds["mappings"]))
     kinds["mappings"] = first
     return kinds
+
+
+def _not_first_message(name: str) -> str:
+    return (
+        f"A aba {name!r} precisa ser a primeira do relatório: o apply_invoice_mapping lê a "
+        "primeira aba como a tabela de mapeamentos. Mova-a para o início e rode de novo."
+    )
 
 
 def _read_report(path: Path, schema: str) -> tuple[dict[str, pd.DataFrame], dict[str, str] | None]:
@@ -255,7 +286,7 @@ def _rebuild_results(frame: pd.DataFrame) -> list[im.MappingResult]:
     ]
     absent = [name for name in required if name not in frame.columns]
     if absent:
-        raise ValueError(f"A aba de mapeamentos não tem as colunas {absent}.")
+        raise ValueError(f"a aba de mapeamentos não tem as colunas {', '.join(absent)}")
     results = []
     for record in frame.to_dict("records"):
         values: dict[str, object] = {}
@@ -301,8 +332,8 @@ def _compare_rows(
                 expected = legacy_reports.translate_cell(table, name, expected)
             if not _same_regenerated(expected, value):
                 check.mismatches.append(
-                    f"{label}, linha {position + 2}, {name}: arquivado {_plain(expected)!r}, "
-                    f"regenerado {_plain(value)!r}"
+                    f"{label}, linha {position + 2}, {_label(table, name)}: arquivado "
+                    f"{_plain(expected)!r}, regenerado {_plain(value)!r}"
                 )
 
 
@@ -318,8 +349,9 @@ def cross_check_by_regeneration(
     Só roda quando há o que comparar (prova aritmética ou as abas derivadas) e
     quando os hashes dos metadados conferem com os arquivos atuais. Não grava
     nada e não decide nada: a tradução é sempre pelos modelos de frase; isto
-    só confirma, por um caminho independente, que o português resultante é o
-    que o mapeador atual gravaria.
+    confirma, por um caminho independente, que o português resultante é o
+    que o mapeador atual gravaria. Uma divergência faz ``migrate_report``
+    recusar a migração.
     """
     mappings = frames["mappings"]
     has_proofs = "arithmetic_proof" in mappings.columns
@@ -333,7 +365,9 @@ def cross_check_by_regeneration(
         )
     if metadata is None:
         return RegenerationCheck(
-            ran=False, skipped_reason="o relatório não tem a aba de metadados com os hashes"
+            ran=False,
+            skipped_reason="o relatório não tem a aba de metadados com os hashes",
+            warning=True,
         )
     manifest_path = reference_data / "manifest.json"
     recorded_manifest = metadata.get("reference_manifest_sha256", "")
@@ -347,11 +381,17 @@ def cross_check_by_regeneration(
         )
     for label, recorded, path in expected_hashes:
         if not path.exists():
-            return RegenerationCheck(ran=False, skipped_reason=f"{path} não existe")
+            return RegenerationCheck(
+                ran=False, skipped_reason=f"{path} não existe", warning=True
+            )
         if recorded != im.file_sha256(path):
             return RegenerationCheck(
                 ran=False,
-                skipped_reason=f"{label} do relatório não confere com {path}",
+                skipped_reason=(
+                    f"o {label} gravado no relatório não confere com {path}, que não é o "
+                    "mesmo arquivo usado para gerar o relatório"
+                ),
+                warning=True,
             )
 
     try:
@@ -360,9 +400,11 @@ def cross_check_by_regeneration(
             catalogs_disabled=recorded_manifest == "disabled",
         )
     except (OSError, ValueError, KeyError) as exc:
-        # A conferência é opcional: se ela própria falha, a migração segue só
-        # pelos modelos de frase, com o motivo à vista.
-        return RegenerationCheck(ran=False, skipped_reason=f"a regeneração falhou ({exc})")
+        # Se a própria regeneração falha, a migração segue só pelos modelos de
+        # frase, com o motivo à vista.
+        return RegenerationCheck(
+            ran=False, skipped_reason=f"a regeneração falhou ({exc})", warning=True
+        )
 
 
 def _regenerate(
@@ -421,11 +463,11 @@ def _regenerate(
             )
             if not _same_regenerated(expected, proof):
                 check.mismatches.append(
-                    f"Mapeamentos, linha {position + 2}, arithmetic_proof: arquivado "
-                    f"{_plain(expected)!r}, regenerado {_plain(proof)!r}"
+                    f"Mapeamentos, linha {position + 2}, {_label('mappings', 'arithmetic_proof')}: "
+                    f"arquivado {_plain(expected)!r}, regenerado {_plain(proof)!r}"
                 )
     if has_proofs:
-        check.compared["provas aritméticas"] = len(results)
+        check.compared[PROOFS_LABEL] = len(results)
 
     if "unmatched" in frames:
         unmatched = im.summarize_unmatched_columns(
@@ -466,6 +508,52 @@ def _header_fields(worksheet) -> dict[int, str]:
         for cell in worksheet[1]
         if isinstance(cell.value, str) and cell.value
     }
+
+
+def _portuguese_values(worksheet, table: str) -> list[str]:
+    """Células de uma tabela legada cujo valor de máquina já está em português.
+
+    Olha só o que o mapeador escreve com vocabulário fixo: situação, método,
+    veto, catálogo, disposição, prioridade, sinais e etapas. Um valor desses
+    em português num relatório legado é sinal de arquivo misturado ou
+    migrado pela metade. O parecer e os nomes de exibição ficam de fora,
+    porque o revisor pode digitá-los em português em qualquer esquema.
+    """
+    columns = _header_fields(worksheet)
+    found = []
+    for row in worksheet.iter_rows(min_row=2):
+        for cell in row:
+            name = columns.get(cell.column)
+            kind = rs.FIELD_KIND.get((table, name)) if name is not None else None
+            machine = kind in ("steps", "signals") or (
+                kind is not None
+                and kind.startswith("enum:")
+                and kind != "enum:reviewer_status"
+            )
+            value = cell.value
+            if (
+                machine
+                and isinstance(value, str)
+                and value
+                and rs.internal_value(table, name, value, rs.PT_BR) != value
+            ):
+                found.append(f"{worksheet.title}!{cell.coordinate} ({name}): {value!r}")
+    return found
+
+
+def _keep_empty_text_cells(workbook) -> None:
+    """Mantém como texto vazio as células que o arquivo original tinha assim.
+
+    O mapeador grava os campos vazios como texto vazio; o openpyxl lê essas
+    células como ``None`` e, sem isto, as gravaria como células em branco,
+    mudando o tipo da célula no arquivo. O valor lido continua ``None`` (e
+    ``NaN`` no pandas) dos dois jeitos.
+    """
+    for worksheet in workbook.worksheets:
+        for row in worksheet.iter_rows():
+            for cell in row:
+                if cell.value is None and cell.data_type == "inlineStr":
+                    cell.value = ""
 
 
 def _set_value(cell, value: object) -> None:
@@ -629,12 +717,15 @@ def _expected_metadata_cells(sheet) -> dict[str, object]:
 
 
 def _cell_format(cell) -> tuple[object, ...]:
-    """Formatação de uma célula, comparável entre duas pastas de trabalho.
+    """Tipo e formatação de uma célula, comparáveis entre duas pastas de trabalho.
 
-    O openpyxl devolve fonte, preenchimento etc. como ``StyleProxy``, que não
-    se compara com outro proxy; ``copy`` devolve o objeto de estilo em si.
+    O tipo da célula no arquivo (``data_type``) distingue, por exemplo, um
+    texto vazio de uma célula em branco, que o valor lido (``None``) não
+    distingue. O openpyxl devolve fonte, preenchimento etc. como
+    ``StyleProxy``, que não se compara com outro proxy; ``copy`` devolve o
+    objeto de estilo em si.
     """
-    return (cell.number_format,) + tuple(
+    return (cell.data_type, cell.number_format) + tuple(
         copy.copy(getattr(cell, name))
         for name in ("font", "fill", "alignment", "border", "protection")
     )
@@ -691,7 +782,7 @@ def _check_cells(original, migrated, kinds: dict[str, str], problems: list[str])
                         problems.append(
                             f"{new.title}!{new_cell.coordinate}: {new_cell.value!r}, "
                             f"esperado {expected!r}"
-                            + ("" if same_format else " (formatação diferente)")
+                            + ("" if same_format else " (tipo ou formatação da célula diferente)")
                         )
         if kind == "run_metadata" and new.max_row == old.max_row + 1:
             appended = [
@@ -712,20 +803,24 @@ def _check_frames(
 ) -> None:
     """Quadros internos iguais fora das frases; cada frase migrada é a tradução da original."""
     if set(original) != set(migrated):
-        problems.append(f"tabelas {sorted(migrated)}, originais {sorted(original)}")
+        titles = [rs.sheet_name(table) for table in sorted(migrated)]
+        expected_titles = [rs.sheet_name(table) for table in sorted(original)]
+        problems.append(f"abas com tabela {titles}, esperadas {expected_titles}")
         return
     for table, old in original.items():
         new = migrated[table]
         title = rs.sheet_name(table)
         if list(new.columns) != list(old.columns) or len(new) != len(old):
             problems.append(
-                f"{title}: colunas ou linhas diferentes ({list(new.columns)} x {list(old.columns)})"
+                f"{title}: as colunas ou a quantidade de linhas mudaram ({len(new)} linhas, "
+                f"original {len(old)})"
             )
             continue
         for name in old.columns:
+            label = _label(table, name) if isinstance(name, str) else name
             if old[name].dtype != new[name].dtype:
                 problems.append(
-                    f"{title}.{name}: tipo {new[name].dtype}, original {old[name].dtype}"
+                    f"{title}.{label}: tipo {new[name].dtype}, original {old[name].dtype}"
                 )
                 continue
             is_text = name in legacy_reports.TEXT_FIELDS.get(table, frozenset())
@@ -735,14 +830,16 @@ def _check_frames(
                 if not _same_cell(expected, after):
                     mismatched += 1
                     if mismatched <= _SHOWN:
+                        # Os dois lados lidos pelo report_schema, no vocabulário
+                        # interno (o mesmo para os dois esquemas).
                         problems.append(
-                            f"{title}, linha {position + 2}, {name}: {after!r}, "
-                            f"esperado {expected!r}"
+                            f"{title}, linha {position + 2}, {label}: o migrado lido de volta dá "
+                            f"{after!r}, mas o original dá {expected!r}"
                         )
                 again = legacy_reports.translate_cell(table, name, after) if is_text else after
                 if not _same_cell(again, after):
                     problems.append(
-                        f"{title}, linha {position + 2}, {name}: tradução não idempotente"
+                        f"{title}, linha {position + 2}, {label}: tradução não idempotente"
                     )
 
 
@@ -759,11 +856,14 @@ def _check_metadata(
         expected.setdefault("migrated_from_schema_version", original["mapping_schema_version"])
     if list(migrated.items()) != list(expected.items()):
         differences = {
-            key: (expected.get(key), migrated.get(key))
+            rs.metadata_key_label(key): (expected.get(key), migrated.get(key))
             for key in set(expected) | set(migrated)
             if expected.get(key) != migrated.get(key)
         }
-        problems.append(f"metadados diferentes do esperado: {differences or 'ordem das chaves'}")
+        problems.append(
+            "metadados diferentes do esperado: "
+            + (f"{differences} (esperado, migrado)" if differences else "ordem das chaves")
+        )
 
 
 def _reviewer_cells(worksheet, schema: str) -> list[tuple[object, object, object]]:
@@ -842,13 +942,40 @@ def verify_migration(
 
 
 def _require_file(path: Path) -> None:
+    if path.is_dir():
+        raise IsADirectoryError(errno.EISDIR, os.strerror(errno.EISDIR), str(path))
     if not path.is_file():
         raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(path))
+
+
+def _load_workbook(path: Path):
+    """Abre o relatório com o openpyxl; um arquivo que não é .xlsx vira ``ValueError``."""
+    try:
+        return openpyxl.load_workbook(path)
+    except (zipfile.BadZipFile, InvalidFileException, KeyError) as exc:
+        raise ValueError(
+            f"{path} não é uma planilha .xlsx válida e não pode ser migrado ({exc})."
+        ) from exc
 
 
 def _status_line(counts: dict[str, int]) -> str:
     labels = rs.ENUMS["status"]
     return " ".join(f"{labels[status]}={counts.get(status, 0)}" for status in labels)
+
+
+def _mismatch_message(regeneration: RegenerationCheck) -> str:
+    count = len(regeneration.mismatches)
+    shown = "\n  ".join(regeneration.mismatches[:_SHOWN])
+    more = count - min(count, _SHOWN)
+    return (
+        "A conferência por regeneração encontrou "
+        f"{_plural(count, 'divergência', 'divergências')} com o arquivado; o relatório não "
+        f"foi alterado:\n  {shown}"
+        + (f"\n  ... e mais {more}" if more else "")
+        + "\nOs hashes conferem, então a exportação, o modelo e os catálogos são os mesmos "
+        "que geraram o relatório: o código atual não reproduz o que está arquivado, e não há "
+        "como garantir que as frases migradas sejam as que o mapeador grava hoje."
+    )
 
 
 def migrate_report(
@@ -864,7 +991,9 @@ def migrate_report(
     ``client_path`` é a exportação do cliente que gerou o relatório, usada só
     na prova cruzada por regeneração. Com ``dry_run`` tudo é feito e
     verificado num arquivo temporário, e o relatório não é alterado. Levanta
-    ``ValueError`` (esquema misto, verificação reprovada) ou ``OSError``.
+    ``ValueError`` (arquivo que não é relatório, esquema misto, regeneração
+    divergente, verificação reprovada) ou ``OSError``; em todos os casos o
+    relatório fica como estava.
     """
     report = Path(report_path)
     client = Path(client_path)
@@ -873,43 +1002,70 @@ def migrate_report(
     for path in (report, client, model):
         _require_file(path)
 
-    workbook = openpyxl.load_workbook(report)
+    workbook = _load_workbook(report)
+    names = workbook.sheetnames
+    mappings_name = rs.find_sheet(names, "mappings", None)
+    if mappings_name is not None and mappings_name != names[0]:
+        raise ValueError(_not_first_message(mappings_name))
     header = [cell.value for cell in workbook.worksheets[0][1]]
     summary = MigrationSummary(report=report)
     if rs.detect_schema(header, "mappings") == rs.PT_BR:
+        # Só está "em português" se o relatório inteiro está: um arquivo com a
+        # primeira aba em português e outra no esquema legado é misto.
+        _read_report(report, rs.PT_BR)
         summary.already_portuguese = True
         log(ALREADY_PORTUGUESE.format(report=report))
         return summary
     kinds = _legacy_sheet_kinds(workbook)
+    mixed = [
+        item
+        for table in TABLES
+        if table in kinds
+        for item in _portuguese_values(workbook[kinds[table]], table)
+    ]
+    if mixed:
+        more = len(mixed) - min(len(mixed), _SHOWN)
+        raise ValueError(
+            "Esquema misto: o relatório está no esquema legado em inglês, mas "
+            f"{_plural(len(mixed), 'célula já tem', 'células já têm')} o valor em português: "
+            + "; ".join(mixed[:_SHOWN])
+            + (f" e mais {more}" if more else "")
+            + ". Um relatório com valores dos dois esquemas não é migrado: recupere a versão "
+            "legada original (por exemplo, do git) e rode de novo."
+        )
 
     frames, metadata = _read_report(report, rs.LEGACY_EN)
-    version = (metadata or {}).get("mapping_schema_version", "?")
+    version = (metadata or {}).get("mapping_schema_version") or "não registrada"
     log(f"Relatório: {report} (esquema legado em inglês, versão {version})")
 
     regeneration = cross_check_by_regeneration(frames, metadata, client, model, references)
     summary.regeneration = regeneration
     if not regeneration.ran:
-        log(f"Conferência por regeneração não feita: {regeneration.skipped_reason}.")
-        log("A tradução das frases será feita só pelos modelos de frase.")
+        prefix = "Aviso: conferência" if regeneration.warning else "Conferência"
+        log(f"{prefix} por regeneração não feita: {regeneration.skipped_reason}.")
+        log("As frases serão traduzidas só pelos modelos de frase.")
     elif regeneration.mismatches:
-        log(
-            f"Aviso: a regeneração diverge do arquivado em {len(regeneration.mismatches)} "
-            "célula(s); as frases serão traduzidas só pelos modelos de frase."
-        )
-        for mismatch in regeneration.mismatches[:_SHOWN]:
-            log(f"  {mismatch}")
+        raise MigrationError(_mismatch_message(regeneration))
     else:
-        compared = ", ".join(f"{label}: {count}" for label, count in regeneration.compared.items())
-        log(f"Conferência por regeneração: nenhuma divergência ({compared} linhas).")
+        compared = "; ".join(
+            f"{label}, {_plural(count, 'linha', 'linhas')}"
+            for label, count in regeneration.compared.items()
+        )
+        log(f"Conferência por regeneração: nenhuma divergência ({compared}).")
 
     _translate_workbook(workbook, kinds, summary)
     if summary.unexpected_english:
+        count = len(summary.unexpected_english)
         log(
-            f"Aviso: {len(summary.unexpected_english)} frase(s) do mapeador não casaram com "
-            "nenhum modelo e ficaram como estão:"
+            "Aviso: 1 frase escrita pelo mapeador não casou com nenhum modelo de frase e "
+            "ficou como está:"
+            if count == 1
+            else f"Aviso: {count} frases escritas pelo mapeador não casaram com nenhum modelo "
+            "de frase e ficaram como estão:"
         )
         for item in summary.unexpected_english[:_SHOWN]:
             log(f"  {item}")
+    _keep_empty_text_cells(workbook)
 
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{report.stem}.", suffix=".migrando.xlsx", dir=report.parent
@@ -929,16 +1085,16 @@ def migrate_report(
 
     llm_prose = sum(summary.sentences_kept.values()) - len(summary.unexpected_english)
     log(
-        f"Abas renomeadas: {summary.sheets_renamed}. Cabeçalhos: {summary.headers_renamed}. "
-        "Valores traduzidos (situação, método, etapas, nomes de exibição, metadados etc.): "
-        f"{summary.values_translated}. Frases do mapeador traduzidas: "
-        f"{summary.sentences_translated}. Justificativas escritas pela IA, mantidas em "
-        f"inglês: {llm_prose}."
+        f"Abas renomeadas: {summary.sheets_renamed}. Cabeçalhos renomeados: "
+        f"{summary.headers_renamed}. Valores traduzidos (situação, método, etapas, nomes de "
+        f"exibição, metadados etc.): {summary.values_translated}. Frases do mapeador "
+        f"traduzidas: {summary.sentences_translated}. Justificativas escritas pela IA, "
+        f"mantidas em inglês: {llm_prose}."
     )
     log(
-        f"Verificação: ok. {_status_line(summary.status_counts)}; "
-        f"{summary.verdicts} parecer(es) e {summary.notes} observação(ões) do revisor "
-        "preservados linha a linha."
+        f"Verificação: ok ({_status_line(summary.status_counts)}). Preservados linha a "
+        f"linha: {_plural(summary.verdicts, 'parecer', 'pareceres')} e "
+        f"{_plural(summary.notes, 'observação', 'observações')} do revisor."
     )
     if summary.written:
         log(f"Arquivo gravado: {report}")
@@ -1003,11 +1159,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             reference_data=args.reference_data,
             dry_run=args.dry_run,
         )
-    except FileNotFoundError as exc:
-        raise SystemExit(f"Arquivo não encontrado: {exc.filename}") from exc
     except (ValueError, OSError) as exc:
-        raise SystemExit(str(exc)) from exc
+        raise SystemExit(_error_message(exc)) from exc
     return 0
+
+
+def _error_message(exc: ValueError | OSError) -> str:
+    """Mensagem em português para a linha de comando, sem traceback."""
+    if isinstance(exc, FileNotFoundError):
+        return f"Arquivo não encontrado: {exc.filename}"
+    if isinstance(exc, IsADirectoryError):
+        return f"Esperava um arquivo, mas {exc.filename} é uma pasta."
+    if isinstance(exc, PermissionError):
+        return f"Sem permissão para acessar o arquivo: {exc.filename}"
+    if isinstance(exc, OSError):
+        target = f" {exc.filename}" if exc.filename else ""
+        return f"Não foi possível ler ou gravar o arquivo{target}: {exc.strerror or exc}"
+    return str(exc)
 
 
 if __name__ == "__main__":
