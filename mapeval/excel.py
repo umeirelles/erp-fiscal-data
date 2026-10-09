@@ -1,9 +1,4 @@
-"""Aritmética de letras de coluna do Excel.
-
-O repositório importa o get_column_letter do openpyxl, mas nunca a função
-inversa, e os gabaritos de-para registram a coluna de origem como texto livre
-("Coluna FY"); por isso a inversa precisa existir aqui.
-"""
+"""Letras de coluna do Excel e as anotações "Coluna FY" dos gabaritos de-para."""
 
 from __future__ import annotations
 
@@ -41,11 +36,11 @@ def index_to_column_letter(index: int) -> str:
 
 
 def parse_coluna_annotation(cell: object) -> int | None:
-    """Extrai o índice da coluna (a partir de 1) de uma anotação da linha 1 do de-para.
+    """Extrai o índice da coluna (a partir de 1) de uma célula da linha 1 do de-para.
 
-    Devolve None quando a célula não traz anotação. Tolera o espaço no fim
-    que existe em de_para_datasul.xlsx ("Coluna BV ") e ignora notas de
-    texto livre que só citam uma coluna de passagem.
+    Vale a primeira menção "Coluna <letras>" da célula, com o espaço no fim
+    tolerado ("Coluna BV ", em de_para_datasul.xlsx). Devolve None quando a
+    célula não menciona nenhuma.
     """
     if cell is None:
         return None

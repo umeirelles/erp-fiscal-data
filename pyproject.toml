@@ -1,10 +1,3 @@
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
-# Os testes marcados como "lento" refazem a migração e as execuções offline
-# sobre os dados reais (cerca de 4 minutos) e ficam fora da execução padrão.
-# Para rodá-los: python -m pytest -m lento
-addopts = "-m 'not lento'"
-markers = [
-    "lento: prova de ponta a ponta sobre os dados reais; rode com -m lento",
-]

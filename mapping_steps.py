@@ -1,43 +1,26 @@
 """As etapas nomeadas da análise de mapeamento de colunas.
 
-Este módulo é o único lugar em que o raciocínio do pipeline recebe nomes
-oficiais. Cada mapeamento que a ferramenta produz informa quais destas etapas
-sustentaram a decisão e quais apenas a corroboraram, para que o revisor veja
-*como* uma coluna foi casada, e não só *que* ela foi casada.
+Cada mapeamento informa quais etapas o sustentaram, para que o revisor veja
+*como* uma coluna foi casada, e não só *que* foi. Há dois tipos:
 
-Há dois tipos de etapa, e a diferença importa:
+* uma **etapa de evidência** é um motivo para acreditar no mapeamento; várias
+  podem sustentar o mesmo;
+* uma **trava** é um motivo para recusá-lo e prevalece sobre qualquer
+  evidência, porque num documento fiscal uma coluna errada é pior do que uma
+  vazia.
 
-* Uma **etapa de evidência** é um motivo para acreditar que uma coluna do
-  cliente corresponde a uma coluna do modelo. As evidências se somam: várias
-  etapas podem sustentar o mesmo mapeamento.
-* Uma **trava** é um motivo para recusá-lo. Uma trava que dispara prevalece
-  sobre qualquer quantidade de evidência, porque, num documento fiscal, uma
-  coluna errada é pior do que uma coluna vazia.
+``transfers`` diz se a etapa continua valendo num ERP nunca visto: as que se
+apoiam na legislação, nas tabelas oficiais ou nos dígitos verificadores se
+transferem; as que leem as palavras do cabeçalho do cliente, não. A fração
+dos mapeamentos apoiados em etapas transferíveis é a métrica de
+generalização da ferramenta.
 
-Cada etapa de evidência declara, no campo ``transfers``, se é transferível,
-isto é, se continua valendo num ERP desconhecido. Uma etapa transferível se
-apoia em algo que vale para os documentos fiscais brasileiros em geral (a
-legislação tributária, as tabelas oficiais de códigos, a conta dos dígitos
-verificadores) e por isso funciona num ERP que ninguém viu antes. Uma etapa
-não transferível se apoia nas palavras que este cliente específico escolheu
-para os cabeçalhos e vale pouco no próximo cliente. A parcela dos
-mapeamentos apoiados em etapas transferíveis é a métrica de generalização da
-ferramenta inteira. Os quatro clientes de amostra são material de
-referência, então um ganho que aparece só nas etapas não transferíveis quase
-não vale nada.
-
-Os ids das etapas (``lexical``, ``catalog`` ...) são vocabulário interno e
-continuam em inglês. Nos relatórios em português eles são gravados como
-``lexico``, ``catalogo`` etc. por ``report_schema``. Uma célula de etapas
-lida de um relatório precisa passar por ``report_schema.steps_to_internal``
-antes de chegar a ``deciding_step`` ou ``format_steps``, que só reconhecem
-os ids internos.
-
-Acrescentar uma etapa é acrescentar uma entrada aqui, preenchê-la no ponto da
-decisão e dar a ela um id em português em ``report_schema.STEP_IDS`` (ou
-``GUARD_IDS``, se for uma trava); ``tests/test_report_schema.py`` acusa se
-as duas listas divergirem. Mudar o nome ou o resumo de uma etapa é editar
-uma linha.
+Os ids (``lexical``, ``catalog``...) são internos, em inglês;
+``report_schema`` os grava em português. Uma célula lida de um relatório passa
+por ``report_schema.steps_to_internal`` antes de chegar a ``deciding_step`` ou
+``format_steps``. Uma etapa nova precisa também de um id em português em
+``report_schema.STEP_IDS`` (ou ``GUARD_IDS``); ``tests/test_report_schema.py``
+acusa se faltar.
 """
 
 from __future__ import annotations
@@ -71,13 +54,10 @@ EVIDENCE_STEPS: tuple[Step, ...] = (
             "confiança e uma justificativa de uma frase. Só entra em ação nas "
             "colunas que as etapas anteriores deixaram em dúvida."
         ),
-        # Esta etapa fica na posição mais fraca de propósito e é marcada como
-        # não transferível. O resolvedor é um árbitro, não uma evidência: o que
-        # se generaliza é a evidência por baixo dele. Assim, "decidido pelo
-        # resolvedor" mantém o seu significado honesto (nada objetivo sustentou
-        # o mapeamento e o julgamento da IA decidiu), e um mapeamento apoiado só
-        # no cabeçalho não passa por transferível apenas porque foi o resolvedor
-        # quem o escolheu.
+        # A mais fraca e não transferível de propósito: o resolvedor é um
+        # árbitro, não uma evidência. O que se transfere é a evidência por
+        # baixo dele, e um mapeamento apoiado só no cabeçalho não passa por
+        # transferível porque foi a IA quem o escolheu.
         transfers=False,
         implemented_by="_openai_data_decision",
     ),
@@ -158,6 +138,7 @@ EVIDENCE_STEPS: tuple[Step, ...] = (
 
 
 #: Travas. Uma trava que dispara recusa o mapeamento, qualquer que seja a evidência.
+#: Só ``vacuity`` e ``family_conflict`` chegam a ``vetado_por`` (KNOWN_ISSUES 2.1).
 GUARDS: tuple[Step, ...] = (
     Step(
         id="vacuity",
@@ -221,48 +202,41 @@ TRANSFERRING_STEP_IDS: frozenset[str] = frozenset(
 
 
 def deciding_step(supporting: object) -> str:
-    """A etapa informada como a que sustentou a decisão.
+    """A etapa de apoio mais forte, pela ordem de EVIDENCE_STEPS; ``""`` se não houver.
 
-    Vence a etapa de apoio mais forte, pela ordem de EVIDENCE_STEPS. Um
-    mapeamento corroborado tanto por uma correspondência de cabeçalho quanto
-    pela aritmética fiscal é informado como decidido pela aritmética, porque
-    essa é a alegação que continuaria valendo num cliente cujos cabeçalhos
-    não conseguimos ler.
-
-    O que não é id de etapa de evidência é ignorado: travas, o
-    ``unrecorded`` e o ``catalog (agrees)`` do preenchimento retroativo e
-    ids em português. Se nada sobra, devolve ``""``.
+    Cabeçalho e aritmética juntos dão aritmética: é a alegação que valeria num
+    cliente cujos cabeçalhos não conseguimos ler.
     """
-    ranked = [step for step in _as_ids(supporting) if step in _EVIDENCE_RANK]
-    if not ranked:
-        return ""
-    return max(ranked, key=lambda step: _EVIDENCE_RANK[step])
+    ids = _evidence_ids(supporting)
+    return max(ids, key=lambda step: _EVIDENCE_RANK[step]) if ids else ""
 
 
 def format_steps(supporting: object) -> str:
     """Monta a célula de planilha com as etapas de apoio, a mais forte por último."""
-    ranked = sorted(
-        (step for step in _as_ids(supporting) if step in _EVIDENCE_RANK),
-        key=lambda step: _EVIDENCE_RANK[step],
-    )
-    return " + ".join(ranked)
+    ids = _evidence_ids(supporting)
+    return " + ".join(sorted(ids, key=lambda step: _EVIDENCE_RANK[step]))
 
 
 def rests_only_on_headers(supporting: object) -> bool:
-    """Se nada além do texto do cabeçalho do cliente sustenta este mapeamento.
+    """Se nada além do texto do cabeçalho do cliente sustenta o mapeamento.
 
-    É a pergunta que antecipa o resultado no cliente nº 5. True significa que
-    o mapeamento não sobreviveria a um ERP que usa outras palavras para o
-    mesmo conceito.
+    True quer dizer que ele não sobreviveria a um ERP que usa outras palavras
+    para o mesmo conceito.
     """
-    ids = {step for step in _as_ids(supporting) if step in _EVIDENCE_RANK}
+    ids = set(_evidence_ids(supporting))
     return bool(ids) and not (ids & TRANSFERRING_STEP_IDS)
 
 
-def _as_ids(supporting: object) -> list[str]:
-    """Separa uma célula (``"lexical + catalog"``) ou uma sequência de ids numa lista de ids."""
+def _evidence_ids(supporting: object) -> list[str]:
+    """Os ids de etapa de evidência de uma célula (``"lexical + catalog"``) ou sequência.
+
+    O resto é ignorado: travas, ids em português e o ``unrecorded`` e o
+    ``catalog (agrees)`` dos relatórios arquivados.
+    """
     if supporting is None:
         return []
     if isinstance(supporting, str):
-        return [part.strip() for part in supporting.replace("+", ",").split(",") if part.strip()]
-    return [str(part).strip() for part in supporting if str(part).strip()]
+        parts = supporting.replace("+", ",").split(",")
+    else:
+        parts = [str(part) for part in supporting]
+    return [part.strip() for part in parts if part.strip() in _EVIDENCE_RANK]

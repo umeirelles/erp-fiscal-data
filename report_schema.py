@@ -1,37 +1,25 @@
-"""Esquema externo, em português, dos relatórios de mapeamento e das planilhas mapeadas.
+"""Esquema em português dos relatórios de mapeamento e das planilhas mapeadas.
 
-Este módulo é a fronteira entre o vocabulário de máquina que o código usa em
-memória e o que aparece nos arquivos que uma pessoa abre. O código continua
-pensando em inglês nos valores de máquina: o status ``accepted``, os ids de
-etapa (``semantic``), os ids de catálogo de ``reference_data/`` e o nome de
-exibição ``Nome (occurrence 2)`` de ``ColumnRef``. Esses valores viram
-português só aqui, ao gravar, e voltam ao vocabulário interno ao ler.
+Fronteira entre o vocabulário interno, em inglês, e o que aparece nos
+arquivos. Em memória o código usa ``accepted``, ids de etapa como
+``semantic``, os ids de ``reference_data/`` e ``Nome (occurrence 2)``; esses
+valores viram português só aqui, na gravação, e voltam ao interno na leitura.
 
-As frases para pessoas (justificativa, prova aritmética, detalhe dos sinais,
-motivo de retenção) **não** são traduzidas aqui: elas são escritas em
-português direto na origem, onde são montadas. Por isso este módulo não tem
-modelos de frase. O que ele oferece para essas frases é o vocabulário
-(rótulos de catálogo, de papel do cabeçalho etc.), o marcador da prova não
-decisiva e a formatação de números com vírgula decimal.
+As frases para pessoas já são escritas em português onde são montadas; daqui
+elas tiram só o vocabulário (``TEXT_LABELS``), o marcador da prova não
+decisiva e a vírgula decimal. A entrada da IA nunca passa por aqui, porque
+precisa ficar idêntica byte a byte: o prompt, o prefixo do embedding, o
+esquema ``DataMappingDecision``, o payload, o texto de
+``semantic_header_conflict`` e ``ColumnRef.name`` / ``display_name``.
 
-O que nunca passa por aqui, porque é entrada do modelo de IA e precisa ficar
-idêntico byte a byte: o prompt do resolvedor, o prefixo do embedding, o
-esquema ``DataMappingDecision``, o payload enviado à IA, o texto de
-``semantic_header_conflict`` e ``ColumnRef.name`` / ``ColumnRef.display_name``
-em memória.
+Só o esquema em português (versão 3) é lido. Um relatório do formato antigo,
+em inglês (versão 2), é recusado com o caminho da conversão. Um nome antigo
+num relatório em português também é recusado: lido pela metade, o relatório
+faria a verificação de hash ser pulada ou os pareceres do revisor serem
+ignorados sem aviso.
 
-Leitura nos dois esquemas. Um relatório pode estar no esquema em português
-(``PT_BR``, versão 3) ou no esquema legado em inglês (``LEGACY_EN``, versão 2,
-o dos relatórios arquivados antes desta mudança). Os leitores detectam o
-esquema pelo cabeçalho e convertem para o vocabulário interno. Um arquivo com
-nomes dos dois esquemas é recusado com ``ValueError`` ("esquema misto"):
-lido pela metade, sem aviso, ele faria a verificação de hash ser pulada ou os
-pareceres do revisor serem ignorados.
-
-As tabelas abaixo foram transcritas do glossário do projeto; o JSON do
-glossário não é lido em tempo de execução. Este módulo não importa
-``invoice_mapper`` nem ``apply_invoice_mapping``, para que qualquer um deles
-possa importá-lo sem ciclo.
+Não importa ``invoice_mapper`` nem ``apply_invoice_mapping``, para que os dois
+possam importá-lo sem ciclo.
 """
 
 from __future__ import annotations
@@ -45,53 +33,38 @@ import pandas as pd
 
 
 # ---------------------------------------------------------------------------
-# Esquemas
+# Versões do esquema
 # ---------------------------------------------------------------------------
 
-#: Esquema legado, com nomes de aba, cabeçalhos e valores em inglês.
-LEGACY_EN = "legacy_en"
-#: Esquema atual, com tudo o que uma pessoa lê em português.
-PT_BR = "pt_br"
-SCHEMAS = (PT_BR, LEGACY_EN)
-
-#: Valor de ``mapping_schema_version`` dos relatórios em português.
 SCHEMA_VERSION_PT = 3
-#: Valor de ``mapping_schema_version`` dos relatórios legados em inglês.
+#: Formato antigo, em inglês, que não é mais lido.
 SCHEMA_VERSION_LEGACY = 2
-
-_SCHEMA_DESCRIPTIONS = {
-    PT_BR: "em português",
-    LEGACY_EN: "legado em inglês",
-}
+#: Último commit com o ``migrate_reports.py``, que converte o formato antigo.
+MIGRATION_COMMIT = "5fe5092"
 
 
 # ---------------------------------------------------------------------------
 # Abas
 # ---------------------------------------------------------------------------
 
-#: Tipo de aba -> (nome legado, nome em português).
-#: As quatro primeiras são do relatório de mapeamento; as duas últimas, da
-#: planilha mapeada (o entregável). A aba de mapeamentos precisa continuar
-#: sendo a primeira do relatório, porque o ``apply`` a lê pelo índice 0.
-SHEETS: dict[str, tuple[str, str]] = {
-    "mappings": ("Mappings", "Mapeamentos"),
-    "run_metadata": ("Run Metadata", "Metadados da Execução"),
-    "unmatched": ("Unmatched Client Columns", "Colunas do Cliente sem Uso"),
-    "queue": ("Adjudication Queue", "Fila de Revisão"),
-    "mapped_data": ("Mapped Data", "Dados Mapeados"),
-    "coverage": ("Coverage", "Cobertura"),
+#: Tipo de aba -> nome. As quatro primeiras são do relatório; as duas
+#: últimas, da planilha mapeada. Mapeamentos precisa continuar sendo a
+#: primeira aba do relatório, porque o ``apply`` a lê pela posição.
+SHEETS: dict[str, str] = {
+    "mappings": "Mapeamentos",
+    "run_metadata": "Metadados da Execução",
+    "unmatched": "Colunas do Cliente sem Uso",
+    "queue": "Fila de Revisão",
+    "mapped_data": "Dados Mapeados",
+    "coverage": "Cobertura",
 }
 
-#: Tabela -> tipo de aba onde ela fica. O banner é o bloco de linhas de
-#: metadados no topo da aba Dados Mapeados.
-TABLE_SHEETS: dict[str, str] = {
-    "mappings": "mappings",
-    "run_metadata": "run_metadata",
-    "unmatched": "unmatched",
-    "queue": "queue",
-    "coverage": "coverage",
-    "banner": "mapped_data",
-    "mapped_data": "mapped_data",
+#: Nomes de aba do formato antigo: só para reconhecê-los e recusá-los.
+LEGACY_SHEETS: dict[str, str] = {
+    "mappings": "Mappings",
+    "run_metadata": "Run Metadata",
+    "unmatched": "Unmatched Client Columns",
+    "queue": "Adjudication Queue",
 }
 
 
@@ -99,10 +72,11 @@ TABLE_SHEETS: dict[str, str] = {
 # Cabeçalhos
 # ---------------------------------------------------------------------------
 
-#: Tabela -> {campo interno (igual ao cabeçalho legado): cabeçalho em português}.
-#: A ordem das chaves é a ordem das colunas gravadas.
+#: Tabela -> {campo interno: cabeçalho}, na ordem das colunas gravadas. O
+#: campo interno é também o cabeçalho do formato antigo; é por ele que um
+#: relatório antigo é reconhecido.
 COLUMNS: dict[str, dict[str, str]] = {
-    # Aba Mapeamentos: campos de MappingResult seguidos de REVIEWER_COLUMNS.
+    # Campos de MappingResult seguidos de REVIEWER_COLUMNS.
     "mappings": {
         "model_column_number": "numero_coluna_modelo",
         "model_column": "coluna_modelo",
@@ -130,12 +104,11 @@ COLUMNS: dict[str, dict[str, str]] = {
         "correct_client_column": "coluna_cliente_correta",
         "reviewer_note": "observacao_revisor",
     },
-    # Aba Metadados da Execução: pares chave/valor.
     "run_metadata": {
         "key": "chave",
         "value": "valor",
     },
-    # Aba Colunas do Cliente sem Uso: campos de UnmatchedColumn.
+    # Campos de UnmatchedColumn.
     "unmatched": {
         "client_column_number": "numero_coluna_cliente",
         "client_column": "coluna_cliente",
@@ -148,7 +121,7 @@ COLUMNS: dict[str, dict[str, str]] = {
         "closest_model_column": "coluna_modelo_mais_proxima",
         "closest_name_confidence": "confianca_nome_mais_proxima",
     },
-    # Aba Fila de Revisão: campos de AdjudicationRow.
+    # Campos de AdjudicationRow.
     "queue": {
         "rank": "posicao",
         "model_column_number": "numero_coluna_modelo",
@@ -164,7 +137,6 @@ COLUMNS: dict[str, dict[str, str]] = {
         "client_sample_values": "amostra_valores_cliente",
         "why_held": "motivo_retencao",
     },
-    # Aba Cobertura da planilha mapeada.
     "coverage": {
         "state": "situacao_cobertura",
         "model_column_number": "numero_coluna_modelo",
@@ -177,7 +149,7 @@ COLUMNS: dict[str, dict[str, str]] = {
     },
     # Rótulos das 21 linhas do banner de Dados Mapeados (linhas 2 a 22 do
     # Excel), na ordem de MAPPING_METADATA. A chave é o campo de Mapeamentos
-    # de onde sai o valor da linha.
+    # de onde sai a linha.
     "banner": {
         "client_column_number": "numero_coluna_cliente",
         "client_column": "coluna_cliente",
@@ -201,22 +173,21 @@ COLUMNS: dict[str, dict[str, str]] = {
         "reviewer_status": "parecer_revisor",
         "reviewer_note": "observacao_revisor",
     },
-    # Célula A1 da aba Dados Mapeados. As demais colunas dessa aba são os
-    # cabeçalhos do model.xlsx, que já estão em português e nunca mudam.
+    # Célula A1 de Dados Mapeados; as outras colunas são os cabeçalhos do
+    # model.xlsx, que já estão em português.
     "mapped_data": {
         "__mapping_info__": "__info_mapeamento__",
     },
 }
 
-#: Coluna de cada tabela que identifica o esquema: (legado, português).
-#: O cabeçalho precisa ter exatamente uma das duas.
-_SCHEMA_MARKERS: dict[str, tuple[str, str]] = {
-    "mappings": ("model_column_number", "numero_coluna_modelo"),
-    "run_metadata": ("key", "chave"),
-    "unmatched": ("client_column_number", "numero_coluna_cliente"),
-    "queue": ("rank", "posicao"),
-    "coverage": ("state", "situacao_cobertura"),
-    "mapped_data": ("__mapping_info__", "__info_mapeamento__"),
+#: Coluna que o cabeçalho de cada tabela precisa ter.
+_REQUIRED_HEADER: dict[str, str] = {
+    "mappings": "numero_coluna_modelo",
+    "run_metadata": "chave",
+    "unmatched": "numero_coluna_cliente",
+    "queue": "posicao",
+    "coverage": "situacao_cobertura",
+    "mapped_data": "__info_mapeamento__",
 }
 
 
@@ -224,7 +195,7 @@ _SCHEMA_MARKERS: dict[str, tuple[str, str]] = {
 # Metadados da execução
 # ---------------------------------------------------------------------------
 
-#: Chave interna (igual à legada) -> chave em português.
+#: Chave interna (igual à do formato antigo) -> chave gravada.
 METADATA_KEYS: dict[str, str] = {
     "mapping_schema_version": "versao_esquema_mapeamento",
     "generated_at_utc": "gerado_em_utc",
@@ -240,28 +211,24 @@ METADATA_KEYS: dict[str, str] = {
     "embedding_model": "modelo_embedding",
     "llm_model": "modelo_ia",
     "name_threshold": "limiar_nome",
-    # Em inglês a chave tem a mesma grafia do cabeçalho name_margin; em
-    # português ela é distinta de propósito, porque aqui é o limiar
-    # (--name-margin), não a margem medida em cada linha.
+    # Distinta de margem_nome de propósito: aqui é o limiar --name-margin, não
+    # a margem medida em cada linha.
     "name_margin": "margem_minima_nome",
     "final_threshold": "limiar_final",
     "candidate_count": "quantidade_candidatos",
     "sample_size": "tamanho_amostra",
     "reference_manifest_sha256": "sha256_manifesto_referencia",
-    # Só nos relatórios migrados do esquema legado: registra de qual versão
-    # o arquivo veio, sem mexer em gerado_em_utc.
+    # Só nos relatórios migrados do formato antigo, como os quatro arquivados.
     "migrated_from_schema_version": "migrado_da_versao_esquema",
 }
 
-#: Valores sentinela dos metadados: interno -> português. ``offline`` fica
-#: igual (é o termo corrente em português e coincide com a flag --offline).
+#: Sentinelas: interno -> gravado. ``offline`` fica igual, como a flag --offline.
 METADATA_SENTINELS: dict[str, str] = {
     "offline": "offline",
     "disabled": "desativado",
 }
 
-#: Chaves cujo valor pode ser um sentinela. Em qualquer outra chave o valor
-#: passa intacto, mesmo que coincida com uma dessas palavras.
+#: Só estas chaves têm sentinela; em outra chave o valor passa intacto.
 METADATA_SENTINEL_KEYS: frozenset[str] = frozenset(
     {"embedding_model", "llm_model", "reference_manifest_sha256"}
 )
@@ -271,7 +238,7 @@ METADATA_SENTINEL_KEYS: frozenset[str] = frozenset(
 # Etapas da análise e travas
 # ---------------------------------------------------------------------------
 
-#: Etapas de evidência (ids de mapping_steps.EVIDENCE_STEPS) -> id em português.
+#: Etapas de evidência (ids de mapping_steps.EVIDENCE_STEPS) -> id gravado.
 STEP_IDS: dict[str, str] = {
     "resolver": "resolvedor_ia",
     "lexical": "lexico",
@@ -282,7 +249,7 @@ STEP_IDS: dict[str, str] = {
     "arithmetic": "aritmetica",
 }
 
-#: Travas (ids de mapping_steps.GUARDS) -> id em português.
+#: Travas (ids de mapping_steps.GUARDS) -> id gravado.
 GUARD_IDS: dict[str, str] = {
     "vacuity": "coluna_vazia",
     "family_conflict": "conflito_tributario",
@@ -290,47 +257,31 @@ GUARD_IDS: dict[str, str] = {
     "exclusivity": "coluna_ja_consumida",
 }
 
-#: Valores que só existem nos relatórios preenchidos retroativamente por
-#: backfill_mapping_steps.py: uma etapa objetiva rodou e o relatório antigo
-#: não diz qual. mapping_steps não classifica esse valor.
+#: Só nos relatórios arquivados, gravado pelo antigo preenchimento retroativo:
+#: uma etapa objetiva rodou e o relatório não diz qual. mapping_steps não o
+#: classifica.
 LEGACY_STEP_IDS: dict[str, str] = {
     "unrecorded": "nao_registrado",
 }
 
-#: Sufixo de evidência que concorda mas não decide (``catalog (agrees)``),
-#: gravado pelo preenchimento retroativo.
+#: Todo id que pode aparecer numa célula de etapas.
+ALL_STEP_IDS: dict[str, str] = {**STEP_IDS, **GUARD_IDS, **LEGACY_STEP_IDS}
+
+#: Etapa que concorda mas não decide, também só dos relatórios arquivados:
+#: ``catalog (agrees)`` em memória, ``catalogo (concorda)`` no arquivo.
 AGREES_SUFFIX_EN = " (agrees)"
 AGREES_SUFFIX_PT = " (concorda)"
 
-#: Separador entre etapas numa célula. Neutro: igual nos dois esquemas.
 STEPS_SEPARATOR = " + "
-#: Separador entre sinais na aba de colunas sem uso. Neutro.
 SIGNALS_SEPARATOR = ","
-
-#: Todos os ids que podem aparecer numa célula de etapas: interno -> português.
-ALL_STEP_IDS: dict[str, str] = {**STEP_IDS, **GUARD_IDS, **LEGACY_STEP_IDS}
-_STEP_IDS_INTERNAL: dict[str, str] = {pt: en for en, pt in ALL_STEP_IDS.items()}
 
 
 # ---------------------------------------------------------------------------
 # Valores enumerados
 # ---------------------------------------------------------------------------
 
-#: Enum -> {valor interno: valor em português}.
-#:
-#: Os enums de máquina (``status``, ``method``, ``vetoed_by``, ``catalog_name``,
-#: ``disposition``, ``review_priority``, ``signals``) usam snake_case ASCII e
-#: têm volta: ao ler um relatório em português, o valor exato em português
-#: vira o interno. ``reviewer_status`` é digitado por pessoas e tem regra
-#: própria (ver ``normalize_reviewer_status``).
-#:
-#: ``why_held`` e ``coverage_state`` são frases fixas em português natural.
-#: Na gravação o valor inglês legado vira português; na leitura nada volta,
-#: porque nenhum leitor depende deles e o texto em português já é a forma
-#: canônica (as frases são escritas em português na origem).
-#:
-#: ``outcome`` são os rótulos de ``mapeval.outcomes.Outcome``: só aparecem
-#: impressos pelo mapeval, nunca gravados em arquivo.
+#: Enum -> {valor interno: valor gravado}. Como cada um é lido está em
+#: ``FIELD_KIND``.
 ENUMS: dict[str, dict[str, str]] = {
     "status": {
         "accepted": "aceito",
@@ -344,18 +295,18 @@ ENUMS: dict[str, dict[str, str]] = {
         "name_only": "somente_nome",
         "data_error": "erro_dados",
     },
+    # Digitado por pessoas: a leitura é a de normalize_reviewer_status.
     "reviewer_status": {
         "": "",
         "correct": "correto",
         "incorrect": "incorreto",
-        # Não é sem_correspondencia: aquilo é a situação do mapeador; isto é
-        # o parecer humano de que o cliente não tem este campo.
+        # Não é sem_correspondencia, que é a situação do mapeador: é o parecer
+        # humano de que o cliente não tem este campo.
         "no_mapping_exists": "inexistente",
     },
-    # vetado_por guarda o id da trava que recusou a linha.
-    "vetoed_by": dict(GUARD_IDS),
-    # Ids de reference_data/manifest.json. Só mudam os que têm palavra em
-    # inglês; os ids internos e os arquivos de reference_data não mudam.
+    # Id da trava que recusou a linha.
+    "vetoed_by": GUARD_IDS,
+    # Ids de reference_data/manifest.json; os arquivos de lá não mudam.
     "catalog_name": {
         "cfop": "cfop",
         "ncm": "ncm",
@@ -376,8 +327,8 @@ ENUMS: dict[str, dict[str, str]] = {
         "shortlist": "prioritaria",
         "low": "baixa",
     },
-    # Tokens separados por vírgula na coluna sinais. O mesmo id monta a chave
-    # interna valid_{tipo}_fraction do perfil, por isso só muda na fronteira.
+    # Tokens da coluna sinais. O id interno também monta a chave
+    # valid_{tipo}_fraction do perfil, por isso só muda na fronteira.
     "signals": {
         "arithmetic": "aritmetica",
         "catalog": "catalogo",
@@ -386,26 +337,9 @@ ENUMS: dict[str, dict[str, str]] = {
         "cpf_checkdigit": "dv_cpf",
         "date": "data",
     },
-    "why_held": {
-        "below the accept threshold": "abaixo do limiar de aceite",
-        "name evidence only - this branch cannot auto-accept however well the headers match": (
-            "só há evidência de nome - este caminho não aceita automaticamente, "
-            "por mais que os cabeçalhos coincidam"
-        ),
-        "the proposed column has no populated rows - confirming this would ship a blank column": (
-            "a coluna proposta não tem linhas preenchidas - confirmá-la entregaria "
-            "uma coluna em branco"
-        ),
-    },
-    "coverage_state": {
-        "delivered": "entregue",
-        "awaiting decision": "aguardando decisão",
-        "not in this client's export": "não consta na exportação do cliente",
-    },
-    "metadata_sentinel": dict(METADATA_SENTINELS),
+    # Rótulos de mapeval.outcomes.Outcome: só impressos, nunca gravados.
     "outcome": {
         "correct": "correto",
-        "correctly_absent": "ausente_com_acerto",
         "missed": "perdido",
         "wrong_column": "coluna_errada",
         "fabricated": "fabricado",
@@ -413,33 +347,14 @@ ENUMS: dict[str, dict[str, str]] = {
     },
 }
 
-#: Enums que voltam ao valor interno na leitura de um relatório em português.
-MACHINE_ENUMS: tuple[str, ...] = (
-    "status",
-    "method",
-    "reviewer_status",
-    "vetoed_by",
-    "catalog_name",
-    "disposition",
-    "review_priority",
-    "signals",
-    "metadata_sentinel",
-    "outcome",
-)
-
-_ENUMS_INTERNAL: dict[str, dict[str, str]] = {
-    name: {pt: en for en, pt in values.items()} for name, values in ENUMS.items()
-}
-
 
 # ---------------------------------------------------------------------------
 # Rótulos usados dentro de frases
 # ---------------------------------------------------------------------------
 
-#: Vocabulário para as frases escritas em português na origem. Os ids da
-#: esquerda continuam internos (alguns são também entrada da IA, como os
-#: papéis de ``header_semantic_role``); estes rótulos só aparecem em texto
-#: para pessoas.
+#: Vocabulário das frases escritas em português na origem. Os ids continuam
+#: internos (os papéis de ``header_semantic_role`` são também entrada da IA);
+#: os rótulos só aparecem em texto para pessoas.
 TEXT_LABELS: dict[str, dict[str, str]] = {
     # Papéis de header_semantic_role, citados no conflito de cabeçalho.
     "header_role": {
@@ -463,8 +378,7 @@ TEXT_LABELS: dict[str, dict[str, str]] = {
         "item_id": "número do item",
         "document_id": "número do documento",
     },
-    # Qualificador no conflito de qualificador do tributo: no vocabulário
-    # fiscal se fala em ICMS normal x ICMS ST.
+    # Qualificador do tributo: no vocabulário fiscal, ICMS normal x ICMS ST.
     "tax_qualifier": {
         "st": "ST",
         "regular": "normal",
@@ -475,7 +389,7 @@ TEXT_LABELS: dict[str, dict[str, str]] = {
         "rate": "alíquota",
         "value": "valor",
     },
-    # Tipo de identificador validado pelo dígito verificador.
+    # Identificador validado pelo dígito verificador.
     "identifier_kind": {
         "nfe_key": "chave de acesso da NF-e",
         "cnpj": "CNPJ",
@@ -496,63 +410,107 @@ TEXT_LABELS: dict[str, dict[str, str]] = {
     },
 }
 
-#: Atalho para o rótulo legível de cada catálogo (``cfop`` -> ``CFOP``).
 CATALOG_LABELS: dict[str, str] = TEXT_LABELS["catalog"]
 
 
 # ---------------------------------------------------------------------------
-# Prova aritmética
+# Tratamento de cada campo
 # ---------------------------------------------------------------------------
 
-#: Trecho que a prova em inglês (relatórios legados) usa quando o cliente tem
-#: mais de um bloco do mesmo tributo e a equação não aponta uma coluna só.
-PROOF_NOT_DECISIVE_EN = "does not single out"
-#: O mesmo marcador na prova escrita em português. A frase da prova precisa
-#: conter exatamente este trecho.
+#: Tabela -> {campo interno: tratamento da célula}:
+#:
+#: * ``enum:<nome>``: valor de ``ENUMS[<nome>]``, que volta ao interno na
+#:   leitura. O parecer do revisor é a exceção: passa como foi digitado, e
+#:   quem lê o valida com ``normalize_reviewer_status``.
+#: * ``steps``: ids de etapa separados por `` + ``.
+#: * ``signals``: ids de sinal separados por vírgula.
+#: * ``display``: nome de exibição de coluna do cliente.
+#: * ``text``: texto livre, já na língua certa (a prosa da IA e as notas do
+#:   revisor nunca são traduzidas).
+#:
+#: Campo fora desta tabela (números, hashes, cabeçalhos do modelo, amostras
+#: do cliente) passa intacto. O banner segue o tratamento de ``mappings``.
+FIELD_KIND: dict[str, dict[str, str]] = {
+    "mappings": {
+        "client_column": "display",
+        "status": "enum:status",
+        "method": "enum:method",
+        "reason": "text",
+        "catalog_name": "enum:catalog_name",
+        "arithmetic_proof": "text",
+        "supported_by": "steps",
+        "decided_by": "steps",
+        "vetoed_by": "enum:vetoed_by",
+        "reviewer_status": "enum:reviewer_status",
+        # Digitada pelo revisor: um número de coluna ou um nome de exibição.
+        "correct_client_column": "display",
+        "reviewer_note": "text",
+    },
+    "unmatched": {
+        "client_column": "display",
+        "disposition": "enum:disposition",
+        "review_priority": "enum:review_priority",
+        "signals": "signals",
+        "signal_detail": "text",
+    },
+    "queue": {
+        "proposed_client_column": "display",
+        "resolver_disagrees": "text",
+        "arithmetic_proof": "text",
+        "why_held": "text",
+    },
+    "coverage": {
+        "state": "text",
+        "client_column": "display",
+        "reason": "text",
+    },
+}
+
+
+def _field_kind(table: str, field: str) -> str | None:
+    if table == "banner":
+        table = "mappings"
+    return FIELD_KIND.get(table, {}).get(field)
+
+
+def _reverse(mapping: Mapping[str, str]) -> dict[str, str]:
+    """Tabela interno -> gravado invertida, para a leitura."""
+    return {written: internal for internal, written in mapping.items()}
+
+
+# ---------------------------------------------------------------------------
+# Prova aritmética e números dentro de frases
+# ---------------------------------------------------------------------------
+
+#: Trecho que a prova traz quando o cliente tem mais de um bloco do mesmo
+#: tributo e a equação não aponta uma coluna só.
 PROOF_NOT_DECISIVE_PT = "não distingue esta coluna"
 
 
 def proof_is_decisive(text: object) -> bool:
     """Diz se uma prova aritmética aponta esta coluna, e não só o tributo.
 
-    Falso quando não há prova (vazio, ``None`` ou valor que não é texto) ou
-    quando ela traz o marcador de prova não decisiva, em inglês ou em
-    português. Uma prova assim confirma o escopo do tributo, mas vale para
-    qualquer um dos blocos disjuntos do cliente; contá-la como evidência
-    aritmética faria uma escolha ao acaso entre dois blocos passar por prova.
+    Falso sem prova ou com o marcador ``PROOF_NOT_DECISIVE_PT``: uma prova
+    assim vale para qualquer um dos blocos disjuntos do cliente, e contá-la
+    como evidência faria uma escolha ao acaso passar por prova.
     """
     if not isinstance(text, str) or not text:
         return False
-    return PROOF_NOT_DECISIVE_EN not in text and PROOF_NOT_DECISIVE_PT not in text
-
-
-# ---------------------------------------------------------------------------
-# Números dentro de frases
-# ---------------------------------------------------------------------------
+    return PROOF_NOT_DECISIVE_PT not in text
 
 
 def format_decimal_br(value: float, places: int | None = None) -> str:
-    """Formata um número com vírgula decimal, para uso dentro de frases.
+    """Número com vírgula decimal, para frases (``0.9996`` -> ``"0,9996"``).
 
-    Com ``places=None`` os dígitos são os da representação padrão do Python
-    (``0.9996`` vira ``"0,9996"``, ``5501`` vira ``"5501"``), que é o que as
-    frases em inglês mostravam com ``{valor}``. Com ``places`` o número sai
-    com essa quantidade fixa de casas (``0.12345, 2`` vira ``"0,12"``).
-
-    Não há separador de milhar: os dígitos são os mesmos da versão em inglês,
-    só o separador decimal muda. Células numéricas das planilhas continuam
-    numéricas e não passam por aqui.
+    Sem ``places``, os dígitos são os de ``str(value)``; com ``places``, essa
+    quantidade fixa de casas. Não há separador de milhar.
     """
     text = str(value) if places is None else f"{value:.{places}f}"
     return text.replace(".", ",")
 
 
 def format_percent_br(value: float, places: int = 1) -> str:
-    """Formata uma fração como porcentagem com vírgula decimal (``0.882`` -> ``"88,2%"``).
-
-    Dá exatamente os dígitos de ``f"{value:.1%}"``, com vírgula no lugar do
-    ponto, para que a frase em português diga o mesmo número da inglesa.
-    """
+    """Fração como porcentagem com vírgula decimal (``0.882`` -> ``"88,2%"``)."""
     return f"{value:.{places}%}".replace(".", ",")
 
 
@@ -560,139 +518,146 @@ def format_percent_br(value: float, places: int = 1) -> str:
 # Nome de exibição de coluna do cliente
 # ---------------------------------------------------------------------------
 
-#: Formas do nome de exibição. Em memória (``ColumnRef``) continua o inglês,
-#: porque ``ColumnRef.name`` é entrada do embedding e da IA.
+#: Em memória (``ColumnRef``) o nome continua em inglês, porque
+#: ``ColumnRef.name`` é entrada do embedding e da IA.
 OCCURRENCE_SUFFIX_EN = " (occurrence {n})"
 OCCURRENCE_SUFFIX_PT = " (ocorrência {n})"
 UNNAMED_COLUMN_EN = "Unnamed column {n}"
 UNNAMED_COLUMN_PT = "Coluna sem nome {n}"
 
 _OCCURRENCE_EN = re.compile(r"(?P<name>.*) \(occurrence (?P<n>[0-9]+)\)", re.DOTALL)
-# Na leitura aceita o que um revisor costuma digitar: com ou sem acento
-# (inclusive o acento decomposto) e com qualquer caixa.
+_UNNAMED_EN = re.compile(r"Unnamed column (?P<n>[0-9]+)")
+# Na leitura vale o que um revisor costuma digitar: qualquer caixa, com ou
+# sem acento, inclusive o acento decomposto.
 _OCCURRENCE_PT = re.compile(
-    r"(?P<name>.*) \(ocorr(?:ê|ê|e)ncia (?P<n>[0-9]+)\)",
+    r"(?P<name>.*) \(ocorr(?:ê|e\u0302|e)ncia (?P<n>[0-9]+)\)",
     re.DOTALL | re.IGNORECASE,
 )
-_UNNAMED_EN = re.compile(r"Unnamed column (?P<n>[0-9]+)")
 _UNNAMED_PT = re.compile(r"coluna sem nome (?P<n>[0-9]+)", re.IGNORECASE)
 
 
 def display_name_to_external(text: object) -> object:
-    """Nome de exibição interno -> português, para gravar numa célula.
+    """Nome de exibição interno -> o que vai na célula.
 
-    ``"Valor ICMS (occurrence 2)"`` vira ``"Valor ICMS (ocorrência 2)"`` e
-    ``"Unnamed column 7"`` vira ``"Coluna sem nome 7"``. O sufixo só é
-    reconhecido ancorado no fim do texto. Qualquer outro texto passa intacto,
-    então aplicar duas vezes dá o mesmo resultado.
+    ``"Valor (occurrence 2)"`` vira ``"Valor (ocorrência 2)"`` e ``"Unnamed
+    column 7"`` vira ``"Coluna sem nome 7"``. O sufixo só vale ancorado no
+    fim. Qualquer outro texto passa intacto, então aplicar duas vezes dá o
+    mesmo resultado.
     """
     if not isinstance(text, str):
         return text
-    match = _OCCURRENCE_EN.fullmatch(text)
-    base, occurrence = (match["name"], match["n"]) if match else (text, None)
-    unnamed = _UNNAMED_EN.fullmatch(base)
+    occurrence = _OCCURRENCE_EN.fullmatch(text)
+    name = occurrence["name"] if occurrence else text
+    unnamed = _UNNAMED_EN.fullmatch(name)
     if unnamed:
-        base = UNNAMED_COLUMN_PT.format(n=unnamed["n"])
-    if occurrence is None:
-        return base
-    return base + OCCURRENCE_SUFFIX_PT.format(n=occurrence)
+        name = UNNAMED_COLUMN_PT.format(n=unnamed["n"])
+    if occurrence:
+        name += OCCURRENCE_SUFFIX_PT.format(n=occurrence["n"])
+    return name
 
 
 def display_name_to_internal(text: object) -> object:
-    """Nome de exibição lido de uma célula -> forma interna em inglês.
-
-    Aceita ``" (ocorrência N)"``, ``" (ocorrencia N)"`` (sem acento) e o
-    legado ``" (occurrence N)"``, e também ``"Coluna sem nome N"``. Vale nos
-    dois esquemas, porque o revisor pode digitar a forma em português mesmo
-    num relatório legado. Texto em inglês passa intacto.
+    """Nome lido de uma célula -> forma interna; qualquer outro texto passa intacto.
 
     Ambiguidade conhecida: um cabeçalho de cliente que seja literalmente
     ``"Coluna sem nome 3"`` é lido como a coluna sem nome 3.
     """
     if not isinstance(text, str):
         return text
-    match = _OCCURRENCE_PT.fullmatch(text) or _OCCURRENCE_EN.fullmatch(text)
-    base, occurrence = (match["name"], match["n"]) if match else (text, None)
-    unnamed = _UNNAMED_PT.fullmatch(base)
+    occurrence = _OCCURRENCE_PT.fullmatch(text)
+    name = occurrence["name"] if occurrence else text
+    unnamed = _UNNAMED_PT.fullmatch(name)
     if unnamed:
-        base = UNNAMED_COLUMN_EN.format(n=unnamed["n"])
-    if occurrence is None:
-        return base
-    return base + OCCURRENCE_SUFFIX_EN.format(n=occurrence)
+        name = UNNAMED_COLUMN_EN.format(n=unnamed["n"])
+    if occurrence:
+        name += OCCURRENCE_SUFFIX_EN.format(n=occurrence["n"])
+    return name
 
 
 # ---------------------------------------------------------------------------
-# Células de etapas
+# Células de etapas e de sinais
 # ---------------------------------------------------------------------------
 
 
-def _step_token_to_external(token: str) -> str:
-    base, agrees = token, False
-    if token.endswith(AGREES_SUFFIX_EN):
-        base, agrees = token[: -len(AGREES_SUFFIX_EN)], True
-    translated = ALL_STEP_IDS.get(base)
-    if translated is None:
-        # Desconhecido ou já em português: fica como está.
-        return token
-    return translated + (AGREES_SUFFIX_PT if agrees else "")
-
-
-def _step_token_to_internal(token: str) -> str:
-    base, agrees = token, False
-    for suffix in (AGREES_SUFFIX_PT, AGREES_SUFFIX_EN):
-        if token.endswith(suffix):
-            base, agrees = token[: -len(suffix)], True
-            break
-    if base in _STEP_IDS_INTERNAL:
-        internal = _STEP_IDS_INTERNAL[base]
-    elif base in ALL_STEP_IDS:
-        internal = base
-    else:
-        return token
-    return internal + (AGREES_SUFFIX_EN if agrees else "")
+def _translate_steps(
+    cell: object, ids: Mapping[str, str], agrees_from: str, agrees_to: str
+) -> object:
+    """Traduz cada etapa da célula; uma etapa desconhecida passa intacta."""
+    if not isinstance(cell, str) or not cell:
+        return cell
+    steps = []
+    for step in cell.split(STEPS_SEPARATOR):
+        agrees = step.endswith(agrees_from)
+        base = step[: -len(agrees_from)] if agrees else step
+        if base in ids:
+            step = ids[base] + (agrees_to if agrees else "")
+        steps.append(step)
+    return STEPS_SEPARATOR.join(steps)
 
 
 def steps_to_external(cell: object) -> object:
-    """Célula de etapas interna -> português.
-
-    ``"lexical + catalog (agrees) + unrecorded"`` vira
-    ``"lexico + catalogo (concorda) + nao_registrado"``. Cada etapa é
-    traduzida separadamente; uma desconhecida passa intacta. Valores que não
-    são texto, e o texto vazio, passam como estão.
-    """
-    if not isinstance(cell, str) or not cell:
-        return cell
-    return STEPS_SEPARATOR.join(
-        _step_token_to_external(token) for token in cell.split(STEPS_SEPARATOR)
-    )
+    """``"lexical + catalog (agrees)"`` -> ``"lexico + catalogo (concorda)"``."""
+    return _translate_steps(cell, ALL_STEP_IDS, AGREES_SUFFIX_EN, AGREES_SUFFIX_PT)
 
 
 def steps_to_internal(cell: object) -> object:
-    """Célula de etapas lida -> ids internos.
+    """``"lexico + catalogo (concorda)"`` -> ``"lexical + catalog (agrees)"``."""
+    return _translate_steps(cell, _reverse(ALL_STEP_IDS), AGREES_SUFFIX_PT, AGREES_SUFFIX_EN)
 
-    Aceita ids em português e em inglês, e os sufixos ``(concorda)`` e
-    ``(agrees)``, inclusive misturados na mesma célula.
-    """
+
+def _translate_signals(cell: object, ids: Mapping[str, str]) -> object:
     if not isinstance(cell, str) or not cell:
         return cell
-    return STEPS_SEPARATOR.join(
-        _step_token_to_internal(token) for token in cell.split(STEPS_SEPARATOR)
-    )
+    tokens = cell.split(SIGNALS_SEPARATOR)
+    return SIGNALS_SEPARATOR.join(ids.get(token, token) for token in tokens)
+
+
+# ---------------------------------------------------------------------------
+# Valor de uma célula
+# ---------------------------------------------------------------------------
+
+
+def external_value(table: str, field: str, value: object) -> object:
+    """Valor interno de uma célula -> valor gravado.
+
+    ``field`` é o nome interno. Valores desconhecidos, números e texto livre
+    passam intactos, então aplicar duas vezes dá o mesmo resultado.
+    """
+    kind = _field_kind(table, field)
+    if kind == "display":
+        return display_name_to_external(value)
+    if kind == "steps":
+        return steps_to_external(value)
+    if kind == "signals":
+        return _translate_signals(value, ENUMS["signals"])
+    if kind and kind.startswith("enum:") and isinstance(value, str):
+        return ENUMS[kind.split(":", 1)[1]].get(value, value)
+    return value
+
+
+def internal_value(table: str, field: str, value: object) -> object:
+    """Valor lido de uma célula -> vocabulário interno.
+
+    Um enum só volta quando o valor gravado é exato. O parecer do revisor
+    passa como foi digitado, para que quem lê o valide com
+    ``normalize_reviewer_status`` citando a linha. Texto livre passa intacto.
+    """
+    kind = _field_kind(table, field)
+    if kind == "display":
+        return display_name_to_internal(value)
+    if kind == "steps":
+        return steps_to_internal(value)
+    if kind == "signals":
+        return _translate_signals(value, _reverse(ENUMS["signals"]))
+    reversible = kind and kind.startswith("enum:") and kind != "enum:reviewer_status"
+    if reversible and isinstance(value, str):
+        return _reverse(ENUMS[kind.split(":", 1)[1]]).get(value, value)
+    return value
 
 
 # ---------------------------------------------------------------------------
 # Parecer do revisor
 # ---------------------------------------------------------------------------
-
-_REVIEWER_STATUS_INPUTS: dict[str, str] = {
-    "": "",
-    "correct": "correct",
-    "correto": "correct",
-    "incorrect": "incorrect",
-    "incorreto": "incorrect",
-    "no_mapping_exists": "no_mapping_exists",
-    "inexistente": "no_mapping_exists",
-}
 
 
 def _is_missing(value: object) -> bool:
@@ -707,156 +672,19 @@ def _fold(text: str) -> str:
     return "".join(ch for ch in decomposed if not unicodedata.combining(ch)).casefold()
 
 
-def normalize_reviewer_status(value: object) -> object:
-    """Parecer digitado pelo revisor -> valor interno.
+def normalize_reviewer_status(value: object) -> str | None:
+    """Parecer digitado -> valor interno, ou ``None`` se não for um parecer.
 
-    Ignora espaços nas pontas, caixa e acentos, e aceita as duas línguas nos
-    dois esquemas: ``correct``/``correto``, ``incorrect``/``incorreto``,
-    ``no_mapping_exists``/``inexistente`` e vazio. Célula vazia (``None`` ou
-    NaN) vira ``""``. Qualquer outro valor volta **cru**, sem alteração, para
-    que o ``apply`` recuse o parecer desconhecido mostrando o que foi digitado.
+    Aceita ``correto``, ``incorreto``, ``inexistente`` e vazio, ignorando
+    espaços nas pontas, caixa e acentos; célula vazia vira ``""``. Os
+    pareceres em inglês do formato antigo (``correct`` ...) coincidem com os
+    valores internos, e só esta recusa explícita impede que passem calados.
     """
     if _is_missing(value):
         return ""
     if not isinstance(value, str):
-        return value
-    return _REVIEWER_STATUS_INPUTS.get(_fold(value.strip()), value)
-
-
-# ---------------------------------------------------------------------------
-# Tratamento de cada campo
-# ---------------------------------------------------------------------------
-
-#: (tabela, campo interno) -> tratamento da célula.
-#:
-#: * ``enum:<nome>``: valor de ``ENUMS[<nome>]``; volta ao interno na leitura
-#:   de um relatório em português (``reviewer_status`` tem regra própria).
-#: * ``phrase:<nome>``: frase fixa de ``ENUMS[<nome>]``; o inglês legado vira
-#:   português na gravação e nada volta na leitura.
-#: * ``steps``: ids de etapa separados por `` + ``.
-#: * ``signals``: ids de sinal separados por vírgula.
-#: * ``display``: nome de exibição de coluna do cliente.
-#: * ``text``: frase livre, que passa intacta por esta camada (ela já é
-#:   escrita em português na origem; a prosa da IA e as notas do revisor
-#:   nunca são traduzidas).
-#:
-#: Campo fora desta tabela (números, hashes, cabeçalhos do modelo, valores
-#: de amostra do cliente) passa intacto. O banner usa o tratamento do campo
-#: de mesmo nome em ``mappings``.
-FIELD_KIND: dict[tuple[str, str], str] = {
-    ("mappings", "client_column"): "display",
-    ("mappings", "status"): "enum:status",
-    ("mappings", "method"): "enum:method",
-    ("mappings", "reason"): "text",
-    ("mappings", "catalog_name"): "enum:catalog_name",
-    ("mappings", "arithmetic_proof"): "text",
-    ("mappings", "supported_by"): "steps",
-    ("mappings", "decided_by"): "steps",
-    ("mappings", "vetoed_by"): "enum:vetoed_by",
-    ("mappings", "reviewer_status"): "enum:reviewer_status",
-    # Digitada pelo revisor: um número de coluna ou um nome de exibição.
-    ("mappings", "correct_client_column"): "display",
-    ("mappings", "reviewer_note"): "text",
-    ("unmatched", "client_column"): "display",
-    ("unmatched", "disposition"): "enum:disposition",
-    ("unmatched", "review_priority"): "enum:review_priority",
-    ("unmatched", "signals"): "signals",
-    ("unmatched", "signal_detail"): "text",
-    ("queue", "proposed_client_column"): "display",
-    ("queue", "resolver_disagrees"): "text",
-    ("queue", "arithmetic_proof"): "text",
-    ("queue", "why_held"): "phrase:why_held",
-    ("coverage", "state"): "phrase:coverage_state",
-    ("coverage", "client_column"): "display",
-    ("coverage", "reason"): "text",
-}
-
-
-def _field_kind(table: str, field: str) -> str | None:
-    if table == "banner":
-        table = "mappings"
-    return FIELD_KIND.get((table, field))
-
-
-def _signals_to_external(cell: object) -> object:
-    if not isinstance(cell, str) or not cell:
-        return cell
-    values = ENUMS["signals"]
-    return SIGNALS_SEPARATOR.join(
-        values.get(token, token) for token in cell.split(SIGNALS_SEPARATOR)
-    )
-
-
-def _signals_to_internal(cell: object) -> object:
-    if not isinstance(cell, str) or not cell:
-        return cell
-    values = _ENUMS_INTERNAL["signals"]
-    return SIGNALS_SEPARATOR.join(
-        values.get(token, token) for token in cell.split(SIGNALS_SEPARATOR)
-    )
-
-
-def external_value(table: str, field: str, value: object) -> object:
-    """Valor interno de uma célula -> o que é gravado no esquema em português.
-
-    ``field`` é o nome interno do campo. Valores desconhecidos, números e
-    texto livre passam intactos, de modo que aplicar duas vezes dá o mesmo
-    resultado.
-    """
-    kind = _field_kind(table, field)
-    if kind is None or kind == "text":
-        return value
-    if kind == "display":
-        return display_name_to_external(value)
-    if kind == "steps":
-        return steps_to_external(value)
-    if kind == "signals":
-        return _signals_to_external(value)
-    if kind == "enum:reviewer_status":
-        # O parecer digitado ("Correct ", "correto") sai na grafia canônica em
-        # português; um valor desconhecido sai como foi digitado.
-        if not isinstance(value, str):
-            return value
-        normalized = normalize_reviewer_status(value)
-        return ENUMS["reviewer_status"].get(normalized, value)
-    enum_name = kind.split(":", 1)[1]
-    if isinstance(value, str):
-        return ENUMS[enum_name].get(value, value)
-    return value
-
-
-def internal_value(table: str, field: str, value: object, schema: str) -> object:
-    """Valor lido de uma célula -> vocabulário interno.
-
-    Regras, escolhidas para não mudar o comportamento com relatórios legados:
-
-    * enums de máquina convertem só os valores **exatos** em português, e só
-      quando o esquema é ``PT_BR``; valores legados e desconhecidos passam
-      como estão;
-    * etapas e sinais convertem só no esquema ``PT_BR``;
-    * o parecer do revisor passa por ``normalize_reviewer_status`` nos dois
-      esquemas;
-    * nomes de exibição aceitam a forma em português nos dois esquemas;
-    * frases e texto livre não voltam para o inglês.
-    """
-    _check_schema(schema)
-    kind = _field_kind(table, field)
-    if kind is None or kind == "text" or kind.startswith("phrase:"):
-        return value
-    if kind == "display":
-        return display_name_to_internal(value)
-    if kind == "enum:reviewer_status":
-        return normalize_reviewer_status(value) if isinstance(value, str) else value
-    if schema != PT_BR:
-        return value
-    if kind == "steps":
-        return steps_to_internal(value)
-    if kind == "signals":
-        return _signals_to_internal(value)
-    enum_name = kind.split(":", 1)[1]
-    if isinstance(value, str):
-        return _ENUMS_INTERNAL[enum_name].get(value, value)
-    return value
+        return None
+    return _reverse(ENUMS["reviewer_status"]).get(_fold(value.strip()))
 
 
 # ---------------------------------------------------------------------------
@@ -864,156 +692,85 @@ def internal_value(table: str, field: str, value: object, schema: str) -> object
 # ---------------------------------------------------------------------------
 
 
-def _check_schema(schema: str) -> None:
-    if schema not in SCHEMAS:
-        raise ValueError(f"Esquema desconhecido: {schema!r}. Use {PT_BR!r} ou {LEGACY_EN!r}.")
+def sheet_name(kind: str) -> str:
+    """Nome da aba de um tipo (``"mappings"``, ``"run_metadata"`` ...)."""
+    return SHEETS[kind]
 
 
-def _other_schema(schema: str) -> str:
-    return LEGACY_EN if schema == PT_BR else PT_BR
-
-
-def sheet_name(kind: str, schema: str = PT_BR) -> str:
-    """Nome da aba de um tipo (``"mappings"``, ``"run_metadata"`` ...) no esquema dado.
-
-    Sem ``schema``, devolve o nome em português, que é o que se grava.
-    """
-    _check_schema(schema)
-    legacy, portuguese = SHEETS[kind]
-    return portuguese if schema == PT_BR else legacy
-
-
-def header_label(table: str, field: str, schema: str) -> str:
-    """Cabeçalho de um campo interno no esquema dado, para gravar ou citar em mensagens.
-
-    No esquema legado o cabeçalho é o próprio nome interno. Um campo que não
-    pertence à tabela volta como está.
-    """
-    _check_schema(schema)
-    if schema == LEGACY_EN:
-        return field
+def header_label(table: str, field: str) -> str:
+    """Cabeçalho gravado de um campo interno; um campo fora da tabela volta como está."""
     return COLUMNS[table].get(field, field)
 
 
-def metadata_key_label(key: str, schema: str = PT_BR) -> str:
-    """Chave de metadados interna no esquema dado (em português, por padrão)."""
-    _check_schema(schema)
-    if schema == LEGACY_EN:
-        return key
-    return METADATA_KEYS.get(key, key)
+def _legacy_report_error(found: str) -> ValueError:
+    return ValueError(
+        f"O relatório está no formato antigo, em inglês (versão {SCHEMA_VERSION_LEGACY} do "
+        f"esquema): {found}. Só o esquema em português (versão {SCHEMA_VERSION_PT}) é lido. "
+        f"Para converter o relatório, use o migrate_reports.py do commit {MIGRATION_COMMIT}: "
+        f"git worktree add /tmp/cbs-{MIGRATION_COMMIT} {MIGRATION_COMMIT} e, dentro dessa "
+        "pasta, python migrate_reports.py RELATORIO EXPORTACAO, que reescreve o relatório "
+        "no próprio arquivo."
+    )
 
 
-def _table_title(table: str) -> str:
-    return SHEETS[TABLE_SHEETS[table]][1]
+def _legacy_names_error(where: str, renames: Mapping[str, str]) -> ValueError:
+    listing = ", ".join(f"{old!r} para {new!r}" for old, new in renames.items())
+    return ValueError(
+        f"{where} tem nomes do formato antigo, em inglês, num relatório em português. "
+        f"Renomeie {listing}."
+    )
 
 
-def detect_schema(header: Iterable[object], table: str = "mappings") -> str:
-    """Identifica o esquema pelo cabeçalho de uma tabela.
+def check_header(header: Iterable[object], table: str = "mappings") -> None:
+    """Confere que o cabeçalho de uma tabela está no esquema em português.
 
-    Para a aba de mapeamentos (a primeira do relatório, que é a referência):
-    ``numero_coluna_modelo`` indica ``PT_BR`` e ``model_column_number`` indica
-    ``LEGACY_EN``. Levanta ``ValueError`` quando o cabeçalho tem as duas, não
-    tem nenhuma, ou mistura outros cabeçalhos dos dois esquemas (esquema
-    misto). Um relatório meio traduzido não é lido pela metade.
+    Levanta ``ValueError`` quando falta a coluna obrigatória da tabela ou há
+    um cabeçalho do formato antigo. Na aba de mapeamentos, nomes antigos sem
+    ``numero_coluna_modelo`` são um relatório inteiro no formato antigo, e o
+    erro diz como convertê-lo; fora disso, são nomes a renomear.
     """
-    names = {str(name) for name in header if name is not None}
-    legacy_marker, portuguese_marker = _SCHEMA_MARKERS[table]
-    title = _table_title(table)
-    has_legacy = legacy_marker in names
-    has_portuguese = portuguese_marker in names
-    if has_legacy and has_portuguese:
-        raise ValueError(
-            f"Esquema misto na aba {title}: o cabeçalho tem {portuguese_marker!r} (esquema "
-            f"em português) e {legacy_marker!r} (esquema legado em inglês) ao mesmo tempo."
-        )
-    if not has_legacy and not has_portuguese:
-        raise ValueError(
-            f"Não foi possível identificar o esquema da aba {title}: o cabeçalho não tem "
-            f"{portuguese_marker!r} (esquema em português) nem {legacy_marker!r} "
-            "(esquema legado em inglês)."
-        )
-    schema = PT_BR if has_portuguese else LEGACY_EN
+    names = [str(name) for name in header if name is not None]
     columns = COLUMNS[table]
-    # Cabeçalho do outro esquema -> o nome que ele deveria ter neste esquema.
-    if schema == PT_BR:
-        renames = {legacy: pt for legacy, pt in columns.items() if legacy != pt}
-    else:
-        renames = {pt: legacy for legacy, pt in columns.items() if legacy != pt}
-    foreign = sorted(names & set(renames))
-    if foreign:
-        listing = ", ".join(f"{name!r} para {renames[name]!r}" for name in foreign)
+    required = _REQUIRED_HEADER[table]
+    legacy = {name: columns[name] for name in names if name in columns}
+    if legacy and table == "mappings" and required not in names:
+        raise _legacy_report_error(f"a aba de mapeamentos tem a coluna {next(iter(legacy))!r}")
+    if legacy:
+        raise _legacy_names_error(f"A aba {SHEETS[table]}", legacy)
+    if required not in names:
         raise ValueError(
-            f"Esquema misto na aba {title}: o cabeçalho está no esquema "
-            f"{_SCHEMA_DESCRIPTIONS[schema]}, mas também tem colunas do esquema "
-            f"{_SCHEMA_DESCRIPTIONS[_other_schema(schema)]}. Renomeie {listing}."
+            f"A aba {SHEETS[table]} não tem a coluna {required!r}; confira se o arquivo "
+            "é um relatório de mapeamento."
         )
-    return schema
 
 
-def _sheet_key(name: str) -> str:
-    """Forma de comparação de um nome de aba.
+def _sheets_named(sheet_names: Sequence[str], name: str) -> list[str]:
+    """Abas com este nome, sem distinguir caixa, acentos e espaços nas pontas."""
+    wanted = _fold(name.strip())
+    return [n for n in sheet_names if isinstance(n, str) and _fold(n.strip()) == wanted]
 
-    O Excel trata nomes de aba sem distinguir maiúsculas de minúsculas, e um
-    nome com acento pode chegar decomposto (``ç`` como ``c`` + cedilha) ou
-    redigitado sem acento. Sem esta comparação, ``"metadados da execucao"``
-    não seria reconhecida, ``find_sheet`` devolveria ``None`` e a verificação
-    de hash seria pulada em silêncio.
+
+def find_sheet(sheet_names: Sequence[str], kind: str) -> str | None:
+    """Nome da aba de um tipo, como está escrito na pasta de trabalho, ou ``None``.
+
+    A comparação ignora caixa (como o Excel), acentos (um nome pode chegar
+    decomposto ou redigitado sem acento) e espaços nas pontas: sem isso a aba
+    de metadados não seria encontrada e a verificação de hash seria pulada em
+    silêncio. Pelo mesmo motivo, duas abas com o mesmo nome ou uma aba com o
+    nome do formato antigo levantam ``ValueError``; com ``Mappings`` e sem
+    a aba de mapeamentos em português, o erro diz como converter o relatório.
     """
-    return _fold(name.strip())
-
-
-def find_sheet(sheet_names: Sequence[str], kind: str, schema: str | None) -> str | None:
-    """Nome da aba de um tipo numa pasta de trabalho, conferindo o esquema.
-
-    Devolve o nome exatamente como está na pasta de trabalho, para ser usado
-    na leitura, ou ``None`` se a aba não existe (por exemplo, relatórios
-    antigos sem metadados). A comparação ignora caixa, acentos e espaços nas
-    pontas (ver ``_sheet_key``).
-
-    Com ``schema`` igual a ``PT_BR`` ou ``LEGACY_EN``, levanta ``ValueError``
-    se só existe a aba do outro esquema (esquema misto). Com ``schema=None``,
-    aceita o nome de qualquer um dos dois esquemas; serve para localizar a aba
-    de mapeamentos antes de conhecer o esquema, que é decidido depois pelo
-    cabeçalho (``detect_schema``).
-
-    Nos dois casos levanta ``ValueError`` se existem as abas dos dois esquemas
-    ou duas abas com o mesmo nome a menos de caixa e acentos. Sem isso, uma
-    delas seria ignorada em silêncio e, no caso dos metadados, a verificação
-    de hash seria pulada.
-    """
-    if schema is not None:
-        _check_schema(schema)
-    found: dict[str, list[str]] = {}
-    for candidate in SCHEMAS:
-        wanted = _sheet_key(sheet_name(kind, candidate))
-        found[candidate] = [
-            name for name in sheet_names if isinstance(name, str) and _sheet_key(name) == wanted
-        ]
-    for candidate, names in found.items():
-        if len(names) > 1:
-            raise ValueError(
-                f"A pasta de trabalho tem mais de uma aba {sheet_name(kind, candidate)!r}: "
-                f"{names}. Mantenha só uma."
-            )
-    if found[PT_BR] and found[LEGACY_EN]:
+    found = _sheets_named(sheet_names, SHEETS[kind])
+    legacy = _sheets_named(sheet_names, LEGACY_SHEETS[kind]) if kind in LEGACY_SHEETS else []
+    if legacy and kind == "mappings" and not found:
+        raise _legacy_report_error(f"a pasta de trabalho tem a aba {legacy[0]!r}")
+    if legacy:
+        raise _legacy_names_error("A pasta de trabalho", {legacy[0]: SHEETS[kind]})
+    if len(found) > 1:
         raise ValueError(
-            f"A pasta de trabalho tem ao mesmo tempo as abas {found[PT_BR][0]!r} (esquema "
-            f"{_SCHEMA_DESCRIPTIONS[PT_BR]}) e {found[LEGACY_EN][0]!r} (esquema "
-            f"{_SCHEMA_DESCRIPTIONS[LEGACY_EN]}); mantenha só a do esquema do relatório."
+            f"A pasta de trabalho tem mais de uma aba {SHEETS[kind]!r}: {found}. Mantenha só uma."
         )
-    if schema is None:
-        names = found[PT_BR] or found[LEGACY_EN]
-        return names[0] if names else None
-    if found[schema]:
-        return found[schema][0]
-    other = _other_schema(schema)
-    if found[other]:
-        raise ValueError(
-            f"Esquema misto: o relatório está no esquema {_SCHEMA_DESCRIPTIONS[schema]}, "
-            f"mas a aba se chama {found[other][0]!r} (esquema {_SCHEMA_DESCRIPTIONS[other]}). "
-            f"Renomeie a aba para {sheet_name(kind, schema)!r}."
-        )
-    return None
+    return found[0] if found else None
 
 
 # ---------------------------------------------------------------------------
@@ -1022,7 +779,6 @@ def find_sheet(sheet_names: Sequence[str], kind: str, schema: str | None) -> str
 
 
 def _holds_text(series: pd.Series) -> bool:
-    """Se a coluna pode conter texto; colunas numéricas, booleanas e de data não podem."""
     return not (
         pd.api.types.is_numeric_dtype(series)
         or pd.api.types.is_bool_dtype(series)
@@ -1031,17 +787,12 @@ def _holds_text(series: pd.Series) -> bool:
 
 
 def _convert_columns(frame: pd.DataFrame, table: str, convert) -> None:
-    """Converte, no próprio ``frame``, as células das colunas que têm tratamento.
+    """Aplica ``convert(campo, valor)``, no próprio quadro, às colunas de texto com tratamento.
 
-    ``convert(campo, valor)`` recebe o nome interno do campo. Só passam por
-    aqui as colunas de ``FIELD_KIND`` que podem conter texto; as demais ficam
-    intactas.
-
-    Não usa ``Series.map``, que reinfere o dtype do resultado: a coluna object
-    ``correct_client_column`` de sap_procosa, com ``[NaN, 6, 32]``, voltava
-    float64 com ``6.0`` e ``32.0``, e ``None`` virava ``NaN``. Aqui cada célula
-    fica exatamente como ``convert`` a devolveu, numa coluna object. As colunas
-    são percorridas por posição, o que também funciona com nomes repetidos.
+    Não usa ``Series.map``, que reinfere o dtype: ``[NaN, 6, 32]`` numa
+    coluna object voltava float64 com ``6.0``. Aqui cada célula fica como
+    ``convert`` a devolveu, numa coluna object. As colunas são percorridas
+    por posição, o que funciona também com nomes repetidos.
     """
     for position, column in enumerate(frame.columns):
         if not isinstance(column, str) or _field_kind(table, column) is None:
@@ -1049,23 +800,14 @@ def _convert_columns(frame: pd.DataFrame, table: str, convert) -> None:
         series = frame.iloc[:, position]
         if not _holds_text(series):
             continue
-        frame.isetitem(
-            position,
-            pd.Series(
-                [convert(column, value) for value in series.tolist()],
-                index=series.index,
-                dtype=object,
-            ),
-        )
+        converted = [convert(column, value) for value in series.tolist()]
+        frame.isetitem(position, pd.Series(converted, index=series.index, dtype=object))
 
 
 def to_external_frame(frame: pd.DataFrame, table: str) -> pd.DataFrame:
-    """Quadro com nomes e valores internos -> esquema em português, para gravar.
+    """Quadro interno -> esquema em português, para gravar. Não altera ``frame``.
 
-    Renomeia os cabeçalhos com ``COLUMNS[table]``, converte cada célula
-    conforme ``FIELD_KIND`` e mantém a ordem das colunas. Colunas que não são
-    da tabela ficam com o nome e os valores que têm. O quadro recebido não é
-    alterado.
+    Colunas que não são da tabela ficam com o nome e os valores que têm.
     """
     out = frame.copy()
     _convert_columns(out, table, lambda field, value: external_value(table, field, value))
@@ -1075,127 +817,93 @@ def to_external_frame(frame: pd.DataFrame, table: str) -> pd.DataFrame:
     )
 
 
-def to_internal_frame(frame: pd.DataFrame, table: str) -> tuple[pd.DataFrame, str]:
-    """Quadro lido de um arquivo (português ou legado) -> nomes e valores internos.
+def to_internal_frame(frame: pd.DataFrame, table: str) -> pd.DataFrame:
+    """Quadro lido de um arquivo -> nomes e valores internos. Não altera ``frame``.
 
-    Devolve o quadro convertido e o esquema detectado. Levanta ``ValueError``
-    para esquema misto (ver ``detect_schema``). O quadro recebido não é
-    alterado.
+    Recusa com ``ValueError`` um cabeçalho do formato antigo (``check_header``).
     """
-    schema = detect_schema(frame.columns, table)
-    out = frame.copy()
-    if schema == PT_BR:
-        internal = {pt: en for en, pt in COLUMNS[table].items()}
-        out = out.rename(
-            columns=lambda name: internal.get(name, name) if isinstance(name, str) else name
-        )
-    _convert_columns(
-        out, table, lambda field, value: internal_value(table, field, value, schema)
+    check_header(frame.columns, table)
+    names = _reverse(COLUMNS[table])
+    out = frame.copy().rename(
+        columns=lambda name: names.get(name, name) if isinstance(name, str) else name
     )
-    return out, schema
+    _convert_columns(out, table, lambda field, value: internal_value(table, field, value))
+    return out
 
 
-def internal_header_index(
-    header_row: Sequence[object], table: str
-) -> tuple[dict[str, int], str]:
-    """Linha de cabeçalho do openpyxl -> {nome interno: índice da coluna}, e o esquema.
+def internal_header_index(header_row: Sequence[object], table: str) -> dict[str, int]:
+    """Linha de cabeçalho do openpyxl -> {nome interno: índice da coluna}.
 
-    Para leitores que percorrem as linhas com ``iter_rows(values_only=True)``.
-    Cabeçalhos que não são da tabela entram com o próprio nome; células de
-    cabeçalho vazias ficam de fora.
+    Confere o cabeçalho como ``to_internal_frame``. Cabeçalhos que não são da
+    tabela entram com o próprio nome; células vazias ficam de fora.
     """
-    schema = detect_schema(header_row, table)
-    internal = (
-        {pt: en for en, pt in COLUMNS[table].items()} if schema == PT_BR else {}
-    )
-    index: dict[str, int] = {}
-    for position, name in enumerate(header_row):
-        if name is None:
-            continue
-        key = internal.get(name, name) if isinstance(name, str) else name
-        index[key] = position
-    return index, schema
+    check_header(header_row, table)
+    names = _reverse(COLUMNS[table])
+    return {
+        names.get(name, name) if isinstance(name, str) else name: position
+        for position, name in enumerate(header_row)
+        if name is not None
+    }
 
 
 # ---------------------------------------------------------------------------
 # Metadados da execução
 # ---------------------------------------------------------------------------
 
-_METADATA_KEYS_INTERNAL: dict[str, str] = {pt: en for en, pt in METADATA_KEYS.items()}
-_METADATA_SENTINELS_INTERNAL: dict[str, str] = {
-    pt: en for en, pt in METADATA_SENTINELS.items()
-}
-
 
 def to_external_metadata(metadata: Mapping[str, object]) -> pd.DataFrame:
-    """Dicionário de metadados com chaves internas -> quadro ``chave``/``valor`` em português.
+    """Metadados com chaves internas -> quadro ``chave``/``valor`` em português.
 
-    Traduz as chaves e os sentinelas (``disabled`` -> ``desativado``) das
-    chaves que podem tê-los. Os demais valores (hashes, nomes de arquivo,
-    limiares, data de geração) passam intactos, na mesma ordem.
+    Traduz as chaves e, nas chaves que podem tê-los, os sentinelas. Os demais
+    valores passam intactos, na mesma ordem.
     """
     rows = []
     for key, value in metadata.items():
         if key in METADATA_SENTINEL_KEYS and isinstance(value, str):
             value = METADATA_SENTINELS.get(value, value)
         rows.append((METADATA_KEYS.get(key, key), value))
-    columns = COLUMNS["run_metadata"]
-    return pd.DataFrame(rows, columns=[columns["key"], columns["value"]])
+    return pd.DataFrame(rows, columns=list(COLUMNS["run_metadata"].values()))
 
 
 def _clean_text(value: object) -> str:
     return "" if _is_missing(value) else str(value).strip()
 
 
-def internal_metadata(frame: pd.DataFrame, schema: str) -> dict[str, str]:
-    """Aba de metadados lida -> dicionário {chave interna: valor como texto}.
+def internal_metadata(frame: pd.DataFrame) -> dict[str, str]:
+    """Aba de metadados lida -> {chave interna: valor como texto}.
 
-    ``schema`` é o esquema do relatório, detectado na aba de mapeamentos. Os
-    cabeçalhos precisam ser os desse esquema (``chave``/``valor`` ou
-    ``key``/``value``); o outro par levanta ``ValueError`` (esquema misto).
-    As chaves em português viram internas nos dois esquemas, e o mesmo vale
-    para os sentinelas, para que nenhuma verificação de hash seja pulada por
-    não reconhecer a chave. Valores são limpos como no ``apply``: texto sem
-    espaços nas pontas, célula vazia como ``""``. Levanta ``ValueError`` para
-    chave repetida na coluna crua (a mesma regra do ``apply``) e para a mesma
-    chave escrita nas duas línguas.
+    Os valores são limpos como no ``apply``: sem espaços nas pontas, célula
+    vazia como ``""``. Levanta ``ValueError`` para chave repetida na coluna
+    crua, inclusive duas chaves em branco (a regra que o ``apply`` sempre
+    aplicou), e para chave do formato antigo: igual à interna, ela valeria no
+    lugar da chave em português sem aviso.
     """
-    _check_schema(schema)
-    found = detect_schema(frame.columns, "run_metadata")
-    title = sheet_name("run_metadata", schema)
-    key_column = header_label("run_metadata", "key", schema)
-    value_column = header_label("run_metadata", "value", schema)
-    if found != schema:
-        raise ValueError(
-            f"Esquema misto: o relatório está no esquema {_SCHEMA_DESCRIPTIONS[schema]}, "
-            f"mas a aba {title!r} tem os cabeçalhos do esquema {_SCHEMA_DESCRIPTIONS[found]}. "
-            f"Renomeie as colunas para {key_column!r} e {value_column!r}."
-        )
+    check_header(frame.columns, "run_metadata")
+    title = SHEETS["run_metadata"]
+    key_column, value_column = COLUMNS["run_metadata"].values()
     if value_column not in frame.columns:
         raise ValueError(
             f"A aba {title!r} precisa ter as colunas {key_column!r} e {value_column!r}."
         )
-    # Mesma regra que o apply sempre aplicou à coluna crua: qualquer repetição,
-    # inclusive duas chaves em branco, recusa a aba.
-    raw_repeated = frame[key_column][frame[key_column].duplicated()]
-    if not raw_repeated.empty:
-        labels = sorted({_clean_text(key) for key in raw_repeated})
+    keys = frame[key_column]
+    repeated = keys[keys.duplicated()]
+    if not repeated.empty:
+        labels = sorted({_clean_text(key) for key in repeated})
         raise ValueError(f"A aba {title!r} tem chaves repetidas: {labels}.")
+    written = [_clean_text(key) for key in keys]
+    legacy = {key: METADATA_KEYS[key] for key in written if key in METADATA_KEYS}
+    if legacy:
+        raise _legacy_names_error(f"A aba {title!r}", legacy)
+
+    internal_keys = _reverse(METADATA_KEYS)
+    internal_sentinels = _reverse(METADATA_SENTINELS)
     metadata: dict[str, str] = {}
-    spellings: dict[str, set[str]] = {}
-    for raw_key, raw_value in zip(frame[key_column], frame[value_column]):
-        written = _clean_text(raw_key)
-        if not written:
+    for key, raw_value in zip(written, frame[value_column]):
+        if not key:
             continue
-        key = _METADATA_KEYS_INTERNAL.get(written, written)
+        key = internal_keys.get(key, key)
         value = _clean_text(raw_value)
         if key in METADATA_SENTINEL_KEYS:
-            value = _METADATA_SENTINELS_INTERNAL.get(value, value)
-        spellings.setdefault(key, set()).add(written)
+            value = internal_sentinels.get(value, value)
         metadata[key] = value
-    # A mesma chave escrita nas duas línguas: não há como saber qual vale.
-    repeated = {key for key, written in spellings.items() if len(written) > 1}
-    if repeated:
-        labels = sorted(metadata_key_label(key, schema) for key in repeated)
-        raise ValueError(f"A aba {title!r} tem chaves repetidas: {labels}.")
     return metadata

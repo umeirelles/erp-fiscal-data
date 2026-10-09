@@ -22,26 +22,18 @@ def test_every_step_id_is_unique_across_evidence_and_guards() -> None:
 
 
 def test_the_strongest_supporting_step_is_the_one_reported() -> None:
-    # Um mapeamento corroborado por uma correspondência de cabeçalho e pela
-    # aritmética fiscal é informado como decidido pela aritmética: é a
-    # alegação que continuaria valendo num cliente cujos cabeçalhos não
-    # conseguimos ler.
     assert deciding_step(["lexical", "arithmetic"]) == "arithmetic"
     assert deciding_step(["semantic", "catalog"]) == "catalog"
     assert deciding_step([]) == ""
 
 
 def test_the_resolver_never_outranks_objective_evidence() -> None:
-    # "Decidido pelo resolvedor" precisa manter o seu significado honesto:
-    # nada objetivo sustentou o mapeamento e o julgamento da IA decidiu.
     for objective in ("lexical", "profile", "identifier", "catalog", "arithmetic"):
         assert deciding_step(["resolver", objective]) == objective
 
 
 def test_the_resolver_alone_does_not_make_a_mapping_transferable() -> None:
-    # O resolvedor é um árbitro, não uma evidência. Contá-lo como
-    # transferível deixaria um mapeamento apoiado só no cabeçalho passar por
-    # generalizável.
+    # O resolvedor é um árbitro, não uma evidência.
     assert "resolver" not in TRANSFERRING_STEP_IDS
     assert rests_only_on_headers(["resolver"]) is True
     assert rests_only_on_headers(["resolver", "lexical", "semantic"]) is True
@@ -55,26 +47,20 @@ def test_header_bound_steps_are_exactly_the_ones_reading_client_words() -> None:
 
 def test_supporting_steps_render_strongest_last() -> None:
     assert format_steps(["arithmetic", "lexical"]) == "lexical + arithmetic"
-    # e a forma montada faz a ida e volta, porque é esse texto que o relatório guarda
+    # A célula montada é o que o relatório guarda, e ela faz a ida e volta.
     assert deciding_step(format_steps(["arithmetic", "lexical"])) == "arithmetic"
 
 
 @pytest.mark.parametrize("step", (*EVIDENCE_STEPS, *GUARDS), ids=lambda s: s.id)
 def test_every_step_documents_itself_and_points_at_its_code(step) -> None:
-    # O registro é o que o revisor lê para entender o pipeline, então uma
-    # entrada sem resumo ou sem a indicação de onde está implementada não
-    # serve para nada.
     assert step.name and step.name[0].isupper()
     assert len(step.summary) > 60
     assert step.implemented_by
 
 
-#: Células de etapas em memória (vocabulário interno, como o mapeador e o
-#: preenchimento retroativo as montam), a mesma célula no esquema em
-#: português, e o que ``deciding_step`` e ``format_steps`` devem devolver.
-#: As últimas quatro formas são as reais dos relatórios arquivados:
-#: ``unrecorded`` e ``catalog (agrees)`` só existem no preenchimento
-#: retroativo, e mapping_steps não as classifica, então não decidem nada.
+#: (célula interna, a mesma célula em português, deciding_step, format_steps).
+#: As quatro últimas têm as formas dos relatórios arquivados: ``unrecorded`` e
+#: ``catalog (agrees)`` não são etapas de evidência e não decidem nada.
 STEP_CELLS: tuple[tuple[str, str, str, str], ...] = (
     ("arithmetic", "aritmetica", "arithmetic", "arithmetic"),
     ("resolver", "resolvedor_ia", "resolver", "resolver"),
@@ -114,23 +100,16 @@ STEP_CELLS: tuple[tuple[str, str, str, str], ...] = (
 def test_portuguese_step_cells_read_back_to_the_same_decision(
     internal: str, portuguese: str, decided: str, formatted: str
 ) -> None:
-    # O relatório em português grava exatamente esta célula ...
     assert report_schema.steps_to_external(internal) == portuguese
-    # ... e, lida de volta por report_schema, ela volta ao vocabulário interno.
     read_back = report_schema.steps_to_internal(portuguese)
     assert read_back == internal
     for field in ("supported_by", "decided_by"):
-        assert (
-            report_schema.internal_value("mappings", field, portuguese, report_schema.PT_BR)
-            == internal
-        )
+        assert report_schema.internal_value("mappings", field, portuguese) == internal
 
-    # A célula lida em português dá a mesma decisão que a célula em inglês.
     assert deciding_step(read_back) == deciding_step(internal) == decided
     assert format_steps(read_back) == format_steps(internal) == formatted
     assert rests_only_on_headers(read_back) == rests_only_on_headers(internal)
 
-    # Sem a conversão, mapping_steps não reconhece os ids em português: é
-    # report_schema que faz a ponte, e é ela que este teste exercita.
+    # Sem passar por report_schema, os ids em português não são reconhecidos.
     assert deciding_step(portuguese) == ""
     assert format_steps(portuguese) == ""
