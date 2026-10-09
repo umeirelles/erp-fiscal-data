@@ -36,13 +36,16 @@ EFD_ICMS_IPI_SOURCE = (
 )
 EFD_CONTRIBUTIONS_SOURCE = "https://sped.rfb.gov.br/item/show/268"
 
+_USER_AGENT = "cbs-base-fiscal reference updater/1.0"
+_TIMEOUT_SECONDS = 90
+
 
 def download(url: str, *, nfe: bool = False) -> bytes:
-    headers = {"User-Agent": "cbs-base-fiscal reference updater/1.0"}
+    headers = {"User-Agent": _USER_AGENT}
     if nfe:
         headers["Cookie"] = "AspxAutoDetectCookieSupport=1"
     request = Request(url, headers=headers)
-    with urlopen(request, timeout=90) as response:
+    with urlopen(request, timeout=_TIMEOUT_SECONDS) as response:
         content = response.read()
     if not content:
         raise RuntimeError(f"A fonte oficial retornou uma resposta vazia: {url}")
@@ -50,6 +53,7 @@ def download(url: str, *, nfe: bool = False) -> bytes:
 
 
 def clean_code(value: object, width: int) -> str:
+    """Os dígitos do código completados com zeros até ``width``; vazio se não couber."""
     if pd.isna(value):
         return ""
     if isinstance(value, (int, float)) and float(value).is_integer():
@@ -60,6 +64,7 @@ def clean_code(value: object, width: int) -> str:
 
 
 def iso_date(value: object) -> str:
+    """A data em AAAA-MM-DD; vazio para célula vazia, inválida ou 9999-12-31 (sem fim)."""
     if pd.isna(value) or str(value).strip() in {"", "9999-12-31"}:
         return ""
     parsed = pd.to_datetime(value, errors="coerce")
@@ -85,83 +90,18 @@ def standard_frame(
 
 
 def official_frames() -> tuple[dict[str, pd.DataFrame], dict[str, dict[str, object]]]:
+    """Baixa as tabelas oficiais e as converte; devolve os quadros e os metadados do manifesto."""
     cfop_bytes = download(CFOP_URL, nfe=True)
     ibs_bytes = download(IBS_CBS_URL, nfe=True)
     municipality_bytes = download(MUNICIPALITY_URL, nfe=True)
     ncm_bytes = download(NCM_URL)
 
-    cfop_raw = pd.read_excel(io.BytesIO(cfop_bytes), sheet_name="CFOP", dtype=object)
-    cfop = pd.DataFrame(
-        {
-            "code": cfop_raw["CFOP"].map(lambda value: clean_code(value, 4)),
-            "description": "",
-            "valid_from": cfop_raw["Início de vigência"].map(iso_date),
-            "valid_to": cfop_raw["Fim de vigência"].map(iso_date),
-        }
-    )
-    cfop = cfop[cfop["code"].str.len().eq(4)].drop_duplicates("code")
-
-    municipality_raw = pd.read_excel(
-        io.BytesIO(municipality_bytes), sheet_name="Mun", dtype=object
-    )
-    municipality = pd.DataFrame(
-        {
-            "code": municipality_raw["cMun"].map(
-                lambda value: clean_code(value, 7)
-            ),
-            "description": municipality_raw["Nome_Município"].fillna(""),
-            "valid_from": "",
-            "valid_to": "",
-        }
-    )
-    municipality = municipality[
-        municipality["code"].str.len().eq(7)
-    ].drop_duplicates("code")
-
-    ibs_cst_raw = pd.read_excel(
-        io.BytesIO(ibs_bytes), sheet_name="CST 2026-06-01 Pub", dtype=object
-    )
-    ibs_cst = pd.DataFrame(
-        {
-            "code": ibs_cst_raw["CST-IBS/CBS"].map(
-                lambda value: clean_code(value, 3)
-            ),
-            "description": ibs_cst_raw["Descrição CST-IBS/CBS"].fillna(""),
-            "valid_from": "2026-01-01",
-            "valid_to": "",
-        }
-    ).drop_duplicates("code")
-
-    cclass_raw = pd.read_excel(
-        io.BytesIO(ibs_bytes), sheet_name="cClass 2026-06-01 Pub", dtype=object
-    )
-    cclass = pd.DataFrame(
-        {
-            "code": cclass_raw["cClassTrib"].map(
-                lambda value: clean_code(value, 6)
-            ),
-            "description": cclass_raw["Nome cClassTrib"].fillna(""),
-            "valid_from": cclass_raw["dIniVig"].map(iso_date),
-            "valid_to": cclass_raw["dFimVig"].map(iso_date),
-        }
-    )
-    cclass = cclass[cclass["code"].str.len().eq(6)].drop_duplicates("code")
-
+    cfop = _cfop_frame(cfop_bytes)
+    municipality = _municipality_frame(municipality_bytes)
+    ibs_cst = _ibs_cbs_cst_frame(ibs_bytes)
+    cclass = _ibs_cbs_classification_frame(ibs_bytes)
     ncm_payload = json.loads(ncm_bytes.decode("utf-8"))
-    ncm_rows = []
-    for item in ncm_payload["Nomenclaturas"]:
-        code = re.sub(r"\D", "", item["Codigo"])
-        if len(code) != 8:
-            continue
-        ncm_rows.append(
-            {
-                "code": code,
-                "description": item.get("Descricao", ""),
-                "valid_from": iso_date(item.get("Data_Inicio")),
-                "valid_to": iso_date(item.get("Data_Fim")),
-            }
-        )
-    ncm = pd.DataFrame(ncm_rows).drop_duplicates("code")
+    ncm = _ncm_frame(ncm_payload)
 
     frames = {
         "cfop": cfop,
@@ -170,7 +110,96 @@ def official_frames() -> tuple[dict[str, pd.DataFrame], dict[str, dict[str, obje
         "ibs_cbs_cst": ibs_cst,
         "ibs_cbs_classification": cclass,
     }
-    metadata = {
+    return frames, _official_metadata(ncm_version=ncm_payload["Data_Ultima_Atualizacao_NCM"])
+
+
+def _read_sheet(content: bytes, sheet: str) -> pd.DataFrame:
+    return pd.read_excel(io.BytesIO(content), sheet_name=sheet, dtype=object)
+
+
+def _codes(column: pd.Series, width: int) -> pd.Series:
+    return column.map(lambda value: clean_code(value, width))
+
+
+def _full_width_unique(frame: pd.DataFrame, width: int) -> pd.DataFrame:
+    """Descarta os códigos que não têm a largura cheia e as repetições."""
+    return frame[frame["code"].str.len().eq(width)].drop_duplicates("code")
+
+
+def _cfop_frame(content: bytes) -> pd.DataFrame:
+    raw = _read_sheet(content, "CFOP")
+    frame = pd.DataFrame(
+        {
+            "code": _codes(raw["CFOP"], 4),
+            "description": "",
+            "valid_from": raw["Início de vigência"].map(iso_date),
+            "valid_to": raw["Fim de vigência"].map(iso_date),
+        }
+    )
+    return _full_width_unique(frame, 4)
+
+
+def _municipality_frame(content: bytes) -> pd.DataFrame:
+    raw = _read_sheet(content, "Mun")
+    frame = pd.DataFrame(
+        {
+            "code": _codes(raw["cMun"], 7),
+            "description": raw["Nome_Município"].fillna(""),
+            "valid_from": "",
+            "valid_to": "",
+        }
+    )
+    return _full_width_unique(frame, 7)
+
+
+def _ibs_cbs_cst_frame(content: bytes) -> pd.DataFrame:
+    # O nome da aba muda a cada publicação (KNOWN_ISSUES 3.14).
+    raw = _read_sheet(content, "CST 2026-06-01 Pub")
+    frame = pd.DataFrame(
+        {
+            "code": _codes(raw["CST-IBS/CBS"], 3),
+            "description": raw["Descrição CST-IBS/CBS"].fillna(""),
+            "valid_from": "2026-01-01",
+            "valid_to": "",
+        }
+    )
+    # Sem o filtro de largura das outras tabelas (KNOWN_ISSUES 3.14).
+    return frame.drop_duplicates("code")
+
+
+def _ibs_cbs_classification_frame(content: bytes) -> pd.DataFrame:
+    raw = _read_sheet(content, "cClass 2026-06-01 Pub")
+    frame = pd.DataFrame(
+        {
+            "code": _codes(raw["cClassTrib"], 6),
+            "description": raw["Nome cClassTrib"].fillna(""),
+            "valid_from": raw["dIniVig"].map(iso_date),
+            "valid_to": raw["dFimVig"].map(iso_date),
+        }
+    )
+    return _full_width_unique(frame, 6)
+
+
+def _ncm_frame(payload: dict) -> pd.DataFrame:
+    rows = []
+    for item in payload["Nomenclaturas"]:
+        code = re.sub(r"\D", "", item["Codigo"])
+        if len(code) != 8:  # capítulos, posições e subposições ficam de fora
+            continue
+        rows.append(
+            {
+                "code": code,
+                "description": item.get("Descricao", ""),
+                "valid_from": iso_date(item.get("Data_Inicio")),
+                "valid_to": iso_date(item.get("Data_Fim")),
+            }
+        )
+    return pd.DataFrame(rows).drop_duplicates("code")
+
+
+def _official_metadata(*, ncm_version: str) -> dict[str, dict[str, object]]:
+    """As entradas do manifesto das tabelas baixadas; só a versão do NCM vem do download."""
+    return {
         "cfop": {
             "width": 4,
             "normalizer": "cfop",
@@ -182,7 +211,7 @@ def official_frames() -> tuple[dict[str, pd.DataFrame], dict[str, dict[str, obje
             "width": 8,
             "normalizer": "punctuated_digits",
             "specificity": 1.0,
-            "source_version": ncm_payload["Data_Ultima_Atualizacao_NCM"],
+            "source_version": ncm_version,
             "source_url": NCM_URL,
         },
         "ibge_municipality": {
@@ -202,20 +231,20 @@ def official_frames() -> tuple[dict[str, pd.DataFrame], dict[str, dict[str, obje
         "ibs_cbs_classification": {
             "width": 6,
             "normalizer": "digits",
-            # Muitos códigos válidos começam com zeros (por exemplo, 000001);
-            # por isso, uma coluna comum de situação com números inteiros pode
-            # coincidir com eles depois que o Excel remove os zeros à esquerda.
-            # Fica como evidência forte para a IA, e não como decisão
-            # automática só pelo catálogo.
+            # Muitos códigos válidos começam com zeros (000001), então uma
+            # coluna de situação com inteiros pode coincidir com eles depois
+            # que o Excel corta os zeros: evidência para a IA, nunca decisão
+            # só pelo catálogo.
             "specificity": 0.85,
             "source_version": "IT 2025.002 v1.60; published 2026-06-23",
             "source_url": IBS_CBS_URL,
         },
     }
-    return frames, metadata
 
 
 def static_frames() -> tuple[dict[str, pd.DataFrame], dict[str, dict[str, object]]]:
+    """As tabelas de CST e CSOSN, escritas aqui a partir dos guias da EFD."""
+    # CST do ICMS = origem (0 a 8) + tratamento tributário.
     icms_treatments = {
         "00": "Tributada integralmente",
         "10": "Tributada com cobrança do ICMS por substituição tributária",
@@ -256,7 +285,11 @@ def static_frames() -> tuple[dict[str, pd.DataFrame], dict[str, dict[str, object
         "cst_ipi": standard_frame(ipi_codes),
         "cst_pis_cofins": standard_frame(pis_cofins_codes),
     }
-    metadata = {
+    return frames, _static_metadata()
+
+
+def _static_metadata() -> dict[str, dict[str, object]]:
+    return {
         "cst_icms": {
             "width": 3,
             "normalizer": "digits",
@@ -293,10 +326,10 @@ def static_frames() -> tuple[dict[str, pd.DataFrame], dict[str, dict[str, object
             "source_url": EFD_CONTRIBUTIONS_SOURCE,
         },
     }
-    return frames, metadata
 
 
 def write_snapshot(output: Path) -> None:
+    """Grava um CSV por catálogo, ordenado pelo código, e o manifest.json com os SHA-256."""
     output.mkdir(parents=True, exist_ok=True)
     official, official_metadata = official_frames()
     static, static_metadata = static_frames()

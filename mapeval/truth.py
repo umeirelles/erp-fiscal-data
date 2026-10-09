@@ -1,8 +1,7 @@
 """Carrega os gabaritos de-para escritos pelo cliente.
 
-Só datasul e oracle têm gabarito. O de_para_procosa.xlsx é uma especificação
-no nível de registro, escrita sobre outra exportação, e não existe gabarito
-para sap_terumo.
+Só datasul e oracle têm gabarito de colunas: de_para_procosa.xlsx é uma
+especificação no nível de registro, e sap_terumo não tem de-para.
 """
 
 from __future__ import annotations
@@ -14,17 +13,11 @@ import openpyxl
 
 from mapeval.excel import parse_coluna_annotation
 
-# Quatro linhas em que o próprio gabarito está errado e o mapeador está
-# certo. Cada uma foi verificada nos dados do próprio cliente, e cada uma
-# pode ser derivada de novo pelo canal de dados do de-para, alinhado linha a
-# linha, em vez de ser aceita por confiança.
-#
-# Aplicá-las é a diferença entre 33/56 e 37/56. Uma avaliação que as ignora
-# pune o comportamento correto; --strict-key-only existe só para provar que
-# elas são a única coisa que separa os dois números.
-#
-# As justificativas nunca são impressas (a CLI mostra só os números das
-# colunas); ficam aqui como documentação.
+# Linhas em que o próprio gabarito está errado e o mapeador está certo, cada
+# uma verificada nos dados do cliente. Sem elas a avaliação puniria o
+# comportamento correto; --strict-key-only pontua contra o gabarito cru e
+# mostra que só estas linhas separam os dois números. As justificativas nunca
+# são impressas (a CLI mostra só os números das colunas).
 KEY_CORRECTIONS: dict[str, dict[int, tuple[int, str]]] = {
     "oracle": {
         213: (36, "o gabarito aponta c37 ALIQ COFINS; c36 ALIQ PIS é a alíquota do PIS"),
@@ -53,9 +46,6 @@ class AnswerKey:
         """O único denominador legítimo do recall. Nunca 227."""
         return len(self.present)
 
-    def __len__(self) -> int:
-        return len(self.present)
-
 
 def load_answer_key(
     path: str | Path,
@@ -72,10 +62,10 @@ def load_answer_key(
         workbook.close()
 
     present: dict[int, int] = {}
-    for offset, cell in enumerate(header_row, start=1):
+    for model_column, cell in enumerate(header_row, start=1):
         client_column = parse_coluna_annotation(cell)
         if client_column is not None:
-            present[offset] = client_column
+            present[model_column] = client_column
 
     corrections: dict[int, str] = {}
     if apply_corrections:

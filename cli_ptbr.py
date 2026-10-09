@@ -1,29 +1,22 @@
 """Linha de comando em português: ``ArgumentParser`` com ajuda e erros traduzidos.
 
-O ``argparse`` monta os textos fixos dele (``usage:``, os títulos das seções,
-a ajuda de ``-h`` e as mensagens de erro) chamando ``argparse._``, que é o
-``gettext`` da biblioteca padrão. ``PortugueseArgumentParser`` troca essa
-função por uma tradução própria só enquanto um método do próprio parser está
-rodando, e devolve a original ao sair, mesmo quando o argparse encerra o
-programa com ``SystemExit``. Assim nenhum outro parser do processo (o do
-pytest, por exemplo) muda de língua.
+O ``argparse`` monta os textos fixos dele (``usage:``, títulos das seções,
+ajuda de ``-h``, mensagens de erro) chamando ``argparse._`` e
+``argparse.ngettext``. ``PortugueseArgumentParser`` troca essas duas funções
+pelas traduções daqui só enquanto um método do próprio parser roda, e as
+devolve ao sair, mesmo quando o argparse encerra com ``SystemExit``. Assim
+nenhum outro parser do processo (o do pytest, por exemplo) muda de língua.
 
-Dois textos precisam de mais do que a troca da frase fixa. O erro de valor
-inválido citaria o nome do tipo do Python (``int``, ``float``); aqui ele diz
-em português o que se esperava ("um número inteiro"). A ajuda padrão da ação
-``version`` é montada pelo argparse ao criar o argumento, fora dos métodos do
-parser; ela é traduzida ao formatar a ajuda.
-
-Os nomes das flags (``--offline``, ``--output`` ...) continuam em inglês; a
-ajuda de cada argumento é escrita em português por quem cria o parser, e os
-nomes exibidos dos valores também (``metavar="ARQUIVO"``), porque sem
-``metavar`` o argparse mostra o nome da flag em maiúsculas (``OUTPUT``).
+As flags continuam em inglês. A ajuda de cada argumento e os ``metavar``
+são escritos em português por quem cria o parser; sem ``metavar`` o argparse
+mostraria o nome da flag em maiúsculas (``OUTPUT``).
 """
 
 from __future__ import annotations
 
 import argparse
 import contextlib
+import functools
 from typing import Iterator
 
 #: Nome do tipo do Python citado no erro de valor inválido -> o que se esperava.
@@ -35,12 +28,11 @@ TYPE_LABELS: dict[str, str] = {
 
 
 class _InvalidValueMessage(str):
-    """Mensagem de valor inválido que também traduz o nome do tipo.
+    """Mensagem de valor inválido que troca o nome do tipo do Python por ``TYPE_LABELS``.
 
-    O argparse formata ``_('invalid %(type)s value: %(value)r') % args`` com o
-    ``__name__`` do tipo. O ``%`` desta classe troca esse nome pela descrição
-    de ``TYPE_LABELS`` antes de formatar; um tipo sem descrição (uma função de
-    conversão própria, por exemplo) sai como "um valor do tipo <nome>".
+    O argparse formata ``_('invalid %(type)s value: %(value)r') % args`` com
+    o ``__name__`` do tipo; uma conversão própria, sem rótulo, sai como "um
+    valor do tipo <nome>".
     """
 
     def __mod__(self, args):
@@ -98,12 +90,6 @@ MESSAGES: dict[str, str] = {
     "command '%(parser_name)s' is deprecated": "o comando '%(parser_name)s' está obsoleto",
 }
 
-#: Ajudas que o próprio argparse dá às ações -h e version quando quem cria o
-#: argumento não passa ``help``.
-_DEFAULT_ACTION_HELPS = frozenset(
-    {"show this help message and exit", "show program's version number and exit"}
-)
-
 #: Mensagens com plural: (singular, plural) originais -> (singular, plural) em português.
 PLURAL_MESSAGES: dict[tuple[str, str], tuple[str, str]] = {
     ("expected %s argument", "expected %s arguments"): (
@@ -112,26 +98,30 @@ PLURAL_MESSAGES: dict[tuple[str, str], tuple[str, str]] = {
     ),
 }
 
+#: Ajudas que o argparse dá às ações -h e version quando quem cria o
+#: argumento não passa ``help``.
+_DEFAULT_ACTION_HELPS = frozenset(
+    {"show this help message and exit", "show program's version number and exit"}
+)
+
 
 def _translate(message: str) -> str:
-    """Substituto de ``gettext``: devolve a tradução ou, sem tradução, o original."""
+    """Substituto de ``gettext``: a tradução ou, sem tradução, o original."""
     return MESSAGES.get(message, message)
 
 
 def _translate_plural(singular: str, plural: str, count: int) -> str:
     """Substituto de ``ngettext``, com a mesma regra de escolha do plural."""
-    translated = PLURAL_MESSAGES.get((singular, plural))
-    if translated is not None:
-        singular, plural = translated
+    singular, plural = PLURAL_MESSAGES.get((singular, plural), (singular, plural))
     return singular if count == 1 else plural
 
 
 @contextlib.contextmanager
 def _portuguese_messages() -> Iterator[None]:
-    """Põe o argparse em português enquanto o bloco roda e restaura ao sair.
+    """Põe o argparse em português enquanto o bloco roda e restaura o anterior ao sair.
 
-    Guarda e restaura o que estava instalado, então chamadas aninhadas (por
-    exemplo ``parse_args`` chamando ``error``) funcionam.
+    Restaurar o anterior, e não o original, permite blocos aninhados
+    (``parse_args`` chamando ``error``).
     """
     previous = (argparse._, argparse.ngettext)
     argparse._ = _translate
@@ -140,6 +130,17 @@ def _portuguese_messages() -> Iterator[None]:
         yield
     finally:
         argparse._, argparse.ngettext = previous
+
+
+def _in_portuguese(method):
+    """Roda um método do ``ArgumentParser`` com o argparse em português."""
+
+    @functools.wraps(method)
+    def wrapper(*args, **kwargs):
+        with _portuguese_messages():
+            return method(*args, **kwargs)
+
+    return wrapper
 
 
 class PortugueseArgumentParser(argparse.ArgumentParser):
@@ -160,34 +161,18 @@ class PortugueseArgumentParser(argparse.ArgumentParser):
     são obrigatórios: client``, com código de saída 2.
     """
 
-    def __init__(self, *args, **kwargs) -> None:
-        # Os títulos das seções e a ajuda de -h são montados aqui.
-        with _portuguese_messages():
-            super().__init__(*args, **kwargs)
-
-    def parse_args(self, *args, **kwargs):
-        with _portuguese_messages():
-            return super().parse_args(*args, **kwargs)
-
-    def parse_known_args(self, *args, **kwargs):
-        with _portuguese_messages():
-            return super().parse_known_args(*args, **kwargs)
-
-    def parse_intermixed_args(self, *args, **kwargs):
-        with _portuguese_messages():
-            return super().parse_intermixed_args(*args, **kwargs)
-
-    def parse_known_intermixed_args(self, *args, **kwargs):
-        with _portuguese_messages():
-            return super().parse_known_intermixed_args(*args, **kwargs)
-
-    def add_subparsers(self, **kwargs):
-        with _portuguese_messages():
-            return super().add_subparsers(**kwargs)
-
-    def format_usage(self) -> str:
-        with _portuguese_messages():
-            return super().format_usage()
+    # Os métodos que montam textos do argparse. O __init__ monta os títulos
+    # das seções e a ajuda de -h.
+    __init__ = _in_portuguese(argparse.ArgumentParser.__init__)
+    parse_args = _in_portuguese(argparse.ArgumentParser.parse_args)
+    parse_known_args = _in_portuguese(argparse.ArgumentParser.parse_known_args)
+    parse_intermixed_args = _in_portuguese(argparse.ArgumentParser.parse_intermixed_args)
+    parse_known_intermixed_args = _in_portuguese(
+        argparse.ArgumentParser.parse_known_intermixed_args
+    )
+    add_subparsers = _in_portuguese(argparse.ArgumentParser.add_subparsers)
+    format_usage = _in_portuguese(argparse.ArgumentParser.format_usage)
+    error = _in_portuguese(argparse.ArgumentParser.error)
 
     def format_help(self) -> str:
         # A ajuda padrão da ação version é montada ao criar o argumento, fora
@@ -197,7 +182,3 @@ class PortugueseArgumentParser(argparse.ArgumentParser):
                 action.help = MESSAGES[action.help]
         with _portuguese_messages():
             return super().format_help()
-
-    def error(self, message: str):
-        with _portuguese_messages():
-            super().error(message)

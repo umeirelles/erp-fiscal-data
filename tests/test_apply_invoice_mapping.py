@@ -1,17 +1,17 @@
 """Testes de apply_invoice_mapping: do relatório de mapeamento à planilha entregue.
 
-Os relatórios de teste são montados por ``mapping_rows()`` com nomes e valores
-internos e gravados no esquema em português pela fixture ``write_mapping``,
-com ``report_schema.to_external_frame``, como o mapeador os grava. O
-entregável sai em português.
+Os relatórios de teste são montados com nomes e valores internos
+(``mapping_rows``) e gravados no esquema em português, como o mapeador os
+grava. O entregável sai em português.
 """
 
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from datetime import time
+from pathlib import Path
 
-import openpyxl
 import pandas as pd
 import pytest
 from openpyxl import load_workbook
@@ -33,10 +33,41 @@ from invoice_mapper import describe_header_conflict_pt, semantic_header_conflict
 
 MAPPED_SHEET = "Dados Mapeados"
 COVERAGE_SHEET = "Cobertura"
+#: Índice da primeira linha de dados no quadro lido sem cabeçalho (base 0).
+FIRST_DATA_ROW = len(MAPPING_METADATA) + 1
+
+#: Modelo e exportação que ``mapping_rows`` descreve.
+MODEL_HEADERS = ["CFOP", "Valor COFINS", "Nº do NCM"]
+CLIENT_HEADERS = ["Other", "CFOP source", "COFI value", "Corrected NCM"]
+CLIENT_ROW = ["A", "5102", 12.5, "85167910"]
+
+
+@dataclass
+class Files:
+    model: Path
+    client: Path
+    mapping: Path
+    output: Path
+
+
+@pytest.fixture
+def files(tmp_path) -> Files:
+    return Files(
+        model=tmp_path / "model.xlsx",
+        client=tmp_path / "client.xlsx",
+        mapping=tmp_path / "mapping.xlsx",
+        output=tmp_path / "mapped.xlsx",
+    )
 
 
 def write_workbook(path, headers: list[str], rows: list[list[object]]) -> None:
     pd.DataFrame([headers, *rows]).to_excel(path, header=False, index=False)
+
+
+def write_inputs(files: Files, client_rows: list[list[object]] | None = None) -> None:
+    """Grava o modelo de três colunas e a exportação que ``mapping_rows`` descreve."""
+    write_workbook(files.model, MODEL_HEADERS, [["5102", 10.0, "85167910"]])
+    write_workbook(files.client, CLIENT_HEADERS, client_rows or [CLIENT_ROW])
 
 
 def mapping_rows() -> pd.DataFrame:
@@ -104,29 +135,44 @@ def mapping_rows() -> pd.DataFrame:
     )
 
 
+def one_row_mapping(model_column: str, client_column: str) -> pd.DataFrame:
+    """A linha aceita de ``mapping_rows``, ligando ``model_column`` à coluna 1 do cliente."""
+    mapping = mapping_rows().iloc[[0]].copy()
+    mapping["model_column"] = model_column
+    mapping["client_column_number"] = 1
+    mapping["client_column"] = client_column
+    return mapping
+
+
 def external_report(frame: pd.DataFrame) -> pd.DataFrame:
     """Relatório com nomes internos -> como ele fica gravado."""
     return report_schema.to_external_frame(frame, "mappings")
 
 
-def save_report(path, report: pd.DataFrame, metadata: dict | None = None) -> None:
-    """Grava um relatório já em português, com a aba de metadados se houver."""
+def save_report(path, report: pd.DataFrame) -> None:
+    """Grava um relatório já em português."""
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
         report.to_excel(writer, sheet_name=report_schema.sheet_name("mappings"), index=False)
-        if metadata is not None:
-            report_schema.to_external_metadata(metadata).to_excel(
-                writer, sheet_name=report_schema.sheet_name("run_metadata"), index=False
-            )
 
 
-@pytest.fixture
-def write_mapping():
-    """Grava um relatório montado com nomes internos, em português."""
+def write_mapping(frame: pd.DataFrame, path) -> None:
+    """Grava em português um relatório montado com nomes internos."""
+    save_report(path, external_report(frame))
 
-    def write(frame: pd.DataFrame, path, metadata: dict | None = None) -> None:
-        save_report(path, external_report(frame), metadata)
 
-    return write
+def apply(files: Files, **options) -> None:
+    build_mapped_workbook(
+        client_path=files.client,
+        mapping_path=files.mapping,
+        output_path=files.output,
+        model_path=files.model,
+        **options,
+    )
+
+
+def read_mapped(path) -> pd.DataFrame:
+    """Dados Mapeados lida sem cabeçalho: a linha 0 do quadro é a linha 1 do Excel."""
+    return pd.read_excel(path, sheet_name=MAPPED_SHEET, header=None, dtype=object)
 
 
 def label(field: str) -> str:
@@ -141,35 +187,16 @@ def banner_row(field: str) -> int:
 
 def banner_excel_row(field: str) -> int:
     """Linha do Excel (base 1) da linha do banner de um campo."""
-    return 2 + [name for _, name in MAPPING_METADATA].index(field)
+    return banner_row(field) + 1
 
 
-def test_build_mapped_workbook_defaults_to_confirmed_mappings(tmp_path, write_mapping) -> None:
-    model_path = tmp_path / "model.xlsx"
-    client_path = tmp_path / "client.xlsx"
-    mapping_path = tmp_path / "mapping.xlsx"
-    output_path = tmp_path / "mapped.xlsx"
+def test_build_mapped_workbook_defaults_to_confirmed_mappings(files) -> None:
+    write_inputs(files, [CLIENT_ROW, ["B", "6102", 7.5, "73211100"]])
+    write_mapping(mapping_rows(), files.mapping)
 
-    write_workbook(
-        model_path,
-        ["CFOP", "Valor COFINS", "Nº do NCM"],
-        [["5102", 10.0, "85167910"]],
-    )
-    write_workbook(
-        client_path,
-        ["Other", "CFOP source", "COFI value", "Corrected NCM"],
-        [["A", "5102", 12.5, "85167910"], ["B", "6102", 7.5, "73211100"]],
-    )
-    write_mapping(mapping_rows(), mapping_path)
+    apply(files)
 
-    build_mapped_workbook(
-        client_path=client_path,
-        mapping_path=mapping_path,
-        output_path=output_path,
-        model_path=model_path,
-    )
-
-    raw = pd.read_excel(output_path, sheet_name=MAPPED_SHEET, header=None, dtype=object)
+    raw = read_mapped(files.output)
     assert raw.iloc[0].tolist() == [
         "__info_mapeamento__",
         "CFOP",
@@ -185,16 +212,14 @@ def test_build_mapped_workbook_defaults_to_confirmed_mappings(tmp_path, write_ma
     assert pd.isna(raw.iloc[client_column_row, 2])
     assert raw.iloc[client_column_row, 3] == "Corrected NCM"
 
-    first_data_row = len(MAPPING_METADATA) + 1
-    assert raw.iloc[first_data_row, 1] == "5102"
-    assert pd.isna(raw.iloc[first_data_row, 2])
-    assert raw.iloc[first_data_row, 3] == "85167910"
-    assert raw.iloc[first_data_row + 1, 1] == "6102"
-    assert pd.isna(raw.iloc[first_data_row + 1, 2])
-    assert raw.iloc[first_data_row + 1, 3] == "73211100"
+    assert raw.iloc[FIRST_DATA_ROW, 1] == "5102"
+    assert pd.isna(raw.iloc[FIRST_DATA_ROW, 2])
+    assert raw.iloc[FIRST_DATA_ROW, 3] == "85167910"
+    assert raw.iloc[FIRST_DATA_ROW + 1, 1] == "6102"
+    assert pd.isna(raw.iloc[FIRST_DATA_ROW + 1, 2])
+    assert raw.iloc[FIRST_DATA_ROW + 1, 3] == "73211100"
 
-    workbook = load_workbook(output_path)
-    worksheet = workbook[MAPPED_SHEET]
+    worksheet = load_workbook(files.output)[MAPPED_SHEET]
     assert worksheet.freeze_panes == f"B{len(MAPPING_METADATA) + 2}"
     assert worksheet.cell(banner_excel_row("name_confidence"), 2).number_format == "0.00%"
     llm_confidence_excel_row = banner_excel_row("llm_final_confidence")
@@ -203,35 +228,25 @@ def test_build_mapped_workbook_defaults_to_confirmed_mappings(tmp_path, write_ma
 
 
 def test_banner_labels_are_the_portuguese_headers_and_confidences_are_keyed_by_field() -> None:
-    # O rótulo da coluna A é o cabeçalho em português do campo; a formatação
-    # de porcentagem é escolhida pelo campo, então trocar o texto do rótulo
-    # não pode quebrá-la.
+    # A porcentagem é escolhida pelo campo, então trocar o rótulo não a quebra.
     labels = {field: text for text, field in MAPPING_METADATA}
     assert labels == report_schema.COLUMNS["banner"]
     assert CONFIDENCE_ROWS <= {field for _, field in MAPPING_METADATA}
     assert FIRST_DATA_EXCEL_ROW == 23
 
 
-def test_deliverable_is_written_in_portuguese(tmp_path, write_mapping) -> None:
-    # Valores de máquina e etapas em português, texto livre intacto.
-    model_path = tmp_path / "model.xlsx"
-    client_path = tmp_path / "client.xlsx"
-    mapping_path = tmp_path / "mapping.xlsx"
-    output_path = tmp_path / "mapped.xlsx"
-    write_workbook(model_path, ["CFOP", "Valor COFINS", "Nº do NCM"], [["5102", 10.0, "85167910"]])
-    write_workbook(client_path, ["Other", "CFOP source", "COFI value", "Corrected NCM"],
-                   [["A", "5102", 12.5, "85167910"]])
+def test_deliverable_is_written_in_portuguese(files) -> None:
+    write_inputs(files)
     mapping = mapping_rows()
     mapping["catalog_name"] = ["cfop", "", "ibge_municipality"]
     mapping["decided_by"] = ["lexical", "resolver", ""]
     mapping["supported_by"] = ["lexical + catalog (agrees)", "resolver + profile", ""]
     mapping["vetoed_by"] = ["", "", "vacuity"]
-    write_mapping(mapping, mapping_path)
+    write_mapping(mapping, files.mapping)
 
-    build_mapped_workbook(client_path=client_path, mapping_path=mapping_path,
-                          output_path=output_path, model_path=model_path)
+    apply(files)
 
-    book = openpyxl.load_workbook(output_path)
+    book = load_workbook(files.output)
     assert book.sheetnames == [MAPPED_SHEET, COVERAGE_SHEET]
     sheet = book[MAPPED_SHEET]
     assert sheet["A1"].value == "__info_mapeamento__"
@@ -254,60 +269,29 @@ def test_deliverable_is_written_in_portuguese(tmp_path, write_mapping) -> None:
                                        "Reviewer supplied the source column."]
 
 
-def test_apply_prints_the_counts_and_no_warning(tmp_path, write_mapping, capsys) -> None:
-    model_path = tmp_path / "model.xlsx"
-    client_path = tmp_path / "client.xlsx"
-    mapping_path = tmp_path / "mapping.xlsx"
-    write_workbook(model_path, ["CFOP", "Valor COFINS", "Nº do NCM"], [["5102", 10.0, "85167910"]])
-    write_workbook(client_path, ["Other", "CFOP source", "COFI value", "Corrected NCM"],
-                   [["A", "5102", 12.5, "85167910"]])
-    write_mapping(mapping_rows(), mapping_path)
+def test_apply_prints_the_counts_and_no_warning(files, capsys) -> None:
+    write_inputs(files)
+    write_mapping(mapping_rows(), files.mapping)
 
-    build_mapped_workbook(client_path=client_path, mapping_path=mapping_path,
-                          output_path=tmp_path / "mapped.xlsx", model_path=model_path)
+    apply(files)
 
     captured = capsys.readouterr()
     assert "colunas_modelo=3 linhas_cliente=1 colunas_mapeadas=2" in captured.out
     assert captured.err == ""
 
 
-def test_include_review_populates_unconfirmed_proposal(tmp_path, write_mapping) -> None:
-    model_path = tmp_path / "model.xlsx"
-    client_path = tmp_path / "client.xlsx"
-    mapping_path = tmp_path / "mapping.xlsx"
-    output_path = tmp_path / "mapped.xlsx"
-    write_workbook(
-        model_path,
-        ["CFOP", "Valor COFINS", "Nº do NCM"],
-        [["5102", 10.0, "85167910"]],
-    )
-    write_workbook(
-        client_path,
-        ["Other", "CFOP source", "COFI value", "Corrected NCM"],
-        [["A", "5102", 12.5, "85167910"]],
-    )
-    write_mapping(mapping_rows(), mapping_path)
+def test_include_review_populates_unconfirmed_proposal(files) -> None:
+    write_inputs(files)
+    write_mapping(mapping_rows(), files.mapping)
 
-    build_mapped_workbook(
-        client_path=client_path,
-        mapping_path=mapping_path,
-        output_path=output_path,
-        model_path=model_path,
-        accepted_only=False,
-    )
+    apply(files, accepted_only=False)
 
-    raw = pd.read_excel(output_path, sheet_name=MAPPED_SHEET, header=None, dtype=object)
-    first_data_row = len(MAPPING_METADATA) + 1
-    assert raw.iloc[first_data_row, 2] == 12.5
+    assert read_mapped(files.output).iloc[FIRST_DATA_ROW, 2] == 12.5
 
 
-def test_include_review_allows_duplicate_unconfirmed_proposals(tmp_path, write_mapping) -> None:
-    model_path = tmp_path / "model.xlsx"
-    client_path = tmp_path / "client.xlsx"
-    mapping_path = tmp_path / "mapping.xlsx"
-    output_path = tmp_path / "mapped.xlsx"
-    write_workbook(model_path, ["Base CBS", "Base IBS"], [[100.0, 100.0]])
-    write_workbook(client_path, ["Generic base"], [[125.0]])
+def test_include_review_allows_duplicate_unconfirmed_proposals(files) -> None:
+    write_workbook(files.model, ["Base CBS", "Base IBS"], [[100.0, 100.0]])
+    write_workbook(files.client, ["Generic base"], [[125.0]])
     mapping = mapping_rows().iloc[:2].copy()
     mapping["model_column_number"] = [1, 2]
     mapping["model_column"] = ["Base CBS", "Base IBS"]
@@ -315,107 +299,57 @@ def test_include_review_allows_duplicate_unconfirmed_proposals(tmp_path, write_m
     mapping["client_column"] = ["Generic base", "Generic base"]
     mapping["status"] = ["review", "review"]
     mapping["reviewer_status"] = ["", ""]
-    write_mapping(mapping, mapping_path)
+    write_mapping(mapping, files.mapping)
 
-    build_mapped_workbook(
-        client_path=client_path,
-        mapping_path=mapping_path,
-        output_path=output_path,
-        model_path=model_path,
-        accepted_only=False,
-    )
+    apply(files, accepted_only=False)
 
-    raw = pd.read_excel(output_path, sheet_name=MAPPED_SHEET, header=None, dtype=object)
-    first_data_row = len(MAPPING_METADATA) + 1
-    assert raw.iloc[first_data_row, 1:].tolist() == [125, 125]
+    assert read_mapped(files.output).iloc[FIRST_DATA_ROW, 1:].tolist() == [125, 125]
 
 
-def test_mapped_workbook_preserves_excel_time_values(tmp_path, write_mapping) -> None:
-    model_path = tmp_path / "model.xlsx"
-    client_path = tmp_path / "client.xlsx"
-    mapping_path = tmp_path / "mapping.xlsx"
-    output_path = tmp_path / "mapped.xlsx"
-    write_workbook(model_path, ["Criado às:"], [[time(8, 0, 0)]])
-    write_workbook(client_path, ["Created at"], [[None]])
-    client_workbook = load_workbook(client_path)
+def test_mapped_workbook_preserves_excel_time_values(files) -> None:
+    write_workbook(files.model, ["Criado às:"], [[time(8, 0, 0)]])
+    write_workbook(files.client, ["Created at"], [[None]])
+    client_workbook = load_workbook(files.client)
     client_workbook.active["A2"] = time(15, 30, 11)
     client_workbook.active["A2"].number_format = "hh:mm:ss"
-    client_workbook.save(client_path)
-    mapping = mapping_rows().iloc[[0]].copy()
-    mapping["model_column"] = "Criado às:"
-    mapping["client_column_number"] = 1
-    mapping["client_column"] = "Created at"
-    write_mapping(mapping, mapping_path)
+    client_workbook.save(files.client)
+    write_mapping(one_row_mapping("Criado às:", "Created at"), files.mapping)
 
-    build_mapped_workbook(
-        client_path=client_path,
-        mapping_path=mapping_path,
-        output_path=output_path,
-        model_path=model_path,
-    )
+    apply(files)
 
-    worksheet = load_workbook(output_path, data_only=True)[MAPPED_SHEET]
+    worksheet = load_workbook(files.output, data_only=True)[MAPPED_SHEET]
     cell = worksheet.cell(len(MAPPING_METADATA) + 2, 2)
     assert cell.value == time(15, 30, 11)
     assert cell.number_format == "hh:mm:ss"
 
 
-def test_accepted_only_leaves_unreviewed_review_mapping_blank(tmp_path, write_mapping) -> None:
-    model_path = tmp_path / "model.xlsx"
-    client_path = tmp_path / "client.xlsx"
-    mapping_path = tmp_path / "mapping.xlsx"
-    output_path = tmp_path / "mapped.xlsx"
-    write_workbook(
-        model_path,
-        ["CFOP", "Valor COFINS", "Nº do NCM"],
-        [["5102", 10.0, "85167910"]],
-    )
-    write_workbook(
-        client_path,
-        ["Other", "CFOP source", "COFI value", "Corrected NCM"],
-        [["A", "5102", 12.5, "85167910"]],
-    )
+def test_accepted_only_leaves_unreviewed_review_mapping_blank(files) -> None:
+    write_inputs(files)
     mapping = mapping_rows()
     mapping.loc[2, "reviewer_status"] = "no_mapping_exists"
-    # A linha do fixture traz uma correção para o parecer 'incorrect' que ela
-    # tinha. Só 'incorrect' usa correção, então ela sai junto com o parecer.
+    # Só 'incorrect' usa correção, então a da linha sai junto com o parecer.
     mapping.loc[2, "correct_client_column"] = ""
-    write_mapping(mapping, mapping_path)
+    write_mapping(mapping, files.mapping)
 
-    build_mapped_workbook(
-        client_path=client_path,
-        mapping_path=mapping_path,
-        output_path=output_path,
-        model_path=model_path,
-        accepted_only=True,
-    )
+    apply(files, accepted_only=True)
 
-    raw = pd.read_excel(output_path, sheet_name=MAPPED_SHEET, header=None, dtype=object)
-    first_data_row = len(MAPPING_METADATA) + 1
-    assert raw.iloc[first_data_row, 1] == "5102"
-    assert pd.isna(raw.iloc[first_data_row, 2])
-    assert pd.isna(raw.iloc[first_data_row, 3])
+    raw = read_mapped(files.output)
+    assert raw.iloc[FIRST_DATA_ROW, 1] == "5102"
+    assert pd.isna(raw.iloc[FIRST_DATA_ROW, 2])
+    assert pd.isna(raw.iloc[FIRST_DATA_ROW, 3])
 
 
 @pytest.mark.parametrize("typed", ["incorreto", "Incorreto", " INCORRETO ", "Incorréto"])
-def test_reviewer_status_tolerates_case_accents_and_spaces(tmp_path, typed) -> None:
-    # O parecer é digitado por pessoas: vale com qualquer caixa, com ou sem
-    # acento e com espaços nas pontas. No banner sai a grafia canônica.
-    model_path = tmp_path / "model.xlsx"
-    client_path = tmp_path / "client.xlsx"
-    mapping_path = tmp_path / "mapping.xlsx"
-    output_path = tmp_path / "mapped.xlsx"
-    write_workbook(model_path, ["CFOP", "Valor COFINS", "Nº do NCM"], [["5102", 10.0, "85167910"]])
-    write_workbook(client_path, ["Other", "CFOP source", "COFI value", "Corrected NCM"],
-                   [["A", "5102", 12.5, "85167910"]])
+def test_reviewer_status_tolerates_case_accents_and_spaces(files, typed) -> None:
+    # O banner mostra a grafia canônica, seja qual for a digitada.
+    write_inputs(files)
     report = external_report(mapping_rows())
     report.loc[2, label("reviewer_status")] = typed
-    save_report(mapping_path, report)
+    save_report(files.mapping, report)
 
-    build_mapped_workbook(client_path=client_path, mapping_path=mapping_path,
-                          output_path=output_path, model_path=model_path)
+    apply(files)
 
-    sheet = load_workbook(output_path)[MAPPED_SHEET]
+    sheet = load_workbook(files.output)[MAPPED_SHEET]
     assert sheet.cell(FIRST_DATA_EXCEL_ROW, 4).value == "85167910"
     assert sheet.cell(banner_excel_row("reviewer_status"), 4).value == "incorreto"
 
@@ -425,16 +359,11 @@ def test_reviewer_status_tolerates_case_accents_and_spaces(tmp_path, typed) -> N
     # Os pareceres em inglês do formato antigo também são desconhecidos.
     ["talvez", "correct", "incorrect", "no_mapping_exists", " Correct "],
 )
-def test_unknown_reviewer_status_is_refused(tmp_path, typed) -> None:
-    model_path = tmp_path / "model.xlsx"
-    client_path = tmp_path / "client.xlsx"
-    mapping_path = tmp_path / "mapping.xlsx"
-    write_workbook(model_path, ["CFOP", "Valor COFINS", "Nº do NCM"], [["5102", 10.0, "85167910"]])
-    write_workbook(client_path, ["Other", "CFOP source", "COFI value", "Corrected NCM"],
-                   [["A", "5102", 12.5, "85167910"]])
+def test_unknown_reviewer_status_is_refused(files, typed) -> None:
+    write_inputs(files)
     report = external_report(mapping_rows())
     report.loc[0, label("reviewer_status")] = typed
-    save_report(mapping_path, report)
+    save_report(files.mapping, report)
 
     with pytest.raises(
         ValueError,
@@ -443,58 +372,29 @@ def test_unknown_reviewer_status_is_refused(tmp_path, typed) -> None:
             "Use correto, incorreto ou inexistente"
         ),
     ):
-        build_mapped_workbook(client_path=client_path, mapping_path=mapping_path,
-                              output_path=tmp_path / "out.xlsx", model_path=model_path)
+        apply(files)
 
 
-def test_incorrect_review_requires_a_corrected_column(tmp_path, write_mapping) -> None:
-    model_path = tmp_path / "model.xlsx"
-    client_path = tmp_path / "client.xlsx"
-    mapping_path = tmp_path / "mapping.xlsx"
-    output_path = tmp_path / "mapped.xlsx"
-    write_workbook(model_path, ["CFOP", "Valor COFINS", "Nº do NCM"], [[1, 2, 3]])
-    write_workbook(
-        client_path,
-        ["Other", "CFOP source", "COFI value", "Corrected NCM"],
-        [["A", "5102", 12.5, "85167910"]],
-    )
+def test_incorrect_review_requires_a_corrected_column(files) -> None:
+    write_inputs(files)
     mapping = mapping_rows()
     mapping.loc[2, "correct_client_column"] = ""
-    write_mapping(mapping, mapping_path)
+    write_mapping(mapping, files.mapping)
 
     with pytest.raises(
         ValueError, match=f"{label('correct_client_column')} está em branco"
     ):
-        build_mapped_workbook(
-            client_path=client_path,
-            mapping_path=mapping_path,
-            output_path=output_path,
-            model_path=model_path,
-        )
+        apply(files)
 
 
-def test_unreviewed_accepted_semantic_conflict_is_rejected(tmp_path, write_mapping) -> None:
-    model_path = tmp_path / "model.xlsx"
-    client_path = tmp_path / "client.xlsx"
-    mapping_path = tmp_path / "mapping.xlsx"
-    output_path = tmp_path / "mapped.xlsx"
-    write_workbook(model_path, ["Base ICMS_ST"], [[100.0]])
-    write_workbook(client_path, ["ICMS Base"], [[100.0]])
-    mapping = mapping_rows().iloc[[0]].copy()
-    mapping["model_column"] = "Base ICMS_ST"
-    mapping["client_column_number"] = 1
-    mapping["client_column"] = "ICMS Base"
-    write_mapping(mapping, mapping_path)
+def test_unreviewed_accepted_semantic_conflict_is_rejected(files) -> None:
+    write_workbook(files.model, ["Base ICMS_ST"], [[100.0]])
+    write_workbook(files.client, ["ICMS Base"], [[100.0]])
+    write_mapping(one_row_mapping("Base ICMS_ST", "ICMS Base"), files.mapping)
 
     with pytest.raises(ValueError, match="viola as regras atuais") as raised:
-        build_mapped_workbook(
-            client_path=client_path,
-            mapping_path=mapping_path,
-            output_path=output_path,
-            model_path=model_path,
-        )
-    # A descrição do conflito sai em português, embora o texto que vai à IA
-    # continue em inglês.
+        apply(files)
+    # A descrição sai em português; o texto que vai à IA continua em inglês.
     assert "conflito de qualificador do tributo (ST vs normal)" in str(raised.value)
 
 
@@ -516,8 +416,8 @@ def test_unreviewed_accepted_semantic_conflict_is_rejected(tmp_path, write_mappi
     ],
 )
 def test_portuguese_header_conflict_agrees_with_the_model_input_text(left, right, expected) -> None:
-    # A gêmea em português precisa achar o mesmo conflito, do mesmo tipo, que
-    # semantic_header_conflict, cujo texto em inglês é entrada da IA.
+    # A versão em português acha o mesmo conflito, do mesmo tipo, que o texto
+    # em inglês enviado à IA.
     kinds = {
         "tax-family conflict": "conflito de família de tributo",
         "tax-qualifier conflict": "conflito de qualificador do tributo",
@@ -533,36 +433,28 @@ def test_portuguese_header_conflict_agrees_with_the_model_input_text(left, right
         assert portuguese.startswith(kinds[kind])
 
 
-def test_run_metadata_detects_changed_inputs(tmp_path) -> None:
-    # Canário da verificação de hash: abas Mapeamentos e Metadados da
-    # Execução, com chave/valor e a chave sha256_cliente, como nos relatórios
-    # arquivados. Sem reconhecer os nomes, a verificação seria pulada em
-    # silêncio.
-    model_path = tmp_path / "model.xlsx"
-    client_path = tmp_path / "client.xlsx"
-    mapping_path = tmp_path / "mapping.xlsx"
-    output_path = tmp_path / "mapped.xlsx"
-    write_workbook(model_path, ["CFOP"], [["5102"]])
-    write_workbook(client_path, ["CFOP source"], [["5102"]])
-    mapping = mapping_rows().iloc[[0]].copy()
-    mapping["client_column_number"] = 1
-    mapping["client_column"] = "CFOP source"
-    with pd.ExcelWriter(mapping_path, engine="openpyxl") as writer:
-        report_schema.to_external_frame(mapping, "mappings").to_excel(
+def write_report_with_metadata(files: Files, sheet_name: str, metadata: pd.DataFrame) -> None:
+    """Modelo e exportação de uma coluna, e um relatório com a aba de metadados dada."""
+    write_workbook(files.model, ["CFOP"], [["5102"]])
+    write_workbook(files.client, ["CFOP source"], [["5102"]])
+    with pd.ExcelWriter(files.mapping, engine="openpyxl") as writer:
+        external_report(one_row_mapping("CFOP", "CFOP source")).to_excel(
             writer, sheet_name="Mapeamentos", index=False
         )
-        pd.DataFrame(
-            [["sha256_cliente", "nao-e-o-hash-atual"]],
-            columns=["chave", "valor"],
-        ).to_excel(writer, sheet_name="Metadados da Execução", index=False)
+        metadata.to_excel(writer, sheet_name=sheet_name, index=False)
+
+
+def test_run_metadata_detects_changed_inputs(files) -> None:
+    # Nomes de aba, de coluna e de chave escritos à mão, como nos relatórios
+    # arquivados: se não forem reconhecidos, a verificação é pulada em silêncio.
+    write_report_with_metadata(
+        files,
+        "Metadados da Execução",
+        pd.DataFrame([["sha256_cliente", "nao-e-o-hash-atual"]], columns=["chave", "valor"]),
+    )
 
     with pytest.raises(ValueError, match="client.xlsx difere do arquivo usado"):
-        build_mapped_workbook(
-            client_path=client_path,
-            mapping_path=mapping_path,
-            output_path=output_path,
-            model_path=model_path,
-        )
+        apply(files)
 
 
 @pytest.mark.parametrize(
@@ -574,92 +466,48 @@ def test_run_metadata_detects_changed_inputs(tmp_path) -> None:
     ids=["aba_antiga", "cabecalho_antigo"],
 )
 def test_metadata_with_old_names_is_refused(
-    tmp_path, metadata_sheet, metadata_columns, message
+    files, metadata_sheet, metadata_columns, message
 ) -> None:
-    # Uma aba de metadados com nomes do formato antigo não pode ser ignorada:
-    # a verificação de hash seria pulada sem aviso.
-    model_path = tmp_path / "model.xlsx"
-    client_path = tmp_path / "client.xlsx"
-    mapping_path = tmp_path / "mapping.xlsx"
-    write_workbook(model_path, ["CFOP"], [["5102"]])
-    write_workbook(client_path, ["CFOP source"], [["5102"]])
-    mapping = mapping_rows().iloc[[0]].copy()
-    mapping["client_column_number"] = 1
-    mapping["client_column"] = "CFOP source"
-    with pd.ExcelWriter(mapping_path, engine="openpyxl") as writer:
-        external_report(mapping).to_excel(
-            writer, sheet_name=report_schema.sheet_name("mappings"), index=False
-        )
-        pd.DataFrame([["client_sha256", "x"]], columns=metadata_columns).to_excel(
-            writer, sheet_name=metadata_sheet, index=False
-        )
+    # Ignorada, a aba faria a verificação de hash ser pulada sem aviso.
+    write_report_with_metadata(
+        files, metadata_sheet, pd.DataFrame([["client_sha256", "x"]], columns=metadata_columns)
+    )
 
     with pytest.raises(ValueError, match=re.escape(message)):
-        build_mapped_workbook(client_path=client_path, mapping_path=mapping_path,
-                              output_path=tmp_path / "out.xlsx", model_path=model_path)
+        apply(files)
 
 
-def test_a_correction_outside_the_incorrect_branch_is_refused(tmp_path, write_mapping) -> None:
-    # Só o ramo 'incorrect' lê correct_client_column. Em 'correct' a linha
-    # continua sendo entregue, com a coluna do mapeador e não a do revisor;
-    # um parecer escolhido errado punha dado ERRADO do cliente no modelo base,
-    # em vez de deixá-lo em branco, e saía com código 0.
-    model_path = tmp_path / "model.xlsx"
-    client_path = tmp_path / "client.xlsx"
-    mapping_path = tmp_path / "mapping.xlsx"
-    write_workbook(model_path, ["CFOP", "Valor COFINS", "Nº do NCM"], [["5102", 10.0, "85167910"]])
-    write_workbook(client_path, ["Other", "CFOP source", "COFI value", "Corrected NCM"],
-                   [["A", "5102", 12.5, "85167910"]])
+def test_a_correction_outside_the_incorrect_branch_is_refused(files) -> None:
+    # Com 'correct', descartar a correção entregaria a coluna do mapeador, e
+    # não a do revisor, com código de saída 0.
+    write_inputs(files)
     for status in ("correct", "no_mapping_exists", ""):
         mapping = mapping_rows()
         mapping.loc[0, "reviewer_status"] = status
         mapping.loc[0, "correct_client_column"] = 4
-        write_mapping(mapping, mapping_path)
+        write_mapping(mapping, files.mapping)
         with pytest.raises(ValueError, match="usa uma correção"):
-            build_mapped_workbook(
-                client_path=client_path,
-                mapping_path=mapping_path,
-                output_path=tmp_path / "out.xlsx",
-                model_path=model_path,
-            )
+            apply(files)
 
 
-def test_confirming_a_row_that_names_no_column_is_refused(tmp_path, write_mapping) -> None:
-    # 'correct' afirma que a proposta está certa, então precisa haver proposta.
-    # Sem a trava a linha é confirmada sobre nada e entrega uma coluna em
-    # branco assinada pelo revisor, com código de saída 0.
-    model_path = tmp_path / "model.xlsx"
-    client_path = tmp_path / "client.xlsx"
-    mapping_path = tmp_path / "mapping.xlsx"
-    write_workbook(model_path, ["CFOP", "Valor COFINS", "Nº do NCM"], [["5102", 10.0, "85167910"]])
-    write_workbook(client_path, ["Other", "CFOP source", "COFI value", "Corrected NCM"],
-                   [["A", "5102", 12.5, "85167910"]])
+def test_confirming_a_row_that_names_no_column_is_refused(files) -> None:
+    # Sem a trava, a linha entregaria uma coluna em branco assinada pelo revisor.
+    write_inputs(files)
     mapping = mapping_rows()
     mapping.loc[2, "reviewer_status"] = "correct"
     mapping.loc[2, "correct_client_column"] = ""
-    write_mapping(mapping, mapping_path)
+    write_mapping(mapping, files.mapping)
     with pytest.raises(
         ValueError, match=f"{label('client_column_number')} está em branco"
     ):
-        build_mapped_workbook(
-            client_path=client_path,
-            mapping_path=mapping_path,
-            output_path=tmp_path / "out.xlsx",
-            model_path=model_path,
-        )
+        apply(files)
 
 
-def test_duplicated_header_is_selected_by_the_occurrence_suffix(tmp_path, write_mapping) -> None:
-    # Cabeçalho repetido na exportação: em memória a segunda ocorrência é
-    # 'Valor ICMS (occurrence 2)'; para pessoas é 'Valor ICMS (ocorrência 2)'.
-    # O relatório grava o sufixo em português, e o revisor pode digitá-lo com
-    # ou sem acento, em qualquer caixa.
-    model_path = tmp_path / "model.xlsx"
-    client_path = tmp_path / "client.xlsx"
-    mapping_path = tmp_path / "mapping.xlsx"
-    output_path = tmp_path / "mapped.xlsx"
-    write_workbook(model_path, ["Valor ICMS", "CFOP"], [[1.0, "5102"]])
-    write_workbook(client_path, ["Valor ICMS", "Valor ICMS"], [[10.0, 20.0]])
+def test_duplicated_header_is_selected_by_the_occurrence_suffix(files) -> None:
+    # Em memória a segunda ocorrência é 'Valor ICMS (occurrence 2)'; nas
+    # planilhas, 'Valor ICMS (ocorrência 2)'.
+    write_workbook(files.model, ["Valor ICMS", "CFOP"], [[1.0, "5102"]])
+    write_workbook(files.client, ["Valor ICMS", "Valor ICMS"], [[10.0, 20.0]])
 
     proposal = mapping_rows().iloc[:2].copy()
     proposal["model_column_number"] = [1, 2]
@@ -669,15 +517,14 @@ def test_duplicated_header_is_selected_by_the_occurrence_suffix(tmp_path, write_
     proposal["status"] = ["accepted", "no_match"]
 
     # A proposta aceita aponta a segunda ocorrência pelo nome de exibição.
-    write_mapping(proposal, mapping_path)
-    stored = pd.read_excel(mapping_path, dtype=object)
+    write_mapping(proposal, files.mapping)
+    stored = pd.read_excel(files.mapping, dtype=object)
     assert stored.loc[0, "coluna_cliente"] == "Valor ICMS (ocorrência 2)"
-    build_mapped_workbook(client_path=client_path, mapping_path=mapping_path,
-                          output_path=output_path, model_path=model_path)
-    sheet = load_workbook(output_path)[MAPPED_SHEET]
+    apply(files)
+    sheet = load_workbook(files.output)[MAPPED_SHEET]
     assert sheet.cell(FIRST_DATA_EXCEL_ROW, 2).value == 20.0
     assert sheet.cell(banner_excel_row("client_column"), 2).value == "Valor ICMS (ocorrência 2)"
-    coverage = list(load_workbook(output_path)[COVERAGE_SHEET].values)
+    coverage = list(load_workbook(files.output)[COVERAGE_SHEET].values)
     delivered = dict(zip(coverage[0], coverage[1]))
     assert delivered["coluna_cliente"] == "Valor ICMS (ocorrência 2)"
 
@@ -693,100 +540,74 @@ def test_duplicated_header_is_selected_by_the_occurrence_suffix(tmp_path, write_
         corrected["status"] = ["review", "no_match"]
         corrected["reviewer_status"] = ["incorrect", ""]
         corrected["correct_client_column"] = [typed, ""]
-        write_mapping(corrected, mapping_path)
-        build_mapped_workbook(client_path=client_path, mapping_path=mapping_path,
-                              output_path=output_path, model_path=model_path)
-        sheet = load_workbook(output_path)[MAPPED_SHEET]
+        write_mapping(corrected, files.mapping)
+        apply(files)
+        sheet = load_workbook(files.output)[MAPPED_SHEET]
         assert sheet.cell(FIRST_DATA_EXCEL_ROW, 2).value == 20.0, typed
 
     # O nome sem sufixo é o nome de exibição da primeira ocorrência e a
     # seleciona (comportamento documentado em docs/DATA.md).
     corrected["correct_client_column"] = ["Valor ICMS", ""]
-    write_mapping(corrected, mapping_path)
-    build_mapped_workbook(client_path=client_path, mapping_path=mapping_path,
-                          output_path=output_path, model_path=model_path)
-    assert load_workbook(output_path)[MAPPED_SHEET].cell(FIRST_DATA_EXCEL_ROW, 2).value == 10.0
+    write_mapping(corrected, files.mapping)
+    apply(files)
+    assert load_workbook(files.output)[MAPPED_SHEET].cell(FIRST_DATA_EXCEL_ROW, 2).value == 10.0
 
     # Uma ocorrência que não existe não é trocada por outra: é recusada.
     corrected["correct_client_column"] = ["Valor ICMS (ocorrência 3)", ""]
-    write_mapping(corrected, mapping_path)
+    write_mapping(corrected, files.mapping)
     with pytest.raises(
         ValueError, match=re.escape("'Valor ICMS (ocorrência 3)' não foi encontrada")
     ):
-        build_mapped_workbook(client_path=client_path, mapping_path=mapping_path,
-                              output_path=output_path, model_path=model_path)
+        apply(files)
 
 
-def test_columns_with_no_data_are_hidden_not_removed(tmp_path, write_mapping) -> None:
-    # Um cliente preenche uma minoria do modelo, e isso é o desenho. Mas as
-    # colunas entregues ficam espalhadas: as 19 de datasul vão de AI a GW, com
-    # 101 colunas vazias entre duas delas. Ocultar as põe lado a lado sem
-    # remover nada nem mudar valor algum.
-    model_path = tmp_path / "model.xlsx"
-    client_path = tmp_path / "client.xlsx"
-    mapping_path = tmp_path / "mapping.xlsx"
-    output_path = tmp_path / "mapped.xlsx"
-    write_workbook(model_path, ["CFOP", "Valor COFINS", "Nº do NCM"], [["5102", 10.0, "85167910"]])
-    write_workbook(client_path, ["Other", "CFOP source", "COFI value", "Corrected NCM"],
-                   [["A", "5102", 12.5, "85167910"]])
-    write_mapping(mapping_rows(), mapping_path)
-    build_mapped_workbook(client_path=client_path, mapping_path=mapping_path,
-                          output_path=output_path, model_path=model_path)
-    book = openpyxl.load_workbook(output_path)
-    sheet = book[MAPPED_SHEET]
+def test_columns_with_no_data_are_hidden_not_removed(files) -> None:
+    write_inputs(files)
+    write_mapping(mapping_rows(), files.mapping)
+    apply(files)
+    sheet = load_workbook(files.output)[MAPPED_SHEET]
     hidden = {
         get_column_letter(c): sheet.column_dimensions[get_column_letter(c)].hidden
         for c in range(2, 5)
     }
-    # O fixture entrega duas: 'CFOP', aceita, e 'Nº do NCM', por correção do
-    # revisor, que é o propósito do ciclo de revisão e é como sap_procosa
-    # chega a 62 entregues a partir de 45 aceites. Só a linha em revisão não
-    # confirmada, 'Valor COFINS', fica sem dado.
+    # Entregues: 'CFOP', aceita, e 'Nº do NCM', pela correção do revisor. Só
+    # 'Valor COFINS', em revisão não confirmada, fica sem dado.
     assert hidden["B"] is False
     assert hidden["C"] is True
     assert hidden["D"] is False
-    # ocultar não pode remover nada: as três colunas do modelo continuam lá
+    # Ocultar não remove nada: as três colunas do modelo continuam lá.
     header = next(sheet.iter_rows(max_row=1, values_only=True))
     assert list(header[1:4]) == ["CFOP", "Valor COFINS", "Nº do NCM"]
 
 
-def test_coverage_sheet_separates_absence_from_a_pending_decision(tmp_path, write_mapping) -> None:
-    # A aba mapeada não responde "o que não está aqui e deveria estar", porque
-    # toda coluna que ela preenche é aceita por construção. Uma coluna vazia
-    # quer dizer que o cliente não tem esse conceito (uma resposta completa)
-    # ou que há um candidato esperando o revisor. Só o segundo caso é trabalho.
-    model_path = tmp_path / "model.xlsx"
-    client_path = tmp_path / "client.xlsx"
-    mapping_path = tmp_path / "mapping.xlsx"
-    output_path = tmp_path / "mapped.xlsx"
-    write_workbook(model_path, ["CFOP", "Valor COFINS", "Nº do NCM", "Valor IPI"],
+def test_coverage_sheet_separates_absence_from_a_pending_decision(files) -> None:
+    # Uma coluna vazia pode ser algo que o cliente não envia (resposta
+    # completa) ou um candidato esperando o revisor. Só o segundo é trabalho.
+    write_workbook(files.model, [*MODEL_HEADERS, "Valor IPI"],
                    [["5102", 10.0, "85167910", 1.0]])
-    write_workbook(client_path, ["Other", "CFOP source", "COFI value", "Corrected NCM"],
-                   [["A", "5102", 12.5, "85167910"]])
+    write_workbook(files.client, CLIENT_HEADERS, [CLIENT_ROW])
     mapping = pd.concat([mapping_rows(), mapping_rows().iloc[[2]]], ignore_index=True)
     mapping.loc[3, ["model_column_number", "model_column"]] = [4, "Valor IPI"]
     mapping.loc[3, ["reviewer_status", "correct_client_column", "reviewer_note"]] = ["", "", ""]
-    write_mapping(mapping, mapping_path)
-    build_mapped_workbook(client_path=client_path, mapping_path=mapping_path,
-                          output_path=output_path, model_path=model_path)
-    book = openpyxl.load_workbook(output_path)
+    write_mapping(mapping, files.mapping)
+    apply(files)
+    book = load_workbook(files.output)
     assert COVERAGE_SHEET in book.sheetnames
     rows = list(book[COVERAGE_SHEET].values)
     header = list(rows[0])
     assert header == list(report_schema.COLUMNS["coverage"].values())
     data = [dict(zip(header, r)) for r in rows[1:]]
     states = [r["situacao_cobertura"] for r in data]
-    # ordenado para o trabalho vir primeiro: entregue, depois pendente, depois ausência
+    # Entregues primeiro, depois as pendentes, depois as ausentes.
     assert states == [
         "entregue", "entregue", "aguardando decisão", "não consta na exportação do cliente",
     ]
     assert data[0]["coluna_modelo"] == "CFOP" and data[0]["coluna_excel"] == "B"
-    # uma correção do revisor conta como entregue e cita a coluna onde caiu
+    # Uma correção do revisor conta como entregue e cita a coluna onde caiu.
     assert data[1]["coluna_modelo"] == "Nº do NCM"
     assert data[1]["coluna_cliente"] == "Corrected NCM"
-    # a linha pendente ainda precisa citar o candidato que o revisor vai julgar
+    # A linha pendente cita o candidato que o revisor vai julgar.
     assert data[2]["coluna_cliente"] == "COFI value"
-    # a justificativa é copiada do relatório como está
     assert data[2]["justificativa"] == "Names and numeric values are compatible."
     assert data[3]["coluna_modelo"] == "Valor IPI"
 

@@ -1,16 +1,7 @@
-"""Testes do esquema externo em português (report_schema) e da CLI em português (cli_ptbr).
+"""Testes do esquema em português (report_schema) e da CLI em português (cli_ptbr).
 
-Três grupos:
-
-* invariantes do vocabulário: nomes de aba válidos no Excel, cabeçalhos em
-  snake_case ASCII, nenhum nome em português igual a um interno (que é
-  também o nome do formato antigo, em inglês), valores distintos em cada
-  enum;
-* cobertura por introspecção: todo campo que o código grava tem tradução,
-  de modo que um campo novo sem nome em português quebra o teste;
-* conversões: ida e volta interno -> português -> interno, recusa do
-  formato antigo e de nomes dele, parecer do revisor, nome de exibição,
-  etapas, marcador da prova e números com vírgula decimal.
+Além das conversões, a cobertura por introspecção garante que um campo
+novo gravado pelo código sem nome em português quebre um teste.
 """
 
 from __future__ import annotations
@@ -46,6 +37,8 @@ requires_reports = pytest.mark.skipif(
     not ARCHIVED_REPORTS, reason="relatórios arquivados ausentes"
 )
 REPORT_TABLES = ("mappings", "run_metadata", "unmatched", "queue")
+#: Enums de frases em português natural, e não de valores snake_case.
+PHRASE_ENUMS = {"why_held", "coverage_state"}
 
 
 # ---------------------------------------------------------------------------
@@ -80,9 +73,7 @@ def test_headers_are_snake_case_ascii() -> None:
 
 
 def test_no_portuguese_name_equals_a_legacy_one() -> None:
-    # Os nomes internos são os do formato antigo; é por eles que um relatório
-    # antigo é reconhecido e recusado, então nenhum pode coincidir com um
-    # nome em português.
+    # Os nomes internos são os do formato antigo, pelos quais ele é recusado.
     legacy = (
         {field for columns in rs.COLUMNS.values() for field in columns}
         | set(rs.METADATA_KEYS)
@@ -107,13 +98,22 @@ def test_enum_values_are_distinct_and_translation_is_idempotent() -> None:
     for name, values in rs.ENUMS.items():
         assert len(set(values.values())) == len(values), name
         for internal, portuguese in values.items():
-            # Um valor em português que também é chave do mesmo enum teria de
-            # ser a tradução de si mesmo; senão traduzir duas vezes mudaria o valor.
+            # Um valor gravado que também é chave do enum precisa ser a
+            # tradução de si mesmo, senão traduzir duas vezes o mudaria.
             if portuguese in values:
                 assert values[portuguese] == portuguese, (name, internal, portuguese)
-    for name in rs.MACHINE_ENUMS:
-        for portuguese in rs.ENUMS[name].values():
+        if name in PHRASE_ENUMS:
+            continue
+        for portuguese in values.values():
             assert portuguese == "" or SNAKE_CASE.fullmatch(portuguese), (name, portuguese)
+
+
+def test_every_field_kind_names_a_column_and_an_enum() -> None:
+    for table, kinds in rs.FIELD_KIND.items():
+        assert set(kinds) <= set(rs.COLUMNS[table]), table
+        for kind in kinds.values():
+            if kind.startswith(("enum:", "phrase:")):
+                assert kind.split(":", 1)[1] in rs.ENUMS, kind
 
 
 def test_step_ids_are_snake_case_and_distinct() -> None:
@@ -183,8 +183,8 @@ def test_every_status_and_method_literal_has_a_translation() -> None:
 
 
 def test_every_queue_reason_has_a_translation() -> None:
-    # As três frases de why_held, uma por ramo: abaixo do limiar, só nome
-    # (confiança presa logo abaixo do limiar) e coluna proposta vazia.
+    # Uma linha por ramo de why_held: abaixo do limiar, só nome (confiança
+    # presa logo abaixo do limiar) e coluna proposta vazia.
     client = invoice_mapper.SheetTable(
         columns=[
             invoice_mapper.ColumnRef("column_001", 0, "Cheia", 1),
@@ -332,7 +332,7 @@ def _internal_queue() -> pd.DataFrame:
 
 def _one_way(table: str, field: str) -> bool:
     """Campos que só são traduzidos na gravação: as frases fixas e o parecer do revisor."""
-    kind = rs.FIELD_KIND.get(("mappings" if table == "banner" else table, field), "")
+    kind = rs.FIELD_KIND.get(table, {}).get(field, "")
     return kind.startswith("phrase:") or kind == "enum:reviewer_status"
 
 
@@ -532,13 +532,13 @@ def test_archived_reports_have_a_translation_for_every_value(report) -> None:
     book = pd.read_excel(report, sheet_name=None, dtype=object)
     names = list(book)
     for table in REPORT_TABLES:
-        sheet = rs.find_sheet(names, rs.TABLE_SHEETS[table])
+        sheet = rs.find_sheet(names, table)
         if sheet is None:
             continue
         internal = rs.to_internal_frame(book[sheet], table)
 
-        for (kind_table, field), kind in rs.FIELD_KIND.items():
-            if kind_table != table or field not in internal.columns:
+        for field, kind in rs.FIELD_KIND.get(table, {}).items():
+            if field not in internal.columns:
                 continue
             values = [v for v in internal[field].tolist() if isinstance(v, str) and v]
             if kind.startswith(("enum:", "phrase:")):
@@ -555,10 +555,9 @@ def test_archived_reports_have_a_translation_for_every_value(report) -> None:
                 tokens = {token for value in values for token in value.split(rs.SIGNALS_SEPARATOR)}
                 assert tokens <= set(rs.ENUMS["signals"]), tokens
 
-        # Ida e volta pelo português devolve o mesmo vocabulário interno.
         back = rs.to_internal_frame(rs.to_external_frame(internal, table), table)
         for column in internal.columns:
-            if rs.FIELD_KIND.get((table, column), "").startswith("phrase:"):
+            if rs.FIELD_KIND.get(table, {}).get(column, "").startswith("phrase:"):
                 continue
             assert back[column].equals(internal[column]), (sheet, column)
 
@@ -592,8 +591,7 @@ def _old_english_report(path: Path) -> Path:
 
 
 def test_an_old_english_report_is_refused_with_the_conversion_hint(tmp_path) -> None:
-    # Os dois leitores, o apply e o mapeval, recusam o relatório e dizem como
-    # convertê-lo: com o migrate_reports.py do commit 5fe5092.
+    # Pelos dois leitores: o apply e o mapeval.
     report = _old_english_report(tmp_path / "mapping_antigo.xlsx")
     model_path = tmp_path / "model.xlsx"
     client_path = tmp_path / "client.xlsx"
@@ -666,8 +664,7 @@ def test_find_sheet_refuses_a_sheet_with_the_old_name() -> None:
         "Metadados da Execução"
     )
     assert rs.find_sheet(["Mapeamentos"], "run_metadata") is None
-    # Ignorada, a aba de metadados com o nome antigo faria a verificação de
-    # hash ser pulada em silêncio.
+    # Ignorada, ela faria a verificação de hash ser pulada em silêncio.
     for names in (["Mapeamentos", "Run Metadata"], ["Run Metadata", "Metadados da Execução"]):
         with pytest.raises(
             ValueError, match="Renomeie 'Run Metadata' para 'Metadados da Execução'"
@@ -688,13 +685,12 @@ def test_find_sheet_refuses_a_sheet_with_the_old_name() -> None:
         "Metadados da Execucao",
         # "ç" e "ã" decompostos (letra + sinal combinante), como alguns
         # programas gravam.
-        "Metadados da Execução",
+        "Metadados da Execuc\u0327a\u0303o",
         " Metadados da Execução ",
     ],
 )
 def test_find_sheet_ignores_case_and_accents_and_returns_the_name_as_written(written) -> None:
-    # Sem isso a aba não seria encontrada e a verificação de hash seria
-    # pulada em silêncio.
+    # Senão a verificação de hash seria pulada em silêncio.
     assert rs.find_sheet(["Mapeamentos", written], "run_metadata") == written
 
 
@@ -787,8 +783,7 @@ def test_metadata_is_cleaned_like_the_apply_always_cleaned_it() -> None:
 def test_metadata_with_old_names_or_repeated_keys_is_refused() -> None:
     with pytest.raises(ValueError, match="Renomeie 'key' para 'chave'"):
         rs.internal_metadata(pd.DataFrame({"key": ["a"], "value": ["b"]}))
-    # Igual à chave interna, uma chave em inglês valeria no lugar da em
-    # português sem aviso.
+    # Igual à chave interna, ela valeria no lugar da em português sem aviso.
     with pytest.raises(ValueError, match="Renomeie 'client_sha256' para 'sha256_cliente'"):
         rs.internal_metadata(
             pd.DataFrame({"chave": ["sha256_cliente", " client_sha256 "], "valor": ["a", "b"]})
@@ -860,7 +855,8 @@ def test_display_names_translate_in_both_directions(internal, external) -> None:
     [
         ("Valor ICMS (ocorrencia 2)", "Valor ICMS (occurrence 2)"),
         ("Valor ICMS (Ocorrência 2)", "Valor ICMS (occurrence 2)"),
-        ("Valor ICMS (ocorrência 2)", "Valor ICMS (occurrence 2)"),
+        # "ê" decomposto (letra + sinal combinante).
+        ("Valor ICMS (ocorre\u0302ncia 2)", "Valor ICMS (occurrence 2)"),
         ("coluna sem nome 3", "Unnamed column 3"),
     ],
 )
