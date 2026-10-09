@@ -166,6 +166,7 @@ O repositório contém dados reais de clientes: CNPJs, CPFs, chaves de acesso de
 - Nos dois clientes com gabarito (datasul e oracle, 56 colunas do modelo com resposta no gabarito): **ENTREGUES 32/56 (57,1%)**, encontrados 43/56 (76,8%), 0 fabricações. As 11 colunas encontradas mas retidas são todas linhas `revisao` abaixo do limiar de 0,90 (confiança final de 0,8339 a 0,8999).
 - sap_procosa mostra o que o parecer do revisor destrava: 26 pareceres levaram o cliente de 45 colunas aceitas a 62 entregues (15 propostas confirmadas + 2 correções).
 - O repositório foi traduzido para o português sem mudar nenhuma decisão. Os quatro relatórios arquivados foram migrados para o esquema em português sem reexecutar o mapeador, e as quatro planilhas mapeadas foram regeneradas a partir deles. O mapeval dá os mesmos números de antes da tradução, e o apply entrega 19, 18, 62 e 67 colunas (datasul, oracle, sap_procosa, sap_terumo), como antes.
+- Em 2026-10-09 o pipeline online completo rodou de novo nos quatro clientes, antes e depois da tradução e depois da simplificação, e reproduziu os mesmos números com gabarito. Entre execuções variam só as escolhas do resolvedor de IA e uma coluna na margem da primeira passagem ([detalhes](docs/EVALUATION.md#o-pipeline-online-de-novo-em-2026-10-09)).
 - 343 testes passam offline em cerca de 8 s.
 
 ## Onde ler a seguir

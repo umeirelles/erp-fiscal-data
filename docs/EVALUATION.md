@@ -164,6 +164,24 @@ Com `--strict-key-only`, o total com gabarito fica em 28/56 entregues (50,0%) e 
 
 Nenhum dos 37 aceites com gabarito é `COLUNA_ERRADA`, então a precisão nos aceites que o gabarito *consegue* checar é 32/32. Os 5 que deixam o limite inferior abaixo de 100% são os sem veredito.
 
+### O pipeline online, de novo, em 2026-10-09
+
+A linha de base acima vem dos relatórios arquivados, gerados online em agosto. Em 2026-10-09 o pipeline online completo (embeddings e resolvedor de IA) rodou de novo nos quatro clientes, em quatro momentos:
+
+| Execução | Código | Entregues | Encontrados | Fabricações | Aceitos (datasul / oracle / sap_procosa / sap_terumo) |
+|---|---|---|---|---|---|
+| relatórios arquivados | agosto, antes da tradução | 32/56 | 43/56 | 0 | 19 / 18 / 45 / 67 |
+| manhã | `2ae4b6d`, antes da tradução | 32/56 | 43/56 | 0 | 19 / 18 / 45 / 65 |
+| manhã | `5fe5092`, traduzido | 32/56 | 43/56 | 0 | 19 / 18 / 46 / 65 |
+| tarde, duas execuções | `fddc9c1`, simplificado | 32/56 | 43/56 | 0 | 19 / 18 / 45 / 65 nas duas |
+
+As 11 linhas retidas e as 13 perdas (perdidas ou com coluna errada) foram as mesmas nas execuções conferidas linha a linha, as duas da manhã e a segunda da tarde; na primeira da tarde, as contagens bateram. Nenhuma execução teve linha `erro_dados`. O que muda de uma execução para outra:
+
+- **As escolhas do resolvedor de IA**, em 4 a 20 linhas por cliente, quase sempre entre `revisao` e `sem_correspondencia` ou entre duas propostas em revisão. O código antigo variou tanto contra o próprio relatório de agosto (15, 4, 11 e 19 linhas) quanto contra o código traduzido rodando no mesmo dia (15, 3, 5 e 7). Uma vez o resolvedor escolheu uma coluna em vez de nenhuma e a linha foi aceita pelo cabeçalho (sap_procosa, `Origem do material` ← `Origem de mater`), o que explica o 46.
+- **Uma coluna na margem da primeira passagem.** A pontuação dos embeddings oscila até 0,005, e sap_terumo m42 caiu de `aceito` para `revisao` por 0,0001 de margem; daí 65 em vez de 67 ([KNOWN_ISSUES.md, item 3.20](KNOWN_ISSUES.md#320-a-margem-da-primeira-passagem-vira-com-o-ruído-dos-embeddings)).
+
+Para avaliar uma mudança, portanto, compare execuções online do mesmo dia e leia as linhas que mudaram; nunca compare uma execução nova com o relatório arquivado e chame a diferença de efeito do código. Cada execução online leva de 4,5 a 8,5 minutos por cliente, com os quatro em paralelo, e manda dados do cliente para a OpenAI.
+
 ### As 11 linhas corretas retidas
 
 Todas são linhas em `revisao` abaixo de 0,90. Cinco estão exatamente em 0,8999. Esse valor não é hesitação do modelo. Na segunda passagem, quando nem o cabeçalho nem a evidência objetiva dos dados são decisivos, `_local_final_confidence`, em `invoice_mapper.py`, limita a `confianca_final` ao teto `MapperConfig.clamp_ceiling` (`final_threshold - CEILING_GAP`, ou seja, `final_threshold - 0.0001`), então o limiar nunca aceita uma linha desse caminho.
@@ -403,9 +421,9 @@ grep -nEi 'datasul|oracle|procosa|terumo' invoice_mapper.py reference_catalog.py
 | Pontuação dos cabeçalhos | léxica (`LexicalHeaderScorer`) | embeddings da OpenAI |
 | Evidência da segunda passagem (aritmética, catálogos, identificadores, resolvedor de IA) | **não é usada**. Toda coluna do modelo que sobra depois da primeira passagem vira `revisao` sobre o melhor candidato de cabeçalho, então na prática não há `sem_correspondencia` (0 nos quatro clientes) | usada, com gpt-4o-mini como resolvedor de IA |
 | Língua das justificativas | português: todas as frases são escritas pelo mapeador | as frases do mapeador em português; as justificativas do resolvedor de IA em inglês, porque o prompt é em inglês (502 nos quatro relatórios arquivados) |
-| Reprodutível | sim. Três execuções dos quatro clientes em 2026-10-09 gravaram abas `Mapeamentos`, `Colunas do Cliente sem Uso` e `Fila de Revisão` idênticas | não é garantido: o resolvedor pode mudar linhas em `revisao` de uma execução para outra |
+| Reprodutível | sim. Três execuções dos quatro clientes em 2026-10-09 gravaram abas `Mapeamentos`, `Colunas do Cliente sem Uso` e `Fila de Revisão` idênticas | não: o resolvedor de IA muda de 4 a 20 linhas por cliente entre execuções, e o ruído dos embeddings pode virar uma coluna na margem da primeira passagem (ver [as execuções de 2026-10-09](#o-pipeline-online-de-novo-em-2026-10-09)) |
 | Custo e exposição de dados | nenhum | chamadas pagas de API. Todo cabeçalho do modelo e do cliente vai para embeddings. Cada coluna do modelo que chega ao resolvedor manda valores de amostra do modelo e até 8 de cada coluna candidata do cliente (`--sample-size`). As execuções arquivadas registram de 167 a 211 respostas do resolvedor por cliente. Ver [dados confidenciais](../README.md#dados-confidenciais) |
-| Tempo (medido em 2026-10-09 no Mac de desenvolvimento) | datasul 36 s, oracle 17 s, sap_procosa 82 s, sap_terumo 13 s | não medido |
+| Tempo (medido em 2026-10-09 no Mac de desenvolvimento) | datasul 36 s, oracle 17 s, sap_procosa 82 s, sap_terumo 13 s | os quatro em paralelo: datasul cerca de 7 min, oracle 6,5 min, sap_procosa 8,5 min, sap_terumo 4,5 min |
 
 O A/B offline só vale para mudanças na primeira passagem (ver [KNOWN_ISSUES.md, item 2.15](KNOWN_ISSUES.md#215-o-modo-offline-é-outro-pipeline)): normalização dos cabeçalhos e pontuação léxica, as travas da primeira passagem, e a auditoria por catálogo e o rebaixamento pelo trio fiscal que vêm depois dela. Uma mudança na segunda passagem precisa de execuções online de `BASE` e de `CAND`. Como as execuções online não são reprodutíveis, inspecione as linhas que mudaram em vez de confiar numa diferença de uma coluna.
 

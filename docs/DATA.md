@@ -9,7 +9,7 @@ Documentos relacionados:
 - [EVALUATION.md](EVALUATION.md): como os relatórios são pontuados contra os gabaritos.
 - [KNOWN_ISSUES.md](KNOWN_ISSUES.md): defeitos que afetam os arquivos descritos aqui.
 
-Todas as contagens abaixo foram medidas em 2026-10-09 nos arquivos do branch `traducao-pt-br`, depois da migração dos relatórios arquivados para o esquema em português. O branch `simplificacao` não mudou nenhum arquivo de `data/` nem de `reference_data/`, e as contagens conferidas de novo nele são as mesmas.
+Todas as contagens abaixo foram medidas em 2026-10-09 nos arquivos de `data/`, já no esquema em português. A simplificação do código feita no mesmo dia não mudou nenhum arquivo de `data/` nem de `reference_data/`.
 
 Os nomes de aba, coluna, chave e valor aparecem entre crases exatamente como `report_schema.py` os grava. Nomes de arquivo e de pasta, flags da CLI e identificadores do código continuam em inglês.
 

@@ -1,6 +1,6 @@
 # Problemas conhecidos
 
-Esta lista foi compilada em 2026-10-08, revista em 2026-10-09 contra o commit `d97ee1a` da branch `traducao-pt-br` (depois da tradução do repositório para o português e da migração dos quatro relatórios arquivados para o esquema em português) e revista de novo no mesmo dia na branch `simplificacao`, duas vezes: depois da remoção das ferramentas de uso único (o preenchimento retroativo e a migração) e da leitura do formato antigo, em inglês, e depois do passe de legibilidade (commits `da870bf` a `32a2bc2`, juntos em `e08c873`), que dividiu as funções longas em etapas com nome, reuniu os limiares num bloco de constantes nomeadas e tirou o código morto, sem mudar nenhuma decisão. Os números de linha se referem a esse último estado (commit `32a2bc2`) e vão se deslocar na primeira mudança no código; a referência estável é o nome do símbolo. As contagens foram medidas sobre os relatórios migrados, que a simplificação não alterou, e todos os comandos de "Como ver" foram rodados de novo nesse estado. O dono do projeto preferiu documentar estes problemas a corrigi-los antes da entrega. Cada item diz onde está o problema, o que acontece, como ver, o que afeta e uma correção sugerida.
+Esta lista foi compilada em 2026-10-08 e revista em 2026-10-09, depois da tradução do repositório para o português, da migração dos relatórios arquivados, da remoção das ferramentas de uso único e do passe de legibilidade (que dividiu as funções longas em etapas com nome, reuniu os limiares num bloco de constantes nomeadas e tirou o código morto, sem mudar nenhuma decisão). Os números de linha se referem ao código do commit `fddc9c1` do `main` e vão se deslocar na primeira mudança; a referência estável é o nome do símbolo. As contagens foram medidas sobre os relatórios arquivados, e todos os comandos de "Como ver" foram rodados de novo nesse estado. O dono do projeto preferiu documentar estes problemas a corrigi-los antes da entrega. Cada item diz onde está o problema, o que acontece, como ver, o que afeta e uma correção sugerida.
 
 O passe de legibilidade resolveu o que era só código morto ou comentário desatualizado. O item 4.1 (números antigos da linha de base em comentários) saiu da lista, e os itens 2.9 e 4.3 ficaram menores; cada um diz o que saiu. Os itens que continuam mantêm o número, então a numeração tem lacunas, e os comentários do código que citam um item (`KNOWN_ISSUES 2.1`, por exemplo) continuam apontando para o lugar certo.
 
@@ -68,6 +68,7 @@ O contexto está em outros documentos: o pipeline em [ARCHITECTURE.md](ARCHITECT
 | 3.17 | A expansão de prefixos de palavras de papel casa palavras comuns | `invoice_mapper.py` `expand_truncated_role_words` |
 | 3.18 | A CLI e os testes do mapeval são frágeis | `mapeval/cli.py`, `tests/test_mapeval.py` |
 | 3.19 | Detalhes da instalação: `.env` e nenhum lockfile | raiz do repositório |
+| 3.20 | A margem da primeira passagem vira com o ruído dos embeddings | `invoice_mapper.py` `_first_pass` |
 | **4** | **Documentação e comentários desatualizados no código** | |
 | 4.2 | `mapping_steps.py` cita funções que não existem | `mapping_steps.py` |
 | 4.3 | O resumo da etapa de identificador promete mais do que ela faz | `mapping_steps.py` |
@@ -543,6 +544,14 @@ Todos ficam em `apply_invoice_mapping.py`.
 - **O `.env` nunca é carregado.** Uma cópia de trabalho pode ter um `.env` na raiz. Ele está no `.gitignore` e nenhum código o lê (nada importa `dotenv`), então as execuções online precisam de `OPENAI_API_KEY` exportada no shell. Ao compartilhar a pasta como arquivo compactado, e não como clone do git, deixe o `.env` de fora.
 - **Nenhum lockfile.** `requirements.txt` só dá faixas de versão. A suíte de testes foi verificada com Python 3.13.
 - **Correção:** apague o `.env` ou carregue-o explicitamente, e fixe as versões num arquivo de restrições ou de lock.
+
+### 3.20 A margem da primeira passagem vira com o ruído dos embeddings
+
+- **Onde:** `invoice_mapper.py` `_first_pass`, na regra `name_margin >= config.name_margin_threshold` (linha 2036), aplicada às pontuações de `OpenAIEmbeddingHeaderScorer`.
+- **O que acontece:** a API de embeddings da OpenAI não devolve exatamente os mesmos vetores de uma execução para outra. Para o mesmo par de cabeçalhos, a similaridade variou até 0,005 entre as execuções online de 2026-10-09 (na maioria das linhas, menos de 0,0001). Um aceite da primeira passagem que está a um fio da margem mínima de 0,05 pode virar `revisao`, e o contrário também.
+- **Como ver:** sap_terumo, m42 `Valor ICMS` ← `ICMS Valor`. No relatório arquivado: `confianca_nome` 0,9832, segunda melhor 0,9331, `margem_nome` 0,0501, `aceito` pela primeira passagem. Em todas as execuções online de 2026-10-09 (com o código antigo, o traduzido e o simplificado): segunda melhor 0,9332, margem 0,0500, abaixo do mínimo. A linha cai para a segunda passagem e termina em `revisao` com 0,8999, o teto do item 2.13. Por isso sap_terumo tem 67 aceitos no relatório arquivado e 65 nas execuções novas (a outra diferença vem do resolvedor de IA). A coluna proposta continua a certa.
+- **Impacto:** o número de aceitos não se repete entre execuções online nem fora do resolvedor de IA, e comparar o relatório arquivado com uma execução nova mistura esse ruído com o efeito de uma mudança no código. É por isso que o protocolo pede `BASE` e `CAND` online no mesmo dia ([EVALUATION.md](EVALUATION.md#o-pipeline-online-de-novo-em-2026-10-09)). Nenhuma fabricação nasce disso: a linha só muda entre `aceito` e `revisao`, sempre na mesma coluna.
+- **Correção:** guardar em cache, num arquivo local por modelo de embedding, o vetor de cada texto de cabeçalho, para que execuções repetidas usem vetores idênticos; isso também reduz o custo. Arredondar as pontuações antes de comparar com o limiar e a margem é mais simples, mas muda decisões e precisa passar pela validação de [EVALUATION.md](EVALUATION.md#protocolo-para-uma-mudança-proposta).
 
 ---
 
