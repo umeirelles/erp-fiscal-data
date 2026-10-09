@@ -45,6 +45,7 @@ import report_schema
 from cli_ptbr import PortugueseArgumentParser
 from invoice_mapper import (
     SheetTable,
+    _error_message,
     client_column_is_vacuous,
     discover_client_tax_trios,
     semantic_header_conflict,
@@ -285,7 +286,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="mostra a contagem sem gravar nada")
     args = parser.parse_args(argv)
 
-    tally = backfill(Path(args.report), Path(args.client), dry_run=args.dry_run)
+    try:
+        tally = backfill(Path(args.report), Path(args.client), dry_run=args.dry_run)
+    except OSError as exc:
+        # Arquivo ausente ou ilegível: mensagem em português, sem traceback.
+        raise SystemExit(_error_message(exc)) from exc
     print(
         f"{args.report}: {tally['rows']} linhas com proposta, "
         f"{tally['arithmetic']} com prova aritmética, "

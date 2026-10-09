@@ -36,6 +36,7 @@ from cli_ptbr import PortugueseArgumentParser
 from invoice_mapper import (
     ColumnRef,
     SheetTable,
+    _error_message,
     describe_header_conflict_pt,
     file_sha256,
     semantic_header_conflict,
@@ -779,7 +780,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             client_header_row=args.client_header_row - 1,
             accepted_only=not args.include_review,
         )
-    except (ValueError, OSError) as exc:
+    except OSError as exc:
+        # Arquivo ausente ou ilegível: a mesma mensagem em português do mapeador.
+        raise SystemExit(_error_message(exc)) from exc
+    except ValueError as exc:
+        # As validações do apply já levantam mensagens em português.
         raise SystemExit(str(exc)) from exc
     return 0
 

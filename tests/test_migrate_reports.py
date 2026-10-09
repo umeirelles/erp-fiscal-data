@@ -1158,6 +1158,7 @@ def baseline_offline_reports(offline_runs) -> dict[str, Path]:
     return offline_runs["legado"]
 
 
+@pytest.mark.lento
 @requires_workbooks
 @pytest.mark.parametrize("client", list(EXPORTS))
 def test_old_english_output_translated_is_the_new_portuguese_output(
@@ -1205,6 +1206,7 @@ def _cells(path: Path) -> dict[str, list[list[tuple[object, ...]]]]:
     }
 
 
+@pytest.mark.lento
 @requires_workbooks
 @pytest.mark.parametrize("client", list(EXPORTS))
 def test_a_migrated_old_offline_report_is_a_fresh_run_cell_by_cell(
@@ -1267,6 +1269,7 @@ def _verdicts(sheet, schema: str) -> dict[int, tuple[object, object, object]]:
     }
 
 
+@pytest.mark.lento
 @requires_workbooks
 def test_migrating_archived_sap_procosa_keeps_the_26_verdicts_and_apply_delivers_62(
     tmp_path, capsys
@@ -1309,6 +1312,7 @@ def test_migrating_archived_sap_procosa_keeps_the_26_verdicts_and_apply_delivers
     assert "esquema legado" not in captured.err
 
 
+@pytest.mark.lento
 @requires_workbooks
 def test_archived_oracle_report_passes_the_regeneration_cross_check(tmp_path) -> None:
     report = _legacy_archived_report("oracle", tmp_path)
