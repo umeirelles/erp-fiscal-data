@@ -1,6 +1,6 @@
 # Arquivos de dados e formatos
 
-Esta página descreve cada arquivo de dados do repositório e cada arquivo que as ferramentas gravam: o modelo base, as exportações dos clientes, os de-para, os relatórios de mapeamento, as planilhas mapeadas e os catálogos de referência fiscais. Descreve também o esquema em português desses arquivos e como ler um relatório antigo, gravado no esquema legado em inglês.
+Esta página descreve cada arquivo de dados do repositório e cada arquivo que as ferramentas gravam: o modelo base, as exportações dos clientes, os de-para, os relatórios de mapeamento, as planilhas mapeadas e os catálogos de referência fiscais. Descreve também o esquema em português desses arquivos e o que fazer com um relatório antigo, gravado no formato antigo, em inglês.
 
 Documentos relacionados:
 
@@ -45,16 +45,16 @@ Os nomes de aba, coluna, chave e valor aparecem entre crases exatamente como `re
 
 | Caminho | O que é | Quem grava | Quem lê |
 |---|---|---|---|
-| `data/model.xlsx` | O modelo base da consultoria: 227 colunas do modelo e 209 linhas de amostra | a consultoria (fixo) | `invoice_mapper.py`, `apply_invoice_mapping.py`, `migrate_reports.py` |
-| `data/clients/` | Quatro exportações reais de ERP | os clientes | o mapeador, o apply, `backfill_mapping_steps.py`, `migrate_reports.py`, `mapeval` |
+| `data/model.xlsx` | O modelo base da consultoria: 227 colunas do modelo e 209 linhas de amostra | a consultoria (fixo) | `invoice_mapper.py`, `apply_invoice_mapping.py` |
+| `data/clients/` | Quatro exportações reais de ERP | os clientes | o mapeador, o apply, `mapeval` |
 | `data/keys/` | Três de-para escritos pelos clientes. Dois deles são gabaritos. | os clientes | `mapeval`, `tests/test_mapeval.py` |
-| `data/reports/mapping_<cliente>_full.xlsx` | Relatórios de mapeamento, um por cliente | `invoice_mapper.py`, depois os revisores, `backfill_mapping_steps.py` e `migrate_reports.py` | `apply_invoice_mapping.py`, `mapeval`, `tests/test_mapeval.py` |
+| `data/reports/mapping_<cliente>_full.xlsx` | Relatórios de mapeamento, um por cliente | `invoice_mapper.py`, depois os revisores, o antigo `backfill_mapping_steps.py` e o antigo `migrate_reports.py` | `apply_invoice_mapping.py`, `mapeval`, `tests/test_mapeval.py` |
 | `data/mapped/<cliente>_mapped.xlsx` | Entregáveis no layout de colunas do modelo | `apply_invoice_mapping.py` | a aplicação a jusante, os revisores |
-| `reference_data/` | Retrato das tabelas fiscais oficiais | `update_reference_data.py` | `reference_catalog.py`, pelo mapeador e pelo `migrate_reports.py` |
+| `reference_data/` | Retrato das tabelas fiscais oficiais | `update_reference_data.py` | `reference_catalog.py`, pelo mapeador |
 
 Todo arquivo em `data/` e em `reference_data/` é versionado no git. As duas exportações SAP têm a extensão `.XLSX` em maiúsculas; digite-a exatamente assim nos comandos.
 
-`mapeval/cli.py` (`CLIENTS`), `tests/test_mapeval.py` (`KEYED`) e `tests/test_migrate_reports.py` fixam esses caminhos no código, e o mapeador, o apply e o `migrate_reports.py` usam `--model data/model.xlsx` por padrão. Se renomear ou mover uma planilha, atualize-os.
+`mapeval/cli.py` (`CLIENTS`) e `tests/test_mapeval.py` (`KEYED`) fixam esses caminhos no código, e o mapeador e o apply usam `--model data/model.xlsx` por padrão. Se renomear ou mover uma planilha, atualize-os.
 
 ## Confidencialidade
 
@@ -70,7 +70,7 @@ O repositório foi compartilhado com você de propósito, só para uso interno:
 - Mantenha-o em máquinas e remotos git controlados pela consultoria. Não o envie a um serviço público ou pessoal, não cole valores em ferramentas externas e não anexe planilhas a chamados fora da consultoria.
 - Tudo em `data/` está commitado, portanto também está no histórico do git. Apagar um arquivo da árvore de trabalho não o remove de um clone.
 - **O modo online envia dados à OpenAI.** Sem `--offline`, o `invoice_mapper.py` envia todos os cabeçalhos do modelo e do cliente à API de embeddings. Para cada coluna do modelo da segunda passagem que a decisão por catálogo não resolve, envia também perfis de valores ao resolvedor de IA. Cada perfil inclui até `--sample-size` valores de amostra (padrão 8), tirados da coluna do modelo e de cada coluna do cliente do conjunto de candidatos (até 40). Nada é mascarado; as chamadas ao resolvedor usam `store=False`. Confirme que o cliente permite isso antes de rodar online.
-- O mapeamento offline, o apply, o `mapeval`, o `migrate_reports.py` e os testes nunca acessam a OpenAI. O `update_reference_data.py` baixa arquivos de sites do governo, mas não envia nenhum dado de cliente.
+- O mapeamento offline, o apply, o `mapeval` e os testes nunca acessam a OpenAI. O `update_reference_data.py` baixa arquivos de sites do governo, mas não envia nenhum dado de cliente.
 - O `.env` na raiz do repositório está no `.gitignore`, e nenhum código o lê. Execuções online precisam de `OPENAI_API_KEY` exportada no shell.
 
 ## O modelo base: `data/model.xlsx`
@@ -215,7 +215,7 @@ Para os dois clientes sem gabarito, o `mapeval` imprime `SEM GABARITO`, só a co
 
 ## Relatórios de mapeamento: `data/reports/`
 
-O `invoice_mapper.py` grava um relatório por execução, por `write_results`, no esquema em português: `versao_esquema_mapeamento` igual a 3 (`MAPPING_SCHEMA_VERSION`). Os relatórios arquivados se chamam `mapping_<cliente>_full.xlsx`, em que `<cliente>` é `datasul`, `oracle`, `sap_procosa` ou `sap_terumo`. Os quatro foram gravados no esquema legado em inglês e migrados para o português sem reexecutar o mapeador (ver [Migração dos relatórios arquivados](#migração-dos-relatórios-arquivados)).
+O `invoice_mapper.py` grava um relatório por execução, por `write_results`, no esquema em português: `versao_esquema_mapeamento` igual a 3 (`MAPPING_SCHEMA_VERSION`). Os relatórios arquivados se chamam `mapping_<cliente>_full.xlsx`, em que `<cliente>` é `datasul`, `oracle`, `sap_procosa` ou `sap_terumo`. Os quatro foram gravados no formato antigo, em inglês, e migrados para o português sem reexecutar o mapeador (ver [Migração dos relatórios arquivados](#migração-dos-relatórios-arquivados)).
 
 A saída padrão do mapeador é `mapping_<nome do arquivo do cliente>.xlsx` no diretório atual, então passe `--output` explicitamente. Uma saída terminada em `.csv` grava só a tabela `Mapeamentos`; o apply não consegue lê-la.
 
@@ -225,14 +225,14 @@ A saída padrão do mapeador é `mapping_<nome do arquivo do cliente>.xlsx` no d
 
 As abas vêm nesta ordem:
 
-1. **`Mapeamentos`** precisa continuar em primeiro. O `apply_invoice_mapping.py` (`_read_mapping_report`) lê a aba de índice 0 sem procurá-la pelo nome, então uma aba inserida antes dela quebra o apply com um erro enganoso: `Não foi possível identificar o esquema da aba Mapeamentos: o cabeçalho não tem 'numero_coluna_modelo' ...`. Se acrescentar uma aba no Excel, ponha no fim.
+1. **`Mapeamentos`** precisa continuar em primeiro. O `apply_invoice_mapping.py` (`_read_mapping_report`) lê a aba de índice 0 sem procurá-la pelo nome, então uma aba inserida antes dela quebra o apply com um erro enganoso: `A aba Mapeamentos não tem a coluna 'numero_coluna_modelo'; confira se o arquivo é um relatório de mapeamento.` Se acrescentar uma aba no Excel, ponha no fim.
 2. **`Metadados da Execução`**.
 3. **`Colunas do Cliente sem Uso`**.
 4. **`Fila de Revisão`**.
 
 As abas 3 e 4 não existem no relatório antigo de sap_procosa (ver [O relatório antigo de sap_procosa](#o-relatório-antigo-de-sap_procosa)). Uma execução atual grava as duas mesmo sem nada a listar, então uma aba ausente sempre indica um relatório antigo.
 
-O apply procura `Metadados da Execução` pelo nome, e o `mapeval` faz o mesmo com `Mapeamentos` (é a única aba que ele lê); a comparação ignora maiúsculas, acentos e espaços nas pontas. Um relatório com a mesma aba nos dois esquemas (por exemplo, `Metadados da Execução` e `Run Metadata`) é recusado.
+O apply procura `Metadados da Execução` pelo nome, e o `mapeval` faz o mesmo com `Mapeamentos` (é a única aba que ele lê); a comparação ignora maiúsculas, acentos e espaços nas pontas. Uma aba com o nome do formato antigo, em inglês (por exemplo, `Run Metadata`), é recusada.
 
 ### Contagem por situação
 
@@ -300,16 +300,16 @@ As frases que o mapeador escreve (`justificativa`, `prova_aritmetica`, `detalhe_
 
 A justificativa escrita pelo resolvedor de IA continua em inglês. O prompt é em inglês, então a IA responde em inglês: isso vale para as 502 justificativas da IA nos relatórios arquivados e para as de execuções futuras. Ninguém as traduz, nem a migração.
 
-Quando o cliente tem mais de um bloco do mesmo tributo, a prova confirma o tributo mas não aponta uma coluna só, e o texto contém o trecho `não distingue esta coluna`. `report_schema.proof_is_decisive` reconhece esse marcador e também o equivalente legado em inglês (`does not single out`), e uma prova assim não conta como evidência aritmética.
+Quando o cliente tem mais de um bloco do mesmo tributo, a prova confirma o tributo mas não aponta uma coluna só, e o texto contém o trecho `não distingue esta coluna`. `report_schema.proof_is_decisive` reconhece esse marcador, e uma prova assim não conta como evidência aritmética.
 
 #### As colunas de etapas dos relatórios arquivados
 
-**Os quatro relatórios arquivados receberam as colunas de etapas por preenchimento retroativo (backfill).** O `backfill_mapping_steps.py` as acrescentou depois das execuções (commit 88c503b), ainda no esquema legado, reconstruindo-as a partir das pontuações gravadas. Três consequências:
+**Os quatro relatórios arquivados receberam as colunas de etapas por preenchimento retroativo (backfill).** O `backfill_mapping_steps.py`, uma ferramenta de uso único removida depois do commit `5fe5092`, as acrescentou depois das execuções (commit 88c503b), ainda no formato antigo, reconstruindo-as a partir das pontuações gravadas. Três consequências:
 
-- Ele grava dois valores que uma execução nova nunca grava (aqui com os nomes já migrados):
+- Ele gravou dois valores que uma execução nova nunca grava (aqui com os nomes já migrados):
   - `nao_registrado`: uma etapa objetiva rodou, mas as pontuações gravadas não dizem qual.
   - `catalogo (concorda)`: a evidência de catálogo concordou, mas era fraca demais para decidir.
-- Ele lê `llm_final_confidence` (hoje `confianca_final_ia`) de uma posição desatualizada, três células ao lado. Por isso `resolvedor_ia` nunca aparece em `apoiado_por` nos relatórios de datasul, oracle e sap_terumo. Isso inclui as 75, 32 e 78 linhas (respectivamente) que têm coluna proposta e pontuação positiva do resolvedor. Em sap_procosa ele aparece em 60 linhas. Ver o item [1.1 de KNOWN_ISSUES.md](KNOWN_ISSUES.md#11-o-backfill-lê-células-deslocadas-e-resolvedor_ia-não-aparece-em-apoiado_por).
+- Ele leu `llm_final_confidence` (hoje `confianca_final_ia`) de uma posição desatualizada, três células ao lado. Por isso `resolvedor_ia` nunca aparece em `apoiado_por` nos relatórios de datasul, oracle e sap_terumo. Isso inclui as 75, 32 e 78 linhas (respectivamente) que têm coluna proposta e pontuação positiva do resolvedor. Em sap_procosa ele aparece em 60 linhas. Ver o item [1.1 de KNOWN_ISSUES.md](KNOWN_ISSUES.md#11-resolvedor_ia-não-aparece-em-apoiado_por-em-três-relatórios-arquivados).
 - As colunas de etapas ficam em lugares diferentes em cada relatório:
 
 | Relatório | Posição das colunas de etapas |
@@ -319,8 +319,6 @@ Quando o cliente tem mais de um bloco do mesmo tributo, a prova confirma o tribu
 | sap_procosa | depois de `confianca_final_ia`, logo antes de `parecer_revisor` (este relatório não tem `prova_aritmetica`) |
 
 Todas as ferramentas procuram as colunas pelo nome; faça o mesmo.
-
-O backfill só se aplica a relatórios legados em inglês, anteriores às colunas de etapas. Diante de um relatório no esquema em português, inclusive os quatro arquivados depois da migração, ele recusa e sai com código 1 sem gravar nada.
 
 ### Colunas do revisor
 
@@ -335,7 +333,7 @@ Os revisores registram os pareceres em `Mapeamentos`, e o `apply_invoice_mapping
 
 `inexistente` não é `sem_correspondencia`: um é o parecer humano de que o cliente não tem o campo, o outro é a situação que o mapeador gravou.
 
-A leitura do parecer (`report_schema.normalize_reviewer_status`) ignora espaços nas pontas, maiúsculas e acentos, e aceita também os valores legados em inglês (`correct`, `incorrect`, `no_mapping_exists`), num relatório de qualquer um dos dois esquemas. `Correto`, ` INCORRETO ` e `correct` valem; um valor desconhecido é recusado e a mensagem mostra o que foi digitado. Em `coluna_cliente_correta`, a comparação com os cabeçalhos ignora maiúsculas, e o sufixo pode vir como `(ocorrência N)`, `(ocorrencia N)` ou o legado `(occurrence N)`; um cabeçalho em branco é `Coluna sem nome N`.
+A leitura do parecer (`report_schema.normalize_reviewer_status`) ignora espaços nas pontas, maiúsculas e acentos: `Correto` e ` INCORRETO ` valem. Um valor desconhecido é recusado e a mensagem mostra o que foi digitado e a coluna do modelo; isso vale também para os pareceres em inglês do formato antigo (`correct`, `incorrect`, `no_mapping_exists`). Em `coluna_cliente_correta`, a comparação com os cabeçalhos ignora maiúsculas, e o sufixo pode vir como `(ocorrência N)` ou `(ocorrencia N)`; um cabeçalho em branco é `Coluna sem nome N`.
 
 `observacao_revisor` é texto livre. É copiada sem tradução para o banner da planilha mapeada.
 
@@ -356,7 +354,7 @@ A `Fila de Revisão` é um índice ordenado dessas linhas, não um segundo lugar
 
 | Chave | Significado | Valor nos relatórios arquivados |
 |---|---|---|
-| `versao_esquema_mapeamento` | Esquema do relatório (`MAPPING_SCHEMA_VERSION`): 3 é o esquema em português, 2 o legado em inglês. | 3 (era 2 antes da migração) |
+| `versao_esquema_mapeamento` | Esquema do relatório (`MAPPING_SCHEMA_VERSION`): 3 é o esquema em português, 2 o formato antigo em inglês, que não é mais lido. | 3 (era 2 antes da migração) |
 | `gerado_em_utc` | Quando o mapeador rodou. A migração não o altera. | 2026-08-25 para datasul, oracle e sap_terumo; 2026-08-04 para sap_procosa |
 | `versao_prompt` | Versão do prompt do resolvedor de IA. | 2026-08-04.2 |
 | `arquivo_cliente`, `arquivo_modelo` | Só o nome do arquivo, sem a pasta. | por exemplo `oracle.xlsx`, `model.xlsx` |
@@ -371,7 +369,7 @@ A `Fila de Revisão` é um índice ordenado dessas linhas, não um segundo lugar
 | `sha256_manifesto_referencia` | SHA-256 de `reference_data/manifest.json`, ou `desativado`. | `c4e2106d...`, que confere com o manifesto atual |
 | `migrado_da_versao_esquema` | Só em relatório migrado: a versão de onde ele veio. | 2 |
 
-Os quatro relatórios arquivados vieram de execuções online. O apply confere só os dois hashes de entrada, e pula a conferência em silêncio quando a aba ou uma das chaves não existe. Não compara aba, linha de cabeçalho nem manifesto. A aba e as chaves são reconhecidas nos dois esquemas, e uma aba com o nome ou os cabeçalhos do outro esquema é recusada (esquema misto), justamente para a conferência de hash não ser pulada.
+Os quatro relatórios arquivados vieram de execuções online. O apply confere só os dois hashes de entrada, e pula a conferência em silêncio quando a aba ou uma das chaves não existe. Não compara aba, linha de cabeçalho nem manifesto. Uma aba, um cabeçalho ou uma chave com o nome do formato antigo, em inglês, é recusado, justamente para a conferência de hash não ser pulada.
 
 ### `Colunas do Cliente sem Uso`
 
@@ -462,13 +460,11 @@ Não regenere este relatório; isso apagaria os 26 pareceres. O apply continua a
 
 ## Planilhas mapeadas: `data/mapped/`
 
-O `apply_invoice_mapping.py` (`build_mapped_workbook`) transforma uma exportação e o seu relatório numa planilha no layout de colunas do modelo. Ela tem duas abas, `Dados Mapeados` e `Cobertura`, sempre em português, qualquer que seja o esquema do relatório lido.
+O `apply_invoice_mapping.py` (`build_mapped_workbook`) transforma uma exportação e o seu relatório numa planilha no layout de colunas do modelo. Ela tem duas abas, `Dados Mapeados` e `Cobertura`, em português.
 
 > **Contrato com quem lê a planilha: mudança incompatível.** Até a tradução, as abas se chamavam `Mapped Data` e `Coverage`, a célula A1 era `__mapping_info__`, os rótulos do banner e os cabeçalhos da cobertura eram os nomes em inglês, e os valores também (`accepted`, `delivered` ...). As quatro planilhas de `data/mapped/` foram regeneradas no esquema novo. Um leitor a jusante que procure a aba, a célula A1 ou um rótulo pelo nome antigo quebra; atualize-o com a [tabela de nomes legados](#nomes-legados-em-inglês). Não mudaram: a posição das colunas (A, depois as 227 colunas do modelo de B a HT), os cabeçalhos do modelo, a linha 23 como primeira linha de dados, os valores das células de dados (valor, tipo e formato), as colunas ocultas e o painel congelado.
 
 Por padrão, uma coluna do modelo só é preenchida a partir de uma linha `aceito` sem parecer ou de uma linha confirmada pelo revisor (`correto` ou `incorreto`). `--include-review` preenche também as propostas não confirmadas. Essa saída é explicitamente insegura; nunca a entregue.
-
-Com um relatório legado em inglês, o apply grava a planilha em português do mesmo jeito, mas copia a justificativa e a prova aritmética como estão, em inglês, e imprime um aviso de uma linha que recomenda migrar o relatório com `migrate_reports.py`.
 
 ### `Dados Mapeados`
 
@@ -478,7 +474,7 @@ Com um relatório legado em inglês, o apply grava a planilha em português do m
 | 2-22 | Um banner de metadados com 21 linhas. A coluna A traz o rótulo, e cada coluna do modelo traz o valor daquela linha no relatório. |
 | 23 em diante | Dados do cliente, uma linha por linha de dados da exportação, na ordem da exportação. A coluna A fica vazia. |
 
-**Os dados do cliente começam na linha 23 do Excel.** Notas antigas dizem linha 20; isso está desatualizado. A constante é `FIRST_DATA_EXCEL_ROW = len(MAPPING_METADATA) + 2` (apply_invoice_mapping.py:78). Ela já mudou antes, então importe-a em vez de fixar um número. Os painéis estão congelados em `B23`.
+**Os dados do cliente começam na linha 23 do Excel.** Notas antigas dizem linha 20; isso está desatualizado. A constante é `FIRST_DATA_EXCEL_ROW = len(MAPPING_METADATA) + 2` (apply_invoice_mapping.py:75). Ela já mudou antes, então importe-a em vez de fixar um número. Os painéis estão congelados em `B23`.
 
 As linhas do banner, na ordem de `MAPPING_METADATA`:
 
@@ -490,7 +486,7 @@ As linhas do banner, na ordem de `MAPPING_METADATA`:
 | 16-19 | `decidido_por`, `apoiado_por`, `vetado_por`, `prova_aritmetica` |
 | 20-22 | `justificativa`, `parecer_revisor`, `observacao_revisor` |
 
-Os rótulos são os mesmos cabeçalhos da aba `Mapeamentos`. As confianças são gravadas como número e exibidas como porcentagem. Os valores de máquina (situação, método, etapas, trava, catálogo, parecer) saem em português, e o parecer sai na grafia canônica (`correto`, `incorreto`, `inexistente`) mesmo que o revisor tenha digitado `Correct`. A justificativa, a prova aritmética e a observação do revisor são copiadas como estão no relatório. Em sap_procosa a linha `prova_aritmetica` fica em branco, porque o relatório não tem essa coluna, e as duas linhas `incorreto` mostram a situação `sem_correspondencia`, embora sejam entregues.
+Os rótulos são os mesmos cabeçalhos da aba `Mapeamentos`. As confianças são gravadas como número e exibidas como porcentagem. Os valores de máquina (situação, método, etapas, trava, catálogo, parecer) saem em português, e o parecer sai na grafia canônica (`correto`, `incorreto`, `inexistente`) mesmo que o revisor tenha digitado ` Correto`. A justificativa, a prova aritmética e a observação do revisor são copiadas como estão no relatório. Em sap_procosa a linha `prova_aritmetica` fica em branco, porque o relatório não tem essa coluna, e as duas linhas `incorreto` mostram a situação `sem_correspondencia`, embora sejam entregues.
 
 Os valores do cliente são copiados sem alteração. A exportação é lida com `dtype=object`, e a única conversão de tipo é que valores `datetime.time` voltam a ser células de hora do Excel (`hh:mm:ss`).
 
@@ -587,27 +583,23 @@ Continuam em inglês, de propósito:
 - as 26 observações do revisor de sap_procosa, como foram escritas;
 - os dados do cliente: cabeçalhos da exportação (`Net value`, `Document Number`), valores de amostra e células de dados. Os cabeçalhos do modelo já são em português e não mudam.
 
-O apply e o `mapeval` leem os dois esquemas: o em português (versão 3) e o legado em inglês (versão 2). O esquema é detectado pelo cabeçalho da primeira aba (`numero_coluna_modelo` ou `model_column_number`, em `report_schema.detect_schema`), e os nomes e valores são convertidos para o vocabulário interno antes de qualquer comparação, então o mesmo relatório dá as mesmas decisões, a mesma planilha (fora o texto livre, copiado como está) e os mesmos números nos dois esquemas. O `backfill_mapping_steps.py` só aceita o esquema legado.
+O apply e o `mapeval` só leem o esquema em português (versão 3). O cabeçalho da primeira aba precisa ter `numero_coluna_modelo` (`report_schema.check_header`), e os nomes e valores são convertidos para o vocabulário interno antes de qualquer comparação.
 
-Um arquivo com nomes dos dois esquemas é recusado com uma mensagem `Esquema misto` que diz o que renomear: por exemplo, uma aba `Run Metadata` ao lado de `Mapeamentos`, ou um cabeçalho `reviewer_status` num relatório em português. Lido pela metade, um arquivo assim faria a conferência de hash ser pulada ou os pareceres serem ignorados em silêncio.
+Um relatório no formato antigo, em inglês (versão 2: aba `Mappings`, cabeçalho `model_column_number`...), é recusado com uma mensagem que diz como convertê-lo; os comandos estão no [README](../README.md#comandos-do-dia-a-dia). Um nome do formato antigo num relatório em português é recusado com o que renomear: por exemplo, uma aba `Run Metadata` ao lado de `Mapeamentos`, um cabeçalho `reviewer_status` ou uma chave `client_sha256`. Lido pela metade, um arquivo assim faria a conferência de hash ser pulada ou os pareceres serem ignorados em silêncio.
 
 ### Migração dos relatórios arquivados
 
-Os quatro relatórios de `data/reports/` foram gravados no esquema legado em inglês (versão 2) e migrados para o esquema em português (versão 3) pelo `migrate_reports.py`, sem reexecutar o mapeador (commit 09ebda9). As planilhas de `data/mapped/` foram então regeneradas pelo apply a partir dos relatórios migrados.
-
-```bash
-python migrate_reports.py RELATORIO EXPORTACAO [--model data/model.xlsx] [--reference-data reference_data] [--dry-run]
-```
+Os quatro relatórios de `data/reports/` foram gravados no formato antigo, em inglês (versão 2), e migrados para o esquema em português (versão 3) pelo `migrate_reports.py`, sem reexecutar o mapeador (commit 09ebda9). As planilhas de `data/mapped/` foram então regeneradas pelo apply a partir dos relatórios migrados. O `migrate_reports.py` e o `legacy_reports.py` saíram do repositório depois do commit `5fe5092`; o registro abaixo fica como referência.
 
 O que a migração fez, célula a célula, com o openpyxl:
 
 - Renomeou as abas, os cabeçalhos e as chaves de metadados, e traduziu os valores enumerados, as etapas (inclusive os legados `unrecorded`, que virou `nao_registrado`, e o sufixo ` (agrees)`, que virou ` (concorda)`), o sentinela `disabled` (nenhum dos quatro o tinha) e o sufixo de ocorrência dos nomes de exibição (38 células com `(ocorrência N)` nos quatro relatórios).
-- Reescreveu as frases do mapeador (justificativa, prova aritmética, detalhe dos sinais, motivo de retenção e divergência da IA) com o `legacy_reports.py`. Ele reconhece cada frase pelo modelo em inglês que a produziu, copiado de `invoice_mapper.py` no commit 2ae4b6d, e a reescreve com a constante em português que o mapeador usa hoje. A frase migrada é exatamente a que o mapeador atual gravaria para os mesmos valores. O que não casa com nenhum modelo passa intacto.
+- Reescreveu as frases do mapeador (justificativa, prova aritmética, detalhe dos sinais, motivo de retenção e divergência da IA) com o `legacy_reports.py`. Ele reconhecia cada frase pelo modelo em inglês que a produziu, copiado de `invoice_mapper.py` no commit 2ae4b6d, e a reescrevia com a constante em português que o mapeador usa. A frase migrada é exatamente a que o mapeador atual gravaria para os mesmos valores. O que não casava com nenhum modelo passou intacto.
 - Mudou `versao_esquema_mapeamento` de 2 para 3 e acrescentou `migrado_da_versao_esquema` = 2. `gerado_em_utc` não mudou.
 
 Passou intacto: a prosa escrita pela IA, as observações do revisor, `coluna_modelo`, os valores de amostra do cliente, os nomes de coluna do cliente (fora o sufixo) e todos os números, com o tipo (os inteiros 6 e 32 de `coluna_cliente_correta` continuam inteiros, e as células de texto vazio continuam texto vazio). A ordem das colunas e a formatação também não mudaram, e nenhuma aba ou coluna foi acrescentada: sap_procosa manteve o layout antigo.
 
-Antes de traduzir, a ferramenta regenera as partes derivadas (as provas aritméticas pelos trios fiscais, `Colunas do Cliente sem Uso` e `Fila de Revisão`) e as compara com o arquivado, quando os hashes gravados permitem; depois de traduzir, verifica o resultado antes de substituir o original. O mecanismo, inclusive o que acontece quando os hashes não conferem, está em [ARCHITECTURE.md](ARCHITECTURE.md#relatórios-legados-legacy_reports-e-migrate_reports). Nos quatro relatórios arquivados:
+Antes de traduzir, a ferramenta regenerou as partes derivadas (as provas aritméticas pelos trios fiscais, `Colunas do Cliente sem Uso` e `Fila de Revisão`) e as comparou com o arquivado, quando os hashes gravados permitiam; depois de traduzir, verificou o resultado antes de substituir o original. Nos quatro relatórios arquivados:
 
 | Relatório | Conferência por regeneração | Frases do mapeador traduzidas | Justificativas da IA mantidas em inglês |
 |---|---|---|---|
@@ -619,11 +611,11 @@ Antes de traduzir, a ferramenta regenera as partes derivadas (as provas aritmét
 
 A contagem por situação, os 26 pareceres e as 26 observações de sap_procosa ficaram iguais. O `mapeval` imprime a mesma saída, byte a byte, de antes da migração (ENTREGUES 32/56, encontrados 43/56, fabricações 0), e o apply entrega as mesmas 19, 18, 62 e 67 colunas, com as células de dados idênticas às da planilha em inglês.
 
-Para migrar um relatório legado que você tenha, rode o comando acima com ele e a exportação que o gerou; `--dry-run` faz tudo num arquivo temporário, sem alterar o relatório. O [README](../README.md#comandos-do-dia-a-dia) traz um exemplo com uma cópia legada do relatório de oracle tirada do histórico do git.
+Para converter um relatório antigo que você tenha, use o `migrate_reports.py` do commit `5fe5092`, como mostra o [README](../README.md#comandos-do-dia-a-dia).
 
 ### Nomes legados em inglês
 
-Para quem tem um relatório ou uma planilha antiga, ou código que lê os nomes antigos. A fonte é `report_schema.py` (`SHEETS`, `COLUMNS`, `METADATA_KEYS`, `METADATA_SENTINELS`, `STEP_IDS`, `GUARD_IDS`, `LEGACY_STEP_IDS`, `ENUMS` e as constantes `AGREES_SUFFIX_*`, `OCCURRENCE_SUFFIX_*` e `UNNAMED_COLUMN_*`); se esta tabela e o código divergirem, vale o código. Os nomes de coluna, as chaves e os valores enumerados que o código usa em memória são os próprios nomes legados; as exceções são `motivo_retencao` e `situacao_cobertura`, cujas frases já são escritas em português na origem.
+Referência histórica, para quem lê uma cópia antiga de um relatório ou de uma planilha mapeada, ou mantém código que procura os nomes antigos. Nada no repositório lê esses nomes; um relatório com eles é recusado (ver [acima](#esquema-em-português-e-esquema-legado)). A fonte é `report_schema.py` (`SHEETS` e `LEGACY_SHEETS`, `COLUMNS`, `METADATA_KEYS`, `METADATA_SENTINELS`, `STEP_IDS`, `GUARD_IDS`, `LEGACY_STEP_IDS`, `ENUMS` e as constantes `AGREES_SUFFIX_*`, `OCCURRENCE_SUFFIX_*` e `UNNAMED_COLUMN_*`); se esta tabela e o código divergirem, vale o código. Os nomes antigos das abas da planilha mapeada (`Mapped Data` e `Coverage`) só constam desta tabela. Os nomes de coluna, as chaves e os valores enumerados que o código usa em memória são os próprios nomes legados; as exceções são `motivo_retencao` e `situacao_cobertura`, cujas frases já são escritas em português na origem.
 
 **Abas e célula A1**
 
@@ -718,7 +710,7 @@ A chave legada `name_margin` tem a mesma grafia da coluna `name_margin`, mas sã
 |---|---|
 | `situacao` | `accepted` → `aceito`; `review` → `revisao`; `no_match` → `sem_correspondencia` |
 | `metodo` | `name` → `nome`; `data` → `dados`; `catalog` → `catalogo`; `name_only` → `somente_nome`; `data_error` → `erro_dados` |
-| `parecer_revisor` | `correct` → `correto`; `incorrect` → `incorreto`; `no_mapping_exists` → `inexistente` (os legados continuam aceitos na leitura) |
+| `parecer_revisor` | `correct` → `correto`; `incorrect` → `incorreto`; `no_mapping_exists` → `inexistente` (na leitura, os valores em inglês são recusados) |
 | `vetado_por` | `vacuity` → `coluna_vazia`; `family_conflict` → `conflito_tributario` |
 | `apoiado_por`, `decidido_por` | `resolver` → `resolvedor_ia`; `lexical` → `lexico`; `semantic` → `semantico`; `profile` → `perfil`; `identifier` → `identificador`; `catalog` → `catalogo`; `arithmetic` → `aritmetica`; `unrecorded` → `nao_registrado`; sufixo ` (agrees)` → ` (concorda)` |
 | `nome_catalogo` | `ibge_municipality` → `municipio_ibge`; `ibs_cbs_classification` → `cclasstrib`; `ibs_cbs_cst` → `cst_ibs_cbs`; `cst_icms_taxation` → `cst_icms_tributacao`. Os outros seis (`cfop`, `ncm`, `cst_icms`, `csosn`, `cst_ipi`, `cst_pis_cofins`) não mudam. |
@@ -786,11 +778,11 @@ python update_reference_data.py --output /tmp/reference_data_new
 diff -r reference_data /tmp/reference_data_new
 ```
 
-Um retrato novo muda `sha256_manifesto_referencia` nos relatórios futuros. O apply não confere esse hash, então os relatórios existentes continuam aplicáveis. O `migrate_reports.py` o confere: com outro manifesto, ele não faz a conferência por regeneração e só avisa.
+Um retrato novo muda `sha256_manifesto_referencia` nos relatórios futuros. O apply não confere esse hash, então os relatórios existentes continuam aplicáveis.
 
 ## Como regenerar as saídas
 
-Rode os comandos da raiz do repositório. O mapeamento offline, o apply, o `mapeval` e o `migrate_reports.py` nunca acessam a OpenAI.
+Rode os comandos da raiz do repositório. O mapeamento offline, o apply e o `mapeval` nunca acessam a OpenAI.
 
 Para reconstruir os quatro entregáveis a partir dos relatórios arquivados, rode os comandos abaixo. Eles imprimem `colunas_mapeadas=19`, `18`, `62` e `67`, respectivamente (cada um numa linha `colunas_modelo=227 linhas_cliente=... colunas_mapeadas=...`), o que confere com as planilhas commitadas. Para conferir sem tocar em `data/mapped/`, troque o `--output` por um caminho em `/tmp`.
 
@@ -821,4 +813,4 @@ Grave as execuções online com um nome novo. Sobrescrever um relatório arquiva
 - Move a linha de base do `mapeval` que o `tests/test_mapeval.py` fixa, porque o resolvedor de IA não é determinístico.
 - Exige uma planilha regenerada correspondente em `data/mapped/`.
 
-Os testes de `tests/test_mapeval.py` que precisam das planilhas são pulados quando `data/keys/de_para_oracle.xlsx` não existe, então o resto da suíte roda sem os dados. A suíte, inclusive as provas `lento` que refazem a migração sobre os dados reais, está descrita em [EVALUATION.md](EVALUATION.md#suíte-de-testes).
+Os testes de `tests/test_mapeval.py` que precisam das planilhas são pulados quando `data/keys/de_para_oracle.xlsx` não existe, então o resto da suíte roda sem os dados. A suíte está descrita em [EVALUATION.md](EVALUATION.md#suíte-de-testes).

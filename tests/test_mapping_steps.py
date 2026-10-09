@@ -120,10 +120,7 @@ def test_portuguese_step_cells_read_back_to_the_same_decision(
     read_back = report_schema.steps_to_internal(portuguese)
     assert read_back == internal
     for field in ("supported_by", "decided_by"):
-        assert (
-            report_schema.internal_value("mappings", field, portuguese, report_schema.PT_BR)
-            == internal
-        )
+        assert report_schema.internal_value("mappings", field, portuguese) == internal
 
     # A célula lida em português dá a mesma decisão que a célula em inglês.
     assert deciding_step(read_back) == deciding_step(internal) == decided

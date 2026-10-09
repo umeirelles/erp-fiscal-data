@@ -1508,22 +1508,12 @@ def test_an_offline_run_never_claims_the_semantic_step() -> None:
     assert all("resolver" not in (r.supported_by or "") for r in results)
 
 
-@pytest.mark.parametrize(
-    "proof",
-    [
-        _trio_proof_text(
-            {"tax_scope": "pis", "rows_tested": 5501, "fit_score": 0.9996, "alternatives": 2}
-        ),
-        # A mesma prova no texto legado em inglês, como nos relatórios antigos.
-        "valor = base x aliquota holds for pis on 5501 rows at fit "
-        "0.9996 - but this client has 2 disjoint pis blocks that each satisfy it, "
-        "so this does not single out this column",
-    ],
-    ids=["portugues", "legado_ingles"],
-)
-def test_a_non_discriminating_proof_is_not_reported_as_arithmetic_support(proof) -> None:
+def test_a_non_discriminating_proof_is_not_reported_as_arithmetic_support() -> None:
     # Uma prova que não distingue uma coluna confirma o escopo do tributo, não
     # o mapeamento, então não pode aparecer como evidência para ele.
+    proof = _trio_proof_text(
+        {"tax_scope": "pis", "rows_tested": 5501, "fit_score": 0.9996, "alternatives": 2}
+    )
     steps = _supporting_step_ids(
         header_step="lexical",
         name_confidence=0.9,
@@ -1783,8 +1773,7 @@ def _assert_round_trip(rows, frame: pd.DataFrame, table_name: str, extra=()) -> 
     nomes de exibição) voltam ao valor interno; as frases, já escritas em
     português na origem, voltam intactas; os números voltam iguais.
     """
-    internal, schema = rs.to_internal_frame(frame, table_name)
-    assert schema == rs.PT_BR
+    internal = rs.to_internal_frame(frame, table_name)
     expected = [asdict(row) for row in rows]
     fields = list(expected[0]) + list(extra)
     assert list(internal.columns) == fields
@@ -1898,8 +1887,7 @@ def test_empty_auxiliary_sheets_keep_their_portuguese_headers(tmp_path) -> None:
         frame = pd.read_excel(workbook, sheet_name=sheet)
         assert list(frame.columns) == list(rs.COLUMNS[table_name].values())
         assert frame.empty
-        internal, schema = rs.to_internal_frame(frame, table_name)
-        assert schema == rs.PT_BR
+        internal = rs.to_internal_frame(frame, table_name)
         assert list(internal.columns) == list(rs.COLUMNS[table_name])
 
 

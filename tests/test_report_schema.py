@@ -3,13 +3,14 @@
 Três grupos:
 
 * invariantes do vocabulário: nomes de aba válidos no Excel, cabeçalhos em
-  snake_case ASCII, nenhum nome em português igual a um legado, valores
-  distintos em cada enum;
+  snake_case ASCII, nenhum nome em português igual a um interno (que é
+  também o nome do formato antigo, em inglês), valores distintos em cada
+  enum;
 * cobertura por introspecção: todo campo que o código grava tem tradução,
   de modo que um campo novo sem nome em português quebra o teste;
-* conversões: ida e volta interno -> português -> interno, leitura do
-  legado, esquema misto, parecer do revisor, nome de exibição, etapas,
-  marcador da prova e números com vírgula decimal.
+* conversões: ida e volta interno -> português -> interno, recusa do
+  formato antigo e de nomes dele, parecer do revisor, nome de exibição,
+  etapas, marcador da prova e números com vírgula decimal.
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ from invoice_mapper import (
     REVIEWER_COLUMNS,
     UnmatchedColumn,
 )
+from mapeval.score import read_mappings
 
 ROOT = Path(__file__).resolve().parent.parent
 SNAKE_CASE = re.compile(r"[a-z0-9]+(?:_[a-z0-9]+)*")
@@ -53,7 +55,7 @@ REPORT_TABLES = ("mappings", "run_metadata", "unmatched", "queue")
 
 def test_sheet_names_are_legal_in_excel(tmp_path) -> None:
     book = openpyxl.Workbook()
-    for legacy, portuguese in rs.SHEETS.values():
+    for portuguese in rs.SHEETS.values():
         assert len(portuguese) <= 31, portuguese
         assert not set(portuguese) & set(":\\/?*[]"), portuguese
         assert not portuguese.startswith("'") and not portuguese.endswith("'")
@@ -62,8 +64,8 @@ def test_sheet_names_are_legal_in_excel(tmp_path) -> None:
     book.save(path)
 
     reloaded = openpyxl.load_workbook(path).sheetnames
-    assert {portuguese for _, portuguese in rs.SHEETS.values()} <= set(reloaded)
-    assert len({portuguese for _, portuguese in rs.SHEETS.values()}) == len(rs.SHEETS)
+    assert set(rs.SHEETS.values()) <= set(reloaded)
+    assert len(set(rs.SHEETS.values())) == len(rs.SHEETS)
 
 
 def test_headers_are_snake_case_ascii() -> None:
@@ -78,17 +80,21 @@ def test_headers_are_snake_case_ascii() -> None:
 
 
 def test_no_portuguese_name_equals_a_legacy_one() -> None:
+    # Os nomes internos são os do formato antigo; é por eles que um relatório
+    # antigo é reconhecido e recusado, então nenhum pode coincidir com um
+    # nome em português.
     legacy = (
         {field for columns in rs.COLUMNS.values() for field in columns}
         | set(rs.METADATA_KEYS)
-        | {legacy for legacy, _ in rs.SHEETS.values()}
+        | set(rs.LEGACY_SHEETS.values())
     )
     portuguese = (
         {name for columns in rs.COLUMNS.values() for name in columns.values()}
         | set(rs.METADATA_KEYS.values())
-        | {portuguese for _, portuguese in rs.SHEETS.values()}
+        | set(rs.SHEETS.values())
     )
     assert not legacy & portuguese, sorted(legacy & portuguese)
+    assert set(rs.LEGACY_SHEETS) <= set(rs.SHEETS)
 
 
 def test_headers_and_keys_are_distinct_within_each_table() -> None:
@@ -144,8 +150,10 @@ def test_every_banner_row_has_a_label() -> None:
     assert set(fields) <= set(rs.COLUMNS["mappings"])
 
 
-def test_every_reviewer_status_has_a_translation() -> None:
-    assert set(apply_invoice_mapping.REVIEW_STATUSES) == set(rs.ENUMS["reviewer_status"])
+def test_every_portuguese_verdict_reads_back_as_an_internal_one() -> None:
+    verdicts = rs.ENUMS["reviewer_status"]
+    assert {rs.normalize_reviewer_status(pt) for pt in verdicts.values()} == set(verdicts)
+    assert set(verdicts) == {"", "correct", "incorrect", "no_mapping_exists"}
 
 
 def test_every_coverage_state_has_a_translation() -> None:
@@ -322,6 +330,12 @@ def _internal_queue() -> pd.DataFrame:
     )
 
 
+def _one_way(table: str, field: str) -> bool:
+    """Campos que só são traduzidos na gravação: as frases fixas e o parecer do revisor."""
+    kind = rs.FIELD_KIND.get(("mappings" if table == "banner" else table, field), "")
+    return kind.startswith("phrase:") or kind == "enum:reviewer_status"
+
+
 @pytest.mark.parametrize(
     ("table", "frame"),
     [
@@ -336,21 +350,20 @@ def test_internal_to_portuguese_and_back_is_lossless(table, frame) -> None:
     external = rs.to_external_frame(frame, table)
 
     assert list(external.columns) == [rs.COLUMNS[table][name] for name in frame.columns]
-    back, schema = rs.to_internal_frame(external, table)
-    assert schema == rs.PT_BR
+    back = rs.to_internal_frame(external, table)
     assert list(back.columns) == list(frame.columns)
-    one_way = {
-        field
-        for (kind_table, field), kind in rs.FIELD_KIND.items()
-        if kind_table == table and kind.startswith("phrase:")
-    }
     for column in frame.columns:
-        if column in one_way:
+        if _one_way(table, column):
             continue
         assert back[column].equals(frame[column]), column
+    if table == "mappings":
+        # O parecer volta como foi gravado; quem lê o normaliza.
+        assert [rs.normalize_reviewer_status(v) for v in back["reviewer_status"]] == (
+            frame["reviewer_status"].tolist()
+        )
     # Nenhuma das conversões altera o quadro recebido.
     assert frame.equals(original)
-    assert rs.to_internal_frame(external, table)[0].equals(back)
+    assert rs.to_internal_frame(external, table).equals(back)
 
 
 def _blank_as_none(values: list[object]) -> list[object]:
@@ -377,16 +390,13 @@ def test_a_report_written_in_portuguese_reads_back_through_excel(tmp_path) -> No
     book = pd.read_excel(path, sheet_name=None, dtype=object)
     names = list(book)
     assert names == ["Mapeamentos", "Metadados da Execução", "Colunas do Cliente sem Uso", "Fila de Revisão"]
-    schema = rs.detect_schema(book[names[0]].columns)
-    assert schema == rs.PT_BR
     for table, frame in tables.items():
-        back, found = rs.to_internal_frame(book[rs.find_sheet(names, table, schema)], table)
-        assert found == schema
+        back = rs.to_internal_frame(book[rs.find_sheet(names, table)], table)
         for column in frame.columns:
-            if rs.FIELD_KIND.get((table, column), "").startswith("phrase:"):
+            if _one_way(table, column):
                 continue
             assert _blank_as_none(back[column].tolist()) == _blank_as_none(frame[column].tolist()), column
-    read_metadata = rs.internal_metadata(book[rs.find_sheet(names, "run_metadata", schema)], schema)
+    read_metadata = rs.internal_metadata(book[rs.find_sheet(names, "run_metadata")])
     assert read_metadata == {"mapping_schema_version": "3", "reference_manifest_sha256": "disabled"}
 
 
@@ -431,19 +441,6 @@ def test_the_external_side_tables_are_in_portuguese() -> None:
     assert queue[0]["amostra_valores_cliente"] == "1 | 2"
 
 
-def test_a_legacy_report_reads_as_internal_without_change() -> None:
-    legacy = _internal_mappings()
-    legacy.loc[0, "reviewer_status"] = " Correct "
-
-    internal, schema = rs.to_internal_frame(legacy, "mappings")
-
-    assert schema == rs.LEGACY_EN
-    expected = _internal_mappings()
-    expected.loc[0, "reviewer_status"] = "correct"
-    for column in expected.columns:
-        assert internal[column].equals(expected[column]), column
-
-
 def test_a_hand_written_portuguese_report_reads_as_internal() -> None:
     frame = pd.DataFrame(
         [
@@ -451,7 +448,7 @@ def test_a_hand_written_portuguese_report_reads_as_internal() -> None:
                 "numero_coluna_modelo": 1, "coluna_modelo": "CFOP",
                 "numero_coluna_cliente": 2, "coluna_cliente": "CFOP (ocorrencia 2)",
                 "situacao": "aceito", "metodo": "nome", "nome_catalogo": "municipio_ibge",
-                "apoiado_por": "lexico + catalog (agrees)", "decidido_por": "lexico",
+                "apoiado_por": "lexico + catalogo (concorda)", "decidido_por": "lexico",
                 "vetado_por": "", "parecer_revisor": "Incorreto",
                 "coluna_cliente_correta": "coluna sem nome 5",
                 "colunaExtra": "fica como está",
@@ -459,10 +456,8 @@ def test_a_hand_written_portuguese_report_reads_as_internal() -> None:
         ]
     )
 
-    internal, schema = rs.to_internal_frame(frame, "mappings")
-    row = internal.to_dict("records")[0]
+    row = rs.to_internal_frame(frame, "mappings").to_dict("records")[0]
 
-    assert schema == rs.PT_BR
     assert row["model_column_number"] == 1
     assert row["client_column"] == "CFOP (occurrence 2)"
     assert row["status"] == "accepted"
@@ -470,7 +465,9 @@ def test_a_hand_written_portuguese_report_reads_as_internal() -> None:
     assert row["catalog_name"] == "ibge_municipality"
     assert row["supported_by"] == "lexical + catalog (agrees)"
     assert row["decided_by"] == "lexical"
-    assert row["reviewer_status"] == "incorrect"
+    # O parecer passa como foi digitado; quem lê o valida e normaliza.
+    assert row["reviewer_status"] == "Incorreto"
+    assert rs.normalize_reviewer_status(row["reviewer_status"]) == "incorrect"
     assert row["correct_client_column"] == "Unnamed column 5"
     assert row["colunaExtra"] == "fica como está"
 
@@ -478,25 +475,26 @@ def test_a_hand_written_portuguese_report_reads_as_internal() -> None:
 def test_conversions_keep_every_cell_exactly_as_it_was() -> None:
     # Como em sap_procosa lido com dtype=object: os números de coluna
     # digitados pelo revisor são inteiros numa coluna object, ao lado de NaN.
-    legacy = pd.DataFrame(
+    stored = pd.DataFrame(
         {
-            "model_column_number": [1, 2, 3],
-            "client_column": [None, "Valor (occurrence 2)", "CFOP"],
-            "reviewer_status": [math.nan, "incorrect", "incorrect"],
-            "correct_client_column": pd.Series([math.nan, 6, 32], dtype=object),
-            "reviewer_note": pd.Series([None, None, None], dtype=object),
+            "numero_coluna_modelo": [1, 2, 3],
+            "coluna_cliente": [None, "Valor (ocorrência 2)", "CFOP"],
+            "parecer_revisor": [math.nan, "incorreto", "incorreto"],
+            "coluna_cliente_correta": pd.Series([math.nan, 6, 32], dtype=object),
+            "observacao_revisor": pd.Series([None, None, None], dtype=object),
         }
     )
 
-    internal, _ = rs.to_internal_frame(legacy, "mappings")
+    internal = rs.to_internal_frame(stored, "mappings")
     external = rs.to_external_frame(internal, "mappings")
-    back, _ = rs.to_internal_frame(external, "mappings")
+    back = rs.to_internal_frame(external, "mappings")
 
     for frame in (internal, back):
         assert frame["correct_client_column"].dtype == object
         assert [type(value) for value in frame["correct_client_column"][1:]] == [int, int]
         assert frame["correct_client_column"].tolist()[1:] == [6, 32]
         assert frame["client_column"][0] is None
+        assert frame["client_column"][1] == "Valor (occurrence 2)"
         assert frame["reviewer_note"].tolist() == [None, None, None]
     assert external["coluna_cliente_correta"].tolist()[1:] == [6, 32]
     assert external["coluna_cliente"].tolist()[1] == "Valor (ocorrência 2)"
@@ -510,20 +508,20 @@ def test_conversions_work_with_repeated_column_names() -> None:
 
     assert list(external.columns) == ["numero_coluna_modelo", "situacao", "situacao"]
     assert external.iloc[0].tolist() == [1, "aceito", "revisao"]
-    back, _ = rs.to_internal_frame(external, "mappings")
+    back = rs.to_internal_frame(external, "mappings")
     assert back.iloc[0].tolist() == [1, "accepted", "review"]
 
 
-def test_enum_values_are_converted_only_when_exact_and_only_in_portuguese() -> None:
-    # Valor legado num relatório em português e valor em português num
-    # relatório legado passam como estão: a comparação exata a jusante decide.
-    assert rs.internal_value("mappings", "status", "accepted", rs.PT_BR) == "accepted"
-    assert rs.internal_value("mappings", "status", "Aceito", rs.PT_BR) == "Aceito"
-    assert rs.internal_value("mappings", "status", "aceito", rs.LEGACY_EN) == "aceito"
-    assert rs.internal_value("mappings", "status", "aceito", rs.PT_BR) == "accepted"
-    assert rs.internal_value("mappings", "decided_by", "lexico", rs.LEGACY_EN) == "lexico"
-    assert rs.internal_value("mappings", "model_column", "Situação", rs.PT_BR) == "Situação"
-    assert rs.internal_value("banner", "status", "aceito", rs.PT_BR) == "accepted"
+def test_enum_values_are_converted_only_when_exact() -> None:
+    # Um valor que não é o português exato passa como está: a comparação
+    # exata a jusante decide. O parecer passa como foi digitado.
+    assert rs.internal_value("mappings", "status", "aceito") == "accepted"
+    assert rs.internal_value("mappings", "status", "Aceito") == "Aceito"
+    assert rs.internal_value("mappings", "status", "accepted") == "accepted"
+    assert rs.internal_value("mappings", "decided_by", "lexico") == "lexical"
+    assert rs.internal_value("mappings", "model_column", "Situação") == "Situação"
+    assert rs.internal_value("banner", "status", "aceito") == "accepted"
+    assert rs.internal_value("mappings", "reviewer_status", " Correto ") == " Correto "
     assert rs.external_value("banner", "decided_by", "catalog") == "catalogo"
     assert rs.external_value("banner", "final_confidence", 0.93) == 0.93
 
@@ -533,18 +531,11 @@ def test_enum_values_are_converted_only_when_exact_and_only_in_portuguese() -> N
 def test_archived_reports_have_a_translation_for_every_value(report) -> None:
     book = pd.read_excel(report, sheet_name=None, dtype=object)
     names = list(book)
-    schema = rs.detect_schema(book[names[0]].columns, "mappings")
     for table in REPORT_TABLES:
-        sheet = rs.find_sheet(names, rs.TABLE_SHEETS[table], schema)
+        sheet = rs.find_sheet(names, rs.TABLE_SHEETS[table])
         if sheet is None:
             continue
-        internal, found = rs.to_internal_frame(book[sheet], table)
-        assert found == schema
-        if schema == rs.LEGACY_EN:
-            # Um relatório legado é lido sem mudar nada, nem o tipo das
-            # células (os inteiros 6 e 32 dos pareceres de sap_procosa).
-            for column in book[sheet].columns:
-                assert internal[column].equals(book[sheet][column]), (sheet, column)
+        internal = rs.to_internal_frame(book[sheet], table)
 
         for (kind_table, field), kind in rs.FIELD_KIND.items():
             if kind_table != table or field not in internal.columns:
@@ -565,76 +556,128 @@ def test_archived_reports_have_a_translation_for_every_value(report) -> None:
                 assert tokens <= set(rs.ENUMS["signals"]), tokens
 
         # Ida e volta pelo português devolve o mesmo vocabulário interno.
-        back, back_schema = rs.to_internal_frame(rs.to_external_frame(internal, table), table)
-        assert back_schema == rs.PT_BR
+        back = rs.to_internal_frame(rs.to_external_frame(internal, table), table)
         for column in internal.columns:
             if rs.FIELD_KIND.get((table, column), "").startswith("phrase:"):
                 continue
             assert back[column].equals(internal[column]), (sheet, column)
 
-    metadata_sheet = rs.find_sheet(names, "run_metadata", schema)
-    metadata = rs.internal_metadata(book[metadata_sheet], schema)
+    metadata_sheet = rs.find_sheet(names, "run_metadata")
+    metadata = rs.internal_metadata(book[metadata_sheet])
     assert set(metadata) <= set(rs.METADATA_KEYS)
     exported = rs.to_external_metadata(metadata)
-    assert rs.internal_metadata(exported, rs.PT_BR) == metadata
+    assert rs.internal_metadata(exported) == metadata
 
 
 # ---------------------------------------------------------------------------
-# Esquema: detecção, abas e cabeçalhos
+# Formato antigo: recusa, abas e cabeçalhos
 # ---------------------------------------------------------------------------
 
 
-def test_the_schema_is_detected_from_the_marker_column() -> None:
-    assert rs.detect_schema(["numero_coluna_modelo", "situacao"]) == rs.PT_BR
-    assert rs.detect_schema(("model_column_number", "status", None)) == rs.LEGACY_EN
-    assert rs.detect_schema(["chave", "valor"], "run_metadata") == rs.PT_BR
-    assert rs.detect_schema(["key", "value"], "run_metadata") == rs.LEGACY_EN
+def _old_english_report(path: Path) -> Path:
+    """Relatório mínimo no formato antigo, em inglês, como os de antes da tradução.
+
+    Aba Mappings com os cabeçalhos e os valores internos, que eram os do
+    formato antigo, e aba Run Metadata com key/value.
+    """
+    mapping = _internal_mappings().iloc[[0]].copy()
+    mapping["client_column_number"] = 1
+    mapping["client_column"] = "CFOP source"
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        mapping.to_excel(writer, sheet_name="Mappings", index=False)
+        pd.DataFrame([["mapping_schema_version", 2]], columns=["key", "value"]).to_excel(
+            writer, sheet_name="Run Metadata", index=False
+        )
+    return path
+
+
+def test_an_old_english_report_is_refused_with_the_conversion_hint(tmp_path) -> None:
+    # Os dois leitores, o apply e o mapeval, recusam o relatório e dizem como
+    # convertê-lo: com o migrate_reports.py do commit 5fe5092.
+    report = _old_english_report(tmp_path / "mapping_antigo.xlsx")
+    model_path = tmp_path / "model.xlsx"
+    client_path = tmp_path / "client.xlsx"
+    pd.DataFrame([["CFOP"], ["5102"]]).to_excel(model_path, header=False, index=False)
+    pd.DataFrame([["CFOP source"], ["5102"]]).to_excel(client_path, header=False, index=False)
+    hint = (
+        r"formato antigo, em inglês \(versão 2 do esquema\).*esquema em português \(versão 3\)"
+        r".*migrate_reports\.py do commit 5fe5092: git worktree add /tmp/cbs-5fe5092 5fe5092"
+    )
+
+    with pytest.raises(SystemExit) as stop:
+        apply_invoice_mapping.main(
+            [str(client_path), str(report), "--model", str(model_path),
+             "--output", str(tmp_path / "saida.xlsx")]
+        )
+    assert re.search(hint, str(stop.value)), stop.value
+    assert "'model_column_number'" in str(stop.value)
+    assert not (tmp_path / "saida.xlsx").exists()
+
+    with pytest.raises(ValueError, match=hint) as raised:
+        read_mappings(report)
+    assert "'Mappings'" in str(raised.value)
+
+
+def test_the_header_must_be_in_portuguese() -> None:
+    rs.check_header(["numero_coluna_modelo", "situacao", None])
+    rs.check_header(["chave", "valor"], "run_metadata")
+    with pytest.raises(
+        ValueError, match=r"formato antigo.*tem a coluna 'model_column_number'.*commit 5fe5092"
+    ):
+        rs.check_header(("model_column_number", "status", None))
 
 
 @pytest.mark.parametrize(
-    "header",
+    ("header", "message"),
     [
-        ["numero_coluna_modelo", "model_column_number"],
-        ["numero_coluna_modelo", "status"],
-        ["model_column_number", "parecer_revisor"],
+        (
+            ["numero_coluna_modelo", "model_column_number"],
+            "Renomeie 'model_column_number' para 'numero_coluna_modelo'",
+        ),
+        (["numero_coluna_modelo", "status"], "Renomeie 'status' para 'situacao'"),
+        # Sem a coluna em português, a aba de mapeamentos está no formato antigo.
+        (["model_column_number", "parecer_revisor"], "migrate_reports.py do commit 5fe5092"),
     ],
 )
-def test_a_mixed_header_is_refused(header) -> None:
-    with pytest.raises(ValueError, match="Esquema misto"):
-        rs.detect_schema(header)
+def test_a_header_with_old_names_is_refused(header, message) -> None:
+    with pytest.raises(ValueError, match=re.escape(message)):
+        rs.check_header(header)
 
 
-def test_a_header_without_a_marker_is_refused() -> None:
-    with pytest.raises(ValueError, match="Não foi possível identificar o esquema"):
-        rs.detect_schema(["coluna_modelo", "situacao"])
-    with pytest.raises(ValueError, match="Não foi possível identificar o esquema"):
-        rs.detect_schema([])
+def test_a_header_without_the_required_column_is_refused() -> None:
+    for header in (["coluna_modelo", "situacao"], []):
+        with pytest.raises(ValueError, match="não tem a coluna 'numero_coluna_modelo'"):
+            rs.check_header(header)
 
 
 def test_reading_a_half_translated_report_is_refused() -> None:
+    # Lido pela metade, o relatório ignoraria os pareceres do revisor sem aviso.
     frame = pd.DataFrame(columns=["numero_coluna_modelo", "situacao", "reviewer_status"])
-    with pytest.raises(
-        ValueError, match=r"Esquema misto.*Renomeie 'reviewer_status' para 'parecer_revisor'"
-    ):
+    with pytest.raises(ValueError, match="Renomeie 'reviewer_status' para 'parecer_revisor'"):
         rs.to_internal_frame(frame, "mappings")
-    with pytest.raises(
-        ValueError, match=r"Esquema misto.*Renomeie 'parecer_revisor' para 'reviewer_status'"
-    ):
-        rs.internal_header_index(("model_column_number", "parecer_revisor"), "mappings")
+    with pytest.raises(ValueError, match="Renomeie 'key' para 'chave', 'value' para 'valor'"):
+        rs.to_internal_frame(pd.DataFrame(columns=["key", "value"]), "run_metadata")
+    with pytest.raises(ValueError, match="Renomeie 'status' para 'situacao'"):
+        rs.internal_header_index(("numero_coluna_modelo", "status"), "mappings")
 
 
-def test_find_sheet_refuses_the_other_schemas_sheet() -> None:
-    assert rs.find_sheet(["Mapeamentos", "Metadados da Execução"], "run_metadata", rs.PT_BR) == (
+def test_find_sheet_refuses_a_sheet_with_the_old_name() -> None:
+    assert rs.find_sheet(["Mapeamentos", "Metadados da Execução"], "run_metadata") == (
         "Metadados da Execução"
     )
-    assert rs.find_sheet(["Mappings", "Run Metadata"], "run_metadata", rs.LEGACY_EN) == "Run Metadata"
-    assert rs.find_sheet(["Mapeamentos"], "run_metadata", rs.PT_BR) is None
-    with pytest.raises(ValueError, match="Esquema misto"):
-        rs.find_sheet(["Mapeamentos", "Run Metadata"], "run_metadata", rs.PT_BR)
-    with pytest.raises(ValueError, match="Esquema misto"):
-        rs.find_sheet(["Mappings", "Metadados da Execução"], "run_metadata", rs.LEGACY_EN)
-    with pytest.raises(ValueError, match="ao mesmo tempo"):
-        rs.find_sheet(["Run Metadata", "Metadados da Execução"], "run_metadata", rs.PT_BR)
+    assert rs.find_sheet(["Mapeamentos"], "run_metadata") is None
+    # Ignorada, a aba de metadados com o nome antigo faria a verificação de
+    # hash ser pulada em silêncio.
+    for names in (["Mapeamentos", "Run Metadata"], ["Run Metadata", "Metadados da Execução"]):
+        with pytest.raises(
+            ValueError, match="Renomeie 'Run Metadata' para 'Metadados da Execução'"
+        ):
+            rs.find_sheet(names, "run_metadata")
+    # Sem a aba de mapeamentos em português, o relatório está no formato antigo.
+    with pytest.raises(ValueError, match="tem a aba 'Mappings'.*commit 5fe5092"):
+        rs.find_sheet(["Mappings", "Run Metadata"], "mappings")
+    with pytest.raises(ValueError, match="Renomeie 'Mappings' para 'Mapeamentos'"):
+        rs.find_sheet(["Mappings", "Mapeamentos"], "mappings")
 
 
 @pytest.mark.parametrize(
@@ -645,22 +688,20 @@ def test_find_sheet_refuses_the_other_schemas_sheet() -> None:
         "Metadados da Execucao",
         # "ç" e "ã" decompostos (letra + sinal combinante), como alguns
         # programas gravam.
-        "Metadados da Execução",
+        "Metadados da Execução",
         " Metadados da Execução ",
     ],
 )
 def test_find_sheet_ignores_case_and_accents_and_returns_the_name_as_written(written) -> None:
     # Sem isso a aba não seria encontrada e a verificação de hash seria
     # pulada em silêncio.
-    assert rs.find_sheet(["Mapeamentos", written], "run_metadata", rs.PT_BR) == written
-    with pytest.raises(ValueError, match="Esquema misto"):
-        rs.find_sheet(["Mappings", written], "run_metadata", rs.LEGACY_EN)
+    assert rs.find_sheet(["Mapeamentos", written], "run_metadata") == written
 
 
-def test_find_sheet_refuses_a_legacy_sheet_in_another_case() -> None:
-    # O Excel não distingue caixa nos nomes de aba: "run metadata" é a aba legada.
-    with pytest.raises(ValueError, match="Esquema misto"):
-        rs.find_sheet(["Mapeamentos", "run metadata"], "run_metadata", rs.PT_BR)
+def test_find_sheet_refuses_an_old_sheet_name_in_another_case() -> None:
+    # O Excel não distingue caixa nos nomes de aba: "run metadata" é a aba antiga.
+    with pytest.raises(ValueError, match="formato antigo"):
+        rs.find_sheet(["Mapeamentos", "run metadata"], "run_metadata")
 
 
 def test_find_sheet_refuses_two_sheets_that_differ_only_by_accents() -> None:
@@ -668,44 +709,30 @@ def test_find_sheet_refuses_two_sheets_that_differ_only_by_accents() -> None:
         rs.find_sheet(
             ["Mapeamentos", "Metadados da Execução", "Metadados da Execucao"],
             "run_metadata",
-            rs.PT_BR,
         )
 
 
-def test_find_sheet_without_a_schema_accepts_either_name() -> None:
-    # Para localizar a aba de mapeamentos antes de ler o cabeçalho.
-    assert rs.find_sheet(["Mapeamentos", "Metadados da Execução"], "mappings", None) == "Mapeamentos"
-    assert rs.find_sheet(["Mappings", "Run Metadata"], "mappings", None) == "Mappings"
-    assert rs.find_sheet(["Planilha1"], "mappings", None) is None
-    with pytest.raises(ValueError, match="ao mesmo tempo"):
-        rs.find_sheet(["Mappings", "Mapeamentos"], "mappings", None)
+def test_find_sheet_finds_the_mappings_sheet() -> None:
+    assert rs.find_sheet(["Mapeamentos", "Metadados da Execução"], "mappings") == "Mapeamentos"
+    assert rs.find_sheet(["Planilha1"], "mappings") is None
+    # As abas da planilha mapeada não têm nome antigo a recusar.
+    assert rs.find_sheet(["Dados Mapeados", "Cobertura"], "coverage") == "Cobertura"
 
 
-def test_sheet_and_header_names_in_each_schema() -> None:
+def test_sheet_and_header_names() -> None:
     assert rs.sheet_name("mappings") == "Mapeamentos"
     assert rs.sheet_name("queue") == "Fila de Revisão"
-    assert rs.sheet_name("unmatched", rs.LEGACY_EN) == "Unmatched Client Columns"
-    assert rs.header_label("mappings", "reviewer_status", rs.PT_BR) == "parecer_revisor"
-    assert rs.header_label("mappings", "reviewer_status", rs.LEGACY_EN) == "reviewer_status"
-    assert rs.header_label("banner", "llm_final_confidence", rs.PT_BR) == "confianca_final_ia"
-    assert rs.header_label("mapped_data", "__mapping_info__", rs.PT_BR) == "__info_mapeamento__"
-    assert rs.header_label("mappings", "campo_novo", rs.PT_BR) == "campo_novo"
-    assert rs.metadata_key_label("name_margin") == "margem_minima_nome"
-    assert rs.metadata_key_label("name_margin", rs.LEGACY_EN) == "name_margin"
-    with pytest.raises(ValueError, match="Esquema desconhecido"):
-        rs.header_label("mappings", "status", "pt")
+    assert rs.header_label("mappings", "reviewer_status") == "parecer_revisor"
+    assert rs.header_label("banner", "llm_final_confidence") == "confianca_final_ia"
+    assert rs.header_label("mapped_data", "__mapping_info__") == "__info_mapeamento__"
+    assert rs.header_label("mappings", "campo_novo") == "campo_novo"
 
 
-def test_internal_header_index_reads_openpyxl_rows_in_both_schemas() -> None:
-    index, schema = rs.internal_header_index(
+def test_internal_header_index_reads_openpyxl_rows() -> None:
+    index = rs.internal_header_index(
         ("numero_coluna_modelo", "situacao", None, "prova_aritmetica"), "mappings"
     )
-    assert schema == rs.PT_BR
     assert index == {"model_column_number": 0, "status": 1, "arithmetic_proof": 3}
-
-    index, schema = rs.internal_header_index(("model_column_number", "status"), "mappings")
-    assert schema == rs.LEGACY_EN
-    assert index == {"model_column_number": 0, "status": 1}
 
 
 # ---------------------------------------------------------------------------
@@ -734,7 +761,7 @@ def test_metadata_is_written_in_portuguese_and_read_back_as_internal() -> None:
         {"chave": "sha256_manifesto_referencia", "valor": "desativado"},
         {"chave": "sha256_cliente", "valor": "abc123"},
     ]
-    assert rs.internal_metadata(frame, rs.PT_BR) == {
+    assert rs.internal_metadata(frame) == {
         "mapping_schema_version": "3",
         "embedding_model": "offline",
         "llm_model": "gpt-4o-mini",
@@ -744,33 +771,34 @@ def test_metadata_is_written_in_portuguese_and_read_back_as_internal() -> None:
     }
 
 
-def test_legacy_metadata_is_read_like_the_apply_reads_it_today() -> None:
+def test_metadata_is_cleaned_like_the_apply_always_cleaned_it() -> None:
     frame = pd.DataFrame(
-        {"key": ["client_sha256", " model_sha256 ", None, "embedding_model"],
-         "value": [" abc ", "def", "ignorado", "disabled"]}
+        {"chave": ["sha256_cliente", " sha256_modelo ", None, "modelo_embedding"],
+         "valor": [" abc ", "def", "ignorado", "desativado"]}
     )
 
-    assert rs.internal_metadata(frame, rs.LEGACY_EN) == {
+    assert rs.internal_metadata(frame) == {
         "client_sha256": "abc",
         "model_sha256": "def",
         "embedding_model": "disabled",
     }
 
 
-def test_metadata_in_the_wrong_schema_or_with_repeated_keys_is_refused() -> None:
-    with pytest.raises(ValueError, match="Esquema misto"):
-        rs.internal_metadata(pd.DataFrame({"key": ["a"], "value": ["b"]}), rs.PT_BR)
-    with pytest.raises(ValueError, match="chaves repetidas"):
+def test_metadata_with_old_names_or_repeated_keys_is_refused() -> None:
+    with pytest.raises(ValueError, match="Renomeie 'key' para 'chave'"):
+        rs.internal_metadata(pd.DataFrame({"key": ["a"], "value": ["b"]}))
+    # Igual à chave interna, uma chave em inglês valeria no lugar da em
+    # português sem aviso.
+    with pytest.raises(ValueError, match="Renomeie 'client_sha256' para 'sha256_cliente'"):
         rs.internal_metadata(
-            pd.DataFrame({"chave": ["sha256_cliente", "client_sha256"], "valor": ["a", "b"]}),
-            rs.PT_BR,
+            pd.DataFrame({"chave": ["sha256_cliente", " client_sha256 "], "valor": ["a", "b"]})
         )
     with pytest.raises(ValueError, match="precisa ter as colunas"):
-        rs.internal_metadata(pd.DataFrame({"chave": ["a"]}), rs.PT_BR)
+        rs.internal_metadata(pd.DataFrame({"chave": ["a"]}))
     # Como o apply sempre fez: repetição na coluna crua, inclusive de chaves em branco.
-    for keys in (["client_sha256", "client_sha256"], [None, None]):
+    for keys in (["sha256_cliente", "sha256_cliente"], [None, None]):
         with pytest.raises(ValueError, match="chaves repetidas"):
-            rs.internal_metadata(pd.DataFrame({"key": keys, "value": ["a", "b"]}), rs.LEGACY_EN)
+            rs.internal_metadata(pd.DataFrame({"chave": keys, "valor": ["a", "b"]}))
 
 
 # ---------------------------------------------------------------------------
@@ -781,26 +809,29 @@ def test_metadata_in_the_wrong_schema_or_with_repeated_keys_is_refused() -> None
 @pytest.mark.parametrize(
     ("typed", "internal"),
     [
-        ("correct", "correct"),
+        ("correto", "correct"),
         ("Correto", "correct"),
         ("  CORRETO ", "correct"),
         ("Corrêto", "correct"),
-        ("incorrect", "incorrect"),
         ("INCORRETO", "incorrect"),
-        ("no_mapping_exists", "no_mapping_exists"),
         ("Inexistente", "no_mapping_exists"),
         ("", ""),
         ("   ", ""),
         (None, ""),
         (math.nan, ""),
-        # Desconhecidos voltam crus, para o apply recusar mostrando o que foi digitado.
-        ("talvez", "talvez"),
-        ("sem_correspondencia", "sem_correspondencia"),
-        (" Talvez ", " Talvez "),
-        (1, 1),
+        # Os pareceres em inglês do formato antigo coincidem com os valores
+        # internos; só a recusa explícita impede que passem calados.
+        ("correct", None),
+        ("incorrect", None),
+        ("no_mapping_exists", None),
+        # Desconhecidos: quem lê recusa mostrando o que foi digitado.
+        ("talvez", None),
+        ("sem_correspondencia", None),
+        (" Talvez ", None),
+        (1, None),
     ],
 )
-def test_reviewer_status_is_normalised_in_both_languages(typed, internal) -> None:
+def test_reviewer_status_is_read_only_in_portuguese(typed, internal) -> None:
     assert rs.normalize_reviewer_status(typed) == internal
 
 
@@ -822,7 +853,6 @@ def test_display_names_translate_in_both_directions(internal, external) -> None:
     assert rs.display_name_to_external(internal) == external
     assert rs.display_name_to_external(external) == external
     assert rs.display_name_to_internal(external) == internal
-    assert rs.display_name_to_internal(internal) == internal
 
 
 @pytest.mark.parametrize(
@@ -830,7 +860,7 @@ def test_display_names_translate_in_both_directions(internal, external) -> None:
     [
         ("Valor ICMS (ocorrencia 2)", "Valor ICMS (occurrence 2)"),
         ("Valor ICMS (Ocorrência 2)", "Valor ICMS (occurrence 2)"),
-        ("Valor ICMS (ocorrência 2)", "Valor ICMS (occurrence 2)"),
+        ("Valor ICMS (ocorrência 2)", "Valor ICMS (occurrence 2)"),
         ("coluna sem nome 3", "Unnamed column 3"),
     ],
 )
@@ -857,12 +887,6 @@ def test_step_cells_translate_in_both_directions(internal, external) -> None:
     assert rs.steps_to_external(internal) == external
     assert rs.steps_to_external(external) == external
     assert rs.steps_to_internal(external) == internal
-    assert rs.steps_to_internal(internal) == internal
-
-
-def test_step_cells_accept_mixed_languages_on_read() -> None:
-    assert rs.steps_to_internal("lexico + catalog (concorda)") == "lexical + catalog (agrees)"
-    assert rs.steps_to_internal("semantic + aritmetica") == "semantic + arithmetic"
 
 
 def test_steps_read_back_are_understood_by_mapping_steps() -> None:
@@ -876,13 +900,7 @@ def test_steps_read_back_are_understood_by_mapping_steps() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_a_proof_is_decisive_unless_empty_or_marked_in_either_language() -> None:
-    english = "valor = base x aliquota holds for pis on 70 rows at fit 0.9857"
-    assert rs.proof_is_decisive(english)
-    assert not rs.proof_is_decisive(
-        english + " - but this client has 2 disjoint pis blocks that each satisfy it, "
-        "so this does not single out this column"
-    )
+def test_a_proof_is_decisive_unless_empty_or_marked() -> None:
     portuguese = "valor = base x alíquota se confirma para PIS em 70 linhas, com aderência 0,9857"
     assert rs.proof_is_decisive(portuguese)
     assert not rs.proof_is_decisive(
@@ -891,14 +909,7 @@ def test_a_proof_is_decisive_unless_empty_or_marked_in_either_language() -> None
     assert not rs.proof_is_decisive("")
     assert not rs.proof_is_decisive(None)
     assert not rs.proof_is_decisive(math.nan)
-    assert rs.PROOF_NOT_DECISIVE_EN == "does not single out"
     assert rs.PROOF_NOT_DECISIVE_PT == "não distingue esta coluna"
-
-
-def test_the_proof_check_matches_the_one_the_mapper_uses_today() -> None:
-    for proof in (None, "", "valor = base x aliquota holds", "x does not single out y"):
-        expected = bool(proof) and "does not single out" not in proof
-        assert rs.proof_is_decisive(proof) == expected
 
 
 @pytest.mark.parametrize(

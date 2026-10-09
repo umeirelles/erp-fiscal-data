@@ -13,9 +13,9 @@ Duas regras valem para todo número que este pacote mostra:
    uma coluna do modelo para a qual o cliente não tem dado -, por isso os
    cinco resultados nunca são reduzidos a um único número de acurácia.
 
-Os relatórios são lidos nos dois esquemas, o em português e o legado em
-inglês, por meio de ``report_schema``; os números não dependem da língua do
-arquivo.
+Os relatórios são lidos no esquema em português, por meio de
+``report_schema``; um relatório no formato antigo, em inglês, é recusado com
+a indicação de como convertê-lo.
 """
 
 from mapeval.excel import column_letter_to_index, index_to_column_letter

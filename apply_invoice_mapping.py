@@ -1,21 +1,18 @@
 """Monta a planilha no layout do modelo a partir da exportação e do relatório de mapeamento.
 
-O relatório pode estar em qualquer um dos dois esquemas: o atual, em português
-(aba Mapeamentos, ``numero_coluna_modelo``, situação ``aceito`` ...), ou o
-legado em inglês dos relatórios gravados antes da tradução (aba Mappings,
-``model_column_number``, status ``accepted`` ...). A leitura passa por
-``report_schema``, que identifica o esquema pelo cabeçalho da primeira aba e
-converte nomes e valores para o vocabulário interno do código. As decisões
-deste módulo comparam só valores internos, então o mesmo relatório dá a mesma
-planilha nos dois esquemas.
+O relatório está no esquema em português (aba Mapeamentos,
+``numero_coluna_modelo``, situação ``aceito`` ...). A leitura passa por
+``report_schema``, que confere o cabeçalho da primeira aba e converte nomes e
+valores para o vocabulário interno do código; as decisões deste módulo
+comparam só valores internos. Um relatório no formato antigo, em inglês, é
+recusado com a indicação de como convertê-lo.
 
-O entregável é gravado sempre em português: abas Dados Mapeados e Cobertura,
+O entregável é gravado em português: abas Dados Mapeados e Cobertura,
 ``__info_mapeamento__`` na célula A1, rótulos do banner, valores enumerados,
 etapas e o sufixo ``(ocorrência N)`` dos nomes de coluna repetidos. O texto
 livre (justificativa, prova aritmética, observação do revisor) é copiado como
-está no relatório. Num relatório legado as frases escritas pelo mapeador estão
-em inglês, e o programa avisa que ``migrate_reports.py`` as traduz; a prosa
-escrita pela IA e as observações dos revisores ficam como foram escritas.
+está no relatório; a prosa escrita pela IA e as observações dos revisores
+ficam como foram escritas.
 """
 
 from __future__ import annotations
@@ -93,7 +90,7 @@ CONFIDENCE_ROWS = {
 }
 
 #: Colunas sem as quais o relatório não pode ser aplicado (nomes internos; as
-#: mensagens citam o cabeçalho no esquema do relatório).
+#: mensagens citam o cabeçalho em português).
 REQUIRED_MAPPING_COLUMNS = {
     "model_column_number",
     "model_column",
@@ -109,22 +106,6 @@ REQUIRED_MAPPING_COLUMNS = {
     "reason",
 }
 
-#: Pareceres do revisor no vocabulário interno. O que o revisor digita
-#: (``correto``, ``Incorreto``, ``inexistente``, ``correct`` ...) passa antes
-#: por ``report_schema.normalize_reviewer_status``.
-REVIEW_STATUSES = {"", "correct", "incorrect", "no_mapping_exists"}
-
-#: Aviso impresso, numa linha só, quando o relatório está no esquema legado em
-#: inglês. A planilha sai em português do mesmo jeito; só as frases que este
-#: programa copia sem traduzir (justificativa e prova aritmética) continuam
-#: em inglês.
-LEGACY_REPORT_NOTICE = (
-    "Aviso: {report} está no esquema legado em inglês. A planilha foi gravada em "
-    "português, mas a justificativa e a prova aritmética foram copiadas como estão, em "
-    "inglês; para traduzir as frases do mapeador, migre o relatório com "
-    "migrate_reports.py e aplique-o de novo."
-)
-
 
 def _sheet_argument(value: str) -> str | int:
     """Aba dada na linha de comando: só dígitos é o índice; outro texto é o nome."""
@@ -136,21 +117,18 @@ def _clean_text(value: object) -> str:
     return "" if pd.isna(value) else str(value).strip()
 
 
-def _column_label(field: str, schema: str) -> str:
-    """Cabeçalho de um campo de Mapeamentos no esquema do relatório, para citar em mensagens.
+def _column_label(field: str) -> str:
+    """Cabeçalho em português de um campo de Mapeamentos, para citar em mensagens.
 
-    Quem lê a mensagem procura a coluna pelo nome que vê na planilha:
-    ``parecer_revisor`` num relatório em português, ``reviewer_status`` num
-    legado.
+    Quem lê a mensagem procura a coluna pelo nome que vê na planilha
+    (``parecer_revisor``), e não pelo nome interno.
     """
-    return report_schema.header_label("mappings", field, schema)
+    return report_schema.header_label("mappings", field)
 
 
-def _status_label(status: str, schema: str) -> str:
-    """Parecer interno na grafia do esquema do relatório (``incorrect`` -> ``incorreto``)."""
-    if schema == report_schema.PT_BR:
-        return report_schema.ENUMS["reviewer_status"].get(status, status)
-    return status
+def _status_label(status: str) -> str:
+    """Parecer interno na grafia do relatório (``incorrect`` -> ``incorreto``)."""
+    return report_schema.ENUMS["reviewer_status"][status]
 
 
 def _display_name(text: object) -> object:
@@ -179,25 +157,20 @@ def _column_from_number(client: SheetTable, value: object) -> ColumnRef | None:
     return client.columns[index]
 
 
-def _corrected_column(
-    client: SheetTable,
-    value: object,
-    schema: str = report_schema.PT_BR,
-) -> ColumnRef:
+def _corrected_column(client: SheetTable, value: object) -> ColumnRef:
     """Coluna do cliente indicada pelo revisor em ``correct_client_column``.
 
     Aceita o número da coluna (contado a partir de 1), o cabeçalho da
     exportação ou, para um cabeçalho repetido, o nome com a ocorrência, nas
-    formas ``(ocorrência N)``, ``(ocorrencia N)`` ou ``(occurrence N)``. A
-    comparação ignora maiúsculas e minúsculas. Texto que pode ser lido como
-    número é sempre um número de coluna.
+    formas ``(ocorrência N)`` ou ``(ocorrencia N)``. A comparação ignora
+    maiúsculas e minúsculas. Texto que pode ser lido como número é sempre um
+    número de coluna.
     """
     typed = _clean_text(value)
     if not typed:
         raise ValueError(
-            f"{_column_label('reviewer_status', schema)} é "
-            f"{_status_label('incorrect', schema)!r}, mas "
-            f"{_column_label('correct_client_column', schema)} está em branco"
+            f"{_column_label('reviewer_status')} é {_status_label('incorrect')!r}, mas "
+            f"{_column_label('correct_client_column')} está em branco"
         )
 
     try:
@@ -210,8 +183,7 @@ def _corrected_column(
             raise ValueError("A coluna do cliente corrigida não pode ficar em branco")
         return column
 
-    # O revisor pode digitar o sufixo em português num relatório de qualquer
-    # esquema; aqui ele volta à forma interna de ColumnRef.display_name.
+    # O sufixo em português volta aqui à forma interna de ColumnRef.display_name.
     text = report_schema.display_name_to_internal(typed)
     display_matches = [
         column for column in client.columns if column.display_name.casefold() == text.casefold()
@@ -235,22 +207,27 @@ def _corrected_column(
     )
 
 
-def _read_mapping_report(mapping_path: str | Path) -> tuple[pd.DataFrame, str]:
+def _read_mapping_report(mapping_path: str | Path) -> pd.DataFrame:
     """Lê a primeira aba do relatório e a converte para nomes e valores internos.
 
     A aba de mapeamentos é lida pela posição, e não pelo nome, como sempre
-    foi: ela precisa continuar sendo a primeira. Devolve o quadro convertido e
-    o esquema detectado (``report_schema.PT_BR`` ou ``report_schema.LEGACY_EN``).
+    foi: ela precisa continuar sendo a primeira. Um relatório no formato
+    antigo, em inglês, é recusado aqui (``report_schema.check_header``).
     """
     mapping = pd.read_excel(mapping_path, dtype=object)
     return report_schema.to_internal_frame(mapping, "mappings")
 
 
-def _ordered_mapping(mapping: pd.DataFrame, model: SheetTable, schema: str) -> pd.DataFrame:
-    """Confere o relatório com o modelo e devolve uma linha por coluna do modelo, na ordem dele."""
+def _ordered_mapping(mapping: pd.DataFrame, model: SheetTable) -> pd.DataFrame:
+    """Confere o relatório com o modelo e devolve uma linha por coluna do modelo, na ordem dele.
+
+    O parecer do revisor sai daqui no vocabulário interno. Um parecer que não
+    é ``correto``, ``incorreto``, ``inexistente`` nem vazio é recusado, com o
+    que foi digitado e a coluna do modelo.
+    """
     missing = REQUIRED_MAPPING_COLUMNS - set(mapping.columns)
     if missing:
-        labels = sorted(_column_label(field, schema) for field in missing)
+        labels = sorted(_column_label(field) for field in missing)
         raise ValueError(f"Faltam colunas no relatório de mapeamento: {labels}")
 
     mapping = mapping.copy()
@@ -260,7 +237,7 @@ def _ordered_mapping(mapping: pd.DataFrame, model: SheetTable, schema: str) -> p
     if mapping["model_column_number"].duplicated().any():
         raise ValueError(
             "O relatório de mapeamento tem valores repetidos em "
-            f"{_column_label('model_column_number', schema)}"
+            f"{_column_label('model_column_number')}"
         )
 
     expected_numbers = list(range(1, len(model.columns) + 1))
@@ -297,24 +274,36 @@ def _ordered_mapping(mapping: pd.DataFrame, model: SheetTable, schema: str) -> p
     ]:
         if optional not in mapping.columns:
             mapping[optional] = ""
+
+    statuses = []
+    for row in mapping.to_dict("records"):
+        status = report_schema.normalize_reviewer_status(row["reviewer_status"])
+        if status is None:
+            raise ValueError(
+                f"Valor desconhecido em {_column_label('reviewer_status')}: "
+                f"{row['reviewer_status']!r}, na coluna do modelo {row['model_column']!r}. Use "
+                f"{_status_label('correct')}, {_status_label('incorrect')} ou "
+                f"{_status_label('no_mapping_exists')}, ou deixe em branco."
+            )
+        statuses.append(status)
+    mapping["reviewer_status"] = statuses
     return mapping
 
 
-def _run_metadata(mapping_path: str | Path, schema: str) -> dict[str, str]:
+def _run_metadata(mapping_path: str | Path) -> dict[str, str]:
     """Metadados da execução do relatório, com chaves internas.
 
-    Procura a aba Metadados da Execução (ou Run Metadata, num relatório
-    legado) no esquema detectado na aba de mapeamentos. Se só existe a aba do
-    outro esquema, levanta ``ValueError`` (esquema misto): lida pela metade,
-    ela faria a verificação de hash ser pulada em silêncio. Relatórios
-    antigos sem a aba continuam aplicáveis, sem verificação.
+    Procura a aba Metadados da Execução. Uma aba com o nome do formato
+    antigo, em inglês (Run Metadata), levanta ``ValueError``: ignorada, ela
+    faria a verificação de hash ser pulada em silêncio. Relatórios antigos
+    sem a aba continuam aplicáveis, sem verificação.
     """
     workbook = pd.ExcelFile(mapping_path)
-    name = report_schema.find_sheet(workbook.sheet_names, "run_metadata", schema)
+    name = report_schema.find_sheet(workbook.sheet_names, "run_metadata")
     if name is None:
         return {}
     frame = pd.read_excel(workbook, sheet_name=name, dtype=object)
-    return report_schema.internal_metadata(frame, schema)
+    return report_schema.internal_metadata(frame)
 
 
 def _validate_input_hashes(
@@ -340,29 +329,21 @@ def _effective_columns(
     client: SheetTable,
     model: SheetTable,
     accepted_only: bool,
-    schema: str = report_schema.PT_BR,
 ) -> list[ColumnRef | None]:
     """Coluna do cliente que cada coluna do modelo recebe, depois dos pareceres do revisor.
 
-    ``mapping`` já está no vocabulário interno. ``schema`` só decide como as
-    mensagens de erro citam colunas e pareceres.
+    ``mapping`` já está no vocabulário interno, inclusive o parecer do revisor
+    (ver ``_ordered_mapping``).
     """
     selected: list[ColumnRef | None] = []
     used: set[int] = set()
-    status_column = _column_label("reviewer_status", schema)
-    correction_column = _column_label("correct_client_column", schema)
+    status_column = _column_label("reviewer_status")
+    correction_column = _column_label("correct_client_column")
 
     for row, model_column in zip(
         mapping.to_dict("records"), model.columns, strict=True
     ):
-        reviewer_status = report_schema.normalize_reviewer_status(row["reviewer_status"])
-        if reviewer_status not in REVIEW_STATUSES:
-            raise ValueError(
-                f"Valor desconhecido em {status_column}: {row['reviewer_status']!r}, na "
-                f"coluna do modelo {row['model_column']!r}. Use "
-                f"{_status_label('correct', schema)}, {_status_label('incorrect', schema)} "
-                f"ou {_status_label('no_mapping_exists', schema)}, ou deixe em branco."
-            )
+        reviewer_status = row["reviewer_status"]
 
         # Uma correção só é usada no ramo ``incorrect``. Em todos os outros ela
         # seria descartada em silêncio, e no ``correct`` o descarte é pior do
@@ -376,12 +357,12 @@ def _effective_columns(
             situation = (
                 "está em branco"
                 if reviewer_status == ""
-                else f"é {_status_label(reviewer_status, schema)!r}"
+                else f"é {_status_label(reviewer_status)!r}"
             )
             raise ValueError(
                 f"{correction_column} {correction!r} está preenchida na coluna do modelo "
                 f"{row['model_column']!r}, mas {status_column} {situation}. Só "
-                f"{_status_label('incorrect', schema)!r} usa uma correção; com qualquer "
+                f"{_status_label('incorrect')!r} usa uma correção; com qualquer "
                 "outro parecer ela seria descartada em silêncio."
             )
 
@@ -389,7 +370,7 @@ def _effective_columns(
         if reviewer_status == "no_mapping_exists":
             column = None
         elif reviewer_status == "incorrect":
-            column = _corrected_column(client, row["correct_client_column"], schema)
+            column = _corrected_column(client, row["correct_client_column"])
             confirmed = True
         elif reviewer_status == "correct":
             column = _column_from_number(client, row["client_column_number"])
@@ -399,11 +380,11 @@ def _effective_columns(
             # de saída 0.
             if column is None:
                 raise ValueError(
-                    f"{status_column} é {_status_label('correct', schema)!r} na coluna do "
+                    f"{status_column} é {_status_label('correct')!r} na coluna do "
                     f"modelo {row['model_column']!r}, mas "
-                    f"{_column_label('client_column_number', schema)} está em branco. Use "
-                    f"{_status_label('no_mapping_exists', schema)!r} para confirmar que o "
-                    f"cliente não tem este campo, ou {_status_label('incorrect', schema)!r} "
+                    f"{_column_label('client_column_number')} está em branco. Use "
+                    f"{_status_label('no_mapping_exists')!r} para confirmar que o "
+                    f"cliente não tem este campo, ou {_status_label('incorrect')!r} "
                     f"com {correction_column}."
                 )
             confirmed = True
@@ -491,14 +472,11 @@ def _write_coverage_sheet(
     coluna do modelo está entregue, aguardando decisão ou é algo que este
     cliente de fato não envia.
 
-    A justificativa é copiada do relatório como está (a prosa da IA e, num
-    relatório legado, também as frases do mapeador ficam em inglês).
+    A justificativa é copiada do relatório como está (a prosa da IA fica em
+    inglês).
     """
     sheet = book.create_sheet(report_schema.sheet_name("coverage"))
-    headers = [
-        report_schema.header_label("coverage", field, report_schema.PT_BR)
-        for field in COVERAGE_FIELDS
-    ]
+    headers = [report_schema.header_label("coverage", field) for field in COVERAGE_FIELDS]
     sheet.append(headers)
 
     order = {STATE_DELIVERED: 0, STATE_PENDING: 1, STATE_ABSENT: 2}
@@ -557,14 +535,14 @@ def build_mapped_workbook(
 ) -> None:
     """Aplica os mapeamentos confirmados e grava o banner de metadados seguido dos dados do cliente.
 
-    Lê o relatório no esquema em português ou no legado em inglês e grava o
-    entregável sempre em português (abas Dados Mapeados e Cobertura). Por
-    padrão só entram as linhas aceitas sem parecer e as confirmadas pelo
-    revisor; com ``accepted_only=False`` entram também as propostas em revisão
-    não confirmadas, numa planilha que não deve ser entregue.
+    Lê o relatório no esquema em português e grava o entregável em português
+    (abas Dados Mapeados e Cobertura). Por padrão só entram as linhas aceitas
+    sem parecer e as confirmadas pelo revisor; com ``accepted_only=False``
+    entram também as propostas em revisão não confirmadas, numa planilha que
+    não deve ser entregue.
     """
-    report, schema = _read_mapping_report(mapping_path)
-    metadata = _run_metadata(mapping_path, schema)
+    report = _read_mapping_report(mapping_path)
+    metadata = _run_metadata(mapping_path)
     _validate_input_hashes(
         metadata,
         client_path=client_path,
@@ -572,8 +550,8 @@ def build_mapped_workbook(
     )
     model = SheetTable.from_excel(model_path, model_sheet, model_header_row)
     client = SheetTable.from_excel(client_path, client_sheet, client_header_row)
-    mapping = _ordered_mapping(report, model, schema)
-    selected = _effective_columns(mapping, client, model, accepted_only, schema)
+    mapping = _ordered_mapping(report, model)
+    selected = _effective_columns(mapping, client, model, accepted_only)
 
     effective_numbers = [column.index + 1 if column is not None else "" for column in selected]
     effective_names = [column.display_name if column is not None else "" for column in selected]
@@ -605,9 +583,7 @@ def build_mapped_workbook(
             mapped_series.append(client.series(column).reset_index(drop=True))
     mapped_data = pd.concat(mapped_series, axis=1)
     mapped_data.columns = [column.name for column in model.columns]
-    info_header = report_schema.header_label(
-        "mapped_data", "__mapping_info__", report_schema.PT_BR
-    )
+    info_header = report_schema.header_label("mapped_data", "__mapping_info__")
     mapped_data.insert(0, info_header, "")
 
     output_columns = [info_header, *[column.name for column in model.columns]]
@@ -686,8 +662,6 @@ def build_mapped_workbook(
         f"colunas_modelo={len(model.columns)} linhas_cliente={row_count} "
         f"colunas_mapeadas={sum(column is not None for column in selected)}"
     )
-    if schema == report_schema.LEGACY_EN:
-        print(LEGACY_REPORT_NOTICE.format(report=Path(mapping_path).name), file=sys.stderr)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -702,10 +676,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "mapping",
         metavar="RELATORIO",
-        help=(
-            "relatório de mapeamento gerado pelo invoice_mapper.py (esquema em português "
-            "ou legado em inglês)"
-        ),
+        help="relatório de mapeamento gerado pelo invoice_mapper.py",
     )
     parser.add_argument(
         "--model",

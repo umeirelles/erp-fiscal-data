@@ -44,7 +44,7 @@ DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large"
 DEFAULT_LLM_MODEL = "gpt-4o-mini"
 SEMANTIC_EQUIVALENCE_SCORE = 0.98
 #: Versão do formato do relatório. A 3 é o esquema em português (abas,
-#: cabeçalhos, valores e chaves de metadados); a 2 é o legado em inglês.
+#: cabeçalhos, valores e chaves de metadados); a 2, o antigo, não é mais lida.
 MAPPING_SCHEMA_VERSION = 3
 PROMPT_VERSION = "2026-08-04.2"
 #: Colunas que o revisor preenche na aba de mapeamentos. Os nomes são os
@@ -1356,9 +1356,9 @@ def _supporting_step_ids(
     if catalog_score > 0.0:
         steps.append("catalog")
     # Uma prova que não distingue uma coluna confirma o escopo do tributo, não
-    # este mapeamento, então não é evidência para ele. Ver _trio_proof_text.
-    # report_schema.proof_is_decisive reconhece o marcador em português e o
-    # legado em inglês.
+    # este mapeamento, então não é evidência para ele. Ver _trio_proof_text;
+    # report_schema.proof_is_decisive procura o marcador que a frase traz
+    # (report_schema.PROOF_NOT_DECISIVE_PT).
     if relationship_score > 0.0 or report_schema.proof_is_decisive(arithmetic_proof):
         steps.append("arithmetic")
     return steps

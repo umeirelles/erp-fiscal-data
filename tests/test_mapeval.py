@@ -1,9 +1,7 @@
 """Testes da avaliação (mapeval).
 
 A avaliação mede; ela não pode desviar. Estes testes fixam as invariantes que
-tornam os números confiáveis e a linha de base que eles precisam reproduzir,
-e conferem que um relatório no esquema em português é pontuado exatamente
-como o mesmo relatório no esquema legado em inglês.
+tornam os números confiáveis e a linha de base que eles precisam reproduzir.
 """
 
 from __future__ import annotations
@@ -12,7 +10,6 @@ import re
 from pathlib import Path
 
 import openpyxl
-import pandas as pd
 import pytest
 
 import report_schema
@@ -44,90 +41,12 @@ requires_workbooks = pytest.mark.skipif(
     reason="planilhas dos clientes ausentes",
 )
 
-#: Prova não decisiva como os relatórios legados a gravavam (em inglês).
-LEGACY_NON_DECISIVE_PROOF = (
-    "valor = base x aliquota holds for pis on 5501 rows at fit 0.9996 - but this "
-    "client has 2 disjoint pis blocks that each satisfy it, so this does not "
-    "single out this column"
-)
-#: A mesma prova escrita em português, com o marcador PROOF_NOT_DECISIVE_PT.
+#: Prova não decisiva, com o marcador PROOF_NOT_DECISIVE_PT.
 PORTUGUESE_NON_DECISIVE_PROOF = (
     "valor = base x alíquota se confirma para PIS em 5501 linhas, com aderência "
     "0,9996 - mas este cliente tem 2 blocos disjuntos de PIS que satisfazem a "
     "equação, portanto ela não distingue esta coluna"
 )
-
-_LEGACY_PROOF = re.compile(
-    r"valor = base x aliquota holds for (?P<scope>\S+) on (?P<rows>[0-9]+) rows at fit "
-    r"(?P<fit>[0-9.]+) - but this client has (?P<alternatives>[0-9]+) disjoint (?P=scope) "
-    r"blocks that each satisfy it, so this does not single out this column"
-)
-
-
-def _portuguese_proof(text: object) -> object:
-    """Reescreve em português uma prova não decisiva em inglês; o resto passa intacto."""
-    if not isinstance(text, str) or report_schema.PROOF_NOT_DECISIVE_EN not in text:
-        return text
-    match = _LEGACY_PROOF.fullmatch(text)
-    assert match is not None, f"prova não decisiva em formato inesperado: {text!r}"
-    scope = match["scope"].upper()
-    return (
-        f"valor = base x alíquota se confirma para {scope} em {match['rows']} linhas, "
-        f"com aderência {report_schema.format_decimal_br(float(match['fit']))} - mas este "
-        f"cliente tem {match['alternatives']} blocos disjuntos de {scope} que satisfazem "
-        f"a equação, portanto ela {report_schema.PROOF_NOT_DECISIVE_PT}"
-    )
-
-
-def _write_both_schemas(report: Path, destination: Path) -> tuple[Path, Path]:
-    """Grava a aba de mapeamentos de ``report`` nos dois esquemas.
-
-    Lê a aba em qualquer esquema e volta ao vocabulário interno. A cópia
-    legada é o quadro interno com a aba ``Mappings``; a cópia em português
-    passa por ``report_schema.to_external_frame``, e as provas não decisivas
-    ganham a frase em português com o marcador. Funciona tanto com os
-    relatórios arquivados em inglês quanto depois da migração para o
-    português.
-    """
-    with pd.ExcelFile(report) as book:
-        sheet = report_schema.find_sheet(book.sheet_names, "mappings", None)
-        frame = pd.read_excel(book, sheet_name=sheet)
-    internal, _ = report_schema.to_internal_frame(frame, "mappings")
-
-    legacy_path = destination / f"legacy_{report.name}"
-    internal.to_excel(legacy_path, sheet_name=report_schema.sheet_name(
-        "mappings", report_schema.LEGACY_EN), index=False)
-
-    portuguese = internal.copy()
-    if "arithmetic_proof" in portuguese.columns:
-        portuguese["arithmetic_proof"] = portuguese["arithmetic_proof"].map(_portuguese_proof)
-    portuguese_path = destination / f"pt_{report.name}"
-    report_schema.to_external_frame(portuguese, "mappings").to_excel(
-        portuguese_path, sheet_name=report_schema.sheet_name("mappings"), index=False
-    )
-    return legacy_path, portuguese_path
-
-
-def _summary(score) -> tuple:
-    """Tudo o que a CLI imprime de um cliente com gabarito, mais cada linha."""
-    rows = [
-        (r.model_column, r.client_column, r.status, r.method, r.final_confidence,
-         r.outcome, r.header_independent)
-        for r in score.rows
-    ]
-    return (
-        rows,
-        score.present,
-        score.count(Outcome.CORRECT),
-        score.delivered_correct,
-        len(score.accepted),
-        len(score.withheld_correct),
-        len(score.undetermined_accepts),
-        score.header_independent_share,
-        score.accept_precision_lower,
-        [(r.model_column, r.client_column) for r in score.vacuous_targets],
-        [(r.model_column, r.client_column) for r in score.vacuous_proposals],
-    )
 
 
 def _accepted_row(proof: str, method: str = "data") -> Row:
@@ -306,20 +225,12 @@ def test_every_withheld_correct_mapping_sits_below_the_accept_threshold() -> Non
 
 
 def test_a_non_discriminating_proof_is_not_independent_evidence() -> None:
-    # Caso legado, em inglês. Dois blocos disjuntos do mesmo tributo
-    # satisfazem valor = base x alíquota, então uma prova tirada de qualquer
-    # um deles não distingue nenhum. Contá-la deixaria um cara ou coroa entre
-    # blocos passar por evidência aritmética.
-    assert _accepted_row("valor = base x aliquota holds for pis on 500 rows at fit 0.99").header_independent
-    assert report_schema.PROOF_NOT_DECISIVE_EN in LEGACY_NON_DECISIVE_PROOF
-    assert not _accepted_row(LEGACY_NON_DECISIVE_PROOF).header_independent
-
-
-def test_a_non_discriminating_portuguese_proof_is_not_independent_evidence() -> None:
-    # A mesma regra com a prova escrita em português: o marcador é
-    # "não distingue esta coluna". Se o mapeval reconhecesse só o marcador
-    # inglês, os quatro aceites de datasul com prova assim passariam a contar
-    # como independentes de cabeçalho.
+    # Dois blocos disjuntos do mesmo tributo satisfazem valor = base x
+    # alíquota, então uma prova tirada de qualquer um deles não distingue
+    # nenhum, e a frase traz o marcador "não distingue esta coluna". Contá-la
+    # deixaria um cara ou coroa entre blocos passar por evidência aritmética;
+    # sem o marcador, os quatro aceites de datasul com prova assim passariam a
+    # contar como independentes de cabeçalho.
     assert _accepted_row(
         "valor = base x alíquota se confirma para PIS em 500 linhas, com aderência 0,99"
     ).header_independent
@@ -340,7 +251,7 @@ def _synthetic_client(path: Path) -> Path:
     return path
 
 
-#: Linhas de mapeamento no vocabulário interno (nomes e valores do esquema legado).
+#: Linhas de mapeamento no vocabulário interno.
 _SYNTHETIC_ROWS = [
     {"model_column_number": 1, "model_column": "Base PIS", "client_column_number": 1,
      "client_column": "Base PIS", "final_confidence": 0.95, "method": "name",
@@ -357,41 +268,32 @@ _SYNTHETIC_ROWS = [
 ]
 
 
-def _synthetic_report(path: Path, schema: str, proof: str) -> Path:
-    """Relatório mínimo no esquema dado; a linha m1 leva a prova recebida."""
+def _synthetic_report(path: Path, proof: str) -> Path:
+    """Relatório mínimo em português; a linha m1 leva a prova recebida."""
     fields = list(_SYNTHETIC_ROWS[0])
     book = openpyxl.Workbook()
     sheet = book.active
-    sheet.title = report_schema.sheet_name("mappings", schema)
-    sheet.append([report_schema.header_label("mappings", field, schema) for field in fields])
+    sheet.title = report_schema.sheet_name("mappings")
+    sheet.append([report_schema.header_label("mappings", field) for field in fields])
     for number, row in enumerate(_SYNTHETIC_ROWS, start=1):
         values = dict(row, arithmetic_proof=proof if number == 1 else None)
-        if schema == report_schema.PT_BR:
-            values = {f: report_schema.external_value("mappings", f, v) for f, v in values.items()}
+        values = {f: report_schema.external_value("mappings", f, v) for f, v in values.items()}
         sheet.append([values[field] for field in fields])
     book.save(path)
     return path
 
 
-def test_both_schemas_score_identically_without_the_client_workbooks(tmp_path: Path) -> None:
-    # Não depende das planilhas confidenciais. O relatório em português tem
-    # situacao 'aceito', metodo 'catalogo' e a prova não decisiva em
-    # português; o legado tem os mesmos valores em inglês. A pontuação tem de
-    # ser a mesma, linha a linha.
+def test_a_report_scores_without_the_client_workbooks(tmp_path: Path) -> None:
+    # Não depende das planilhas confidenciais. O relatório tem situacao
+    # 'aceito', metodo 'catalogo' e a prova não decisiva; a pontuação volta
+    # ao vocabulário interno.
     client = _synthetic_client(tmp_path / "cliente.xlsx")
     key = AnswerKey(client="sintetico", present={1: 1, 2: 3})
-    legacy = score_report(
-        _synthetic_report(tmp_path / "legado.xlsx", report_schema.LEGACY_EN,
-                          LEGACY_NON_DECISIVE_PROOF),
-        client, key,
-    )
     portuguese = score_report(
-        _synthetic_report(tmp_path / "pt.xlsx", report_schema.PT_BR,
-                          PORTUGUESE_NON_DECISIVE_PROOF),
-        client, key,
+        _synthetic_report(tmp_path / "pt.xlsx", PORTUGUESE_NON_DECISIVE_PROOF), client, key
     )
-    assert _summary(portuguese) == _summary(legacy)
     assert [r.status for r in portuguese.rows] == ["accepted", "accepted", "review", "no_match"]
+    assert [r.method for r in portuguese.rows] == ["name", "catalog", "data", "data"]
     assert [r.outcome for r in portuguese.rows] == [
         Outcome.CORRECT, Outcome.CORRECT, Outcome.UNDETERMINED, Outcome.UNDETERMINED,
     ]
@@ -404,13 +306,21 @@ def test_both_schemas_score_identically_without_the_client_workbooks(tmp_path: P
 
 
 def test_a_half_translated_report_is_refused(tmp_path: Path) -> None:
-    # Cabeçalhos em português numa aba com o nome legado: esquema misto. Lido
-    # pela metade, o relatório daria números errados sem aviso.
-    path = _synthetic_report(tmp_path / "pt.xlsx", report_schema.PT_BR, "")
+    # Cabeçalhos em português numa aba com o nome antigo, ou um cabeçalho em
+    # inglês numa aba em português. Lido pela metade, o relatório daria
+    # números errados sem aviso.
+    path = _synthetic_report(tmp_path / "pt.xlsx", "")
     book = openpyxl.load_workbook(path)
-    book.active.title = report_schema.sheet_name("mappings", report_schema.LEGACY_EN)
+    book.active.title = report_schema.LEGACY_SHEETS["mappings"]
     book.save(path)
-    with pytest.raises(ValueError, match="Esquema misto"):
+    with pytest.raises(ValueError, match="formato antigo"):
+        read_mappings(path)
+
+    path = _synthetic_report(tmp_path / "pt.xlsx", "")
+    book = openpyxl.load_workbook(path)
+    book.active["K1"] = "status"
+    book.save(path)
+    with pytest.raises(ValueError, match="Renomeie 'status' para 'situacao'"):
         read_mappings(path)
 
 
@@ -424,45 +334,25 @@ def test_a_report_without_the_mappings_sheet_is_refused(tmp_path: Path) -> None:
 
 
 @requires_workbooks
-@pytest.mark.parametrize("client", ["datasul", "oracle"])
-def test_a_portuguese_report_scores_exactly_like_the_legacy_one(client: str, tmp_path: Path) -> None:
-    # A regressão ponta a ponta da leitura nos dois esquemas, com os
-    # relatórios reais: a mesma aba gravada em inglês e em português dá a
-    # mesma pontuação em todas as linhas e em todos os números impressos.
-    client_file, report_file, key_file = KEYED[client]
-    key = load_answer_key(ROOT / key_file, client)
-    legacy_path, portuguese_path = _write_both_schemas(ROOT / report_file, tmp_path)
-    legacy = score_report(legacy_path, ROOT / client_file, key)
-    portuguese = score_report(portuguese_path, ROOT / client_file, key)
-    assert _summary(portuguese) == _summary(legacy)
-    if client == "datasul":
-        # O caso tem de exercitar o marcador em português: há aceites cuja
-        # única prova é não decisiva, e eles não contam como independentes.
-        marked = [
-            r for r in portuguese.accepted
-            if r.arithmetic_proof and report_schema.PROOF_NOT_DECISIVE_PT in r.arithmetic_proof
-        ]
-        assert marked
-        assert all(r.method == "catalog" or not r.header_independent for r in marked)
+def test_the_marker_keeps_datasul_non_decisive_proofs_out_of_the_metric() -> None:
+    # Com o relatório real: há aceites de datasul cuja única prova é não
+    # decisiva, e eles não contam como independentes de cabeçalho.
+    client_file, report_file, key_file = KEYED["datasul"]
+    score = score_report(
+        ROOT / report_file, ROOT / client_file, load_answer_key(ROOT / key_file, "datasul")
+    )
+    marked = [
+        r for r in score.accepted
+        if r.arithmetic_proof and report_schema.PROOF_NOT_DECISIVE_PT in r.arithmetic_proof
+    ]
+    assert marked
+    assert all(r.method == "catalog" or not r.header_independent for r in marked)
 
 
 @requires_workbooks
-def test_cli_prints_the_same_figures_for_both_schemas(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    client_file, report_file, key_file = KEYED["oracle"]
-    legacy_path, portuguese_path = _write_both_schemas(ROOT / report_file, tmp_path)
-    outputs = []
-    for report in (legacy_path, portuguese_path):
-        # Caminhos absolutos: ``root / caminho`` devolve o próprio caminho.
-        monkeypatch.setitem(
-            cli.CLIENTS, "oracle",
-            (str(ROOT / client_file), str(report), str(ROOT / key_file)),
-        )
-        assert cli.main(["--client", "oracle", "--show-losses"]) == 0
-        outputs.append(capsys.readouterr().out)
-    assert outputs[0] == outputs[1]
-    text = outputs[1]
+def test_cli_prints_portuguese_figures(capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(["--root", str(ROOT), "--client", "oracle", "--show-losses"]) == 0
+    text = capsys.readouterr().out
     assert "TOTAL COM GABARITO  encontrados" in text
     assert "aceites independentes de cabeçalho" in text
     # Porcentagens e confianças com vírgula decimal, nunca com ponto.

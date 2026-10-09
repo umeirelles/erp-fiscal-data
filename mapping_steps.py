@@ -230,8 +230,8 @@ def deciding_step(supporting: object) -> str:
     não conseguimos ler.
 
     O que não é id de etapa de evidência é ignorado: travas, o
-    ``unrecorded`` e o ``catalog (agrees)`` do preenchimento retroativo e
-    ids em português. Se nada sobra, devolve ``""``.
+    ``unrecorded`` e o ``catalog (agrees)`` dos relatórios arquivados e ids
+    em português. Se nada sobra, devolve ``""``.
     """
     ranked = [step for step in _as_ids(supporting) if step in _EVIDENCE_RANK]
     if not ranked:

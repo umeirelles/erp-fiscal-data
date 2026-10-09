@@ -1,11 +1,9 @@
 """Testes de apply_invoice_mapping: do relatório de mapeamento à planilha entregue.
 
 Os relatórios de teste são montados por ``mapping_rows()`` com nomes e valores
-internos e gravados no esquema da vez pela fixture ``write_mapping``, que é
-parametrizada nos dois esquemas: o legado em inglês, que é o dos relatórios
-arquivados (inclusive os 26 pareceres de sap_procosa), e o em português, montado
-com ``report_schema.to_external_frame``. Assim todo teste que grava um relatório
-roda nos dois. O entregável sai em português nos dois casos.
+internos e gravados no esquema em português pela fixture ``write_mapping``,
+com ``report_schema.to_external_frame``, como o mapeador os grava. O
+entregável sai em português.
 """
 
 from __future__ import annotations
@@ -42,7 +40,7 @@ def write_workbook(path, headers: list[str], rows: list[list[object]]) -> None:
 
 
 def mapping_rows() -> pd.DataFrame:
-    """Relatório de três linhas, com nomes e valores internos (iguais aos do legado)."""
+    """Relatório de três linhas, com nomes e valores internos."""
     return pd.DataFrame(
         [
             {
@@ -106,50 +104,34 @@ def mapping_rows() -> pd.DataFrame:
     )
 
 
-def external_report(frame: pd.DataFrame, schema: str) -> pd.DataFrame:
-    """Relatório com nomes internos -> como ele fica gravado no esquema dado."""
-    if schema == report_schema.PT_BR:
-        return report_schema.to_external_frame(frame, "mappings")
-    return frame.copy()
+def external_report(frame: pd.DataFrame) -> pd.DataFrame:
+    """Relatório com nomes internos -> como ele fica gravado."""
+    return report_schema.to_external_frame(frame, "mappings")
 
 
-def save_report(path, report: pd.DataFrame, schema: str, metadata: dict | None = None) -> None:
-    """Grava um relatório já no esquema dado, com a aba de metadados se houver."""
+def save_report(path, report: pd.DataFrame, metadata: dict | None = None) -> None:
+    """Grava um relatório já em português, com a aba de metadados se houver."""
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
-        report.to_excel(
-            writer, sheet_name=report_schema.sheet_name("mappings", schema), index=False
-        )
+        report.to_excel(writer, sheet_name=report_schema.sheet_name("mappings"), index=False)
         if metadata is not None:
-            if schema == report_schema.PT_BR:
-                frame = report_schema.to_external_metadata(metadata)
-            else:
-                frame = pd.DataFrame(list(metadata.items()), columns=["key", "value"])
-            frame.to_excel(
-                writer, sheet_name=report_schema.sheet_name("run_metadata", schema), index=False
+            report_schema.to_external_metadata(metadata).to_excel(
+                writer, sheet_name=report_schema.sheet_name("run_metadata"), index=False
             )
 
 
-@pytest.fixture(
-    params=[report_schema.LEGACY_EN, report_schema.PT_BR], ids=["legado_en", "pt_br"]
-)
-def schema(request) -> str:
-    """Esquema em que o relatório de teste é gravado."""
-    return request.param
-
-
 @pytest.fixture
-def write_mapping(schema):
-    """Grava um relatório montado com nomes internos no esquema parametrizado."""
+def write_mapping():
+    """Grava um relatório montado com nomes internos, em português."""
 
     def write(frame: pd.DataFrame, path, metadata: dict | None = None) -> None:
-        save_report(path, external_report(frame, schema), schema, metadata)
+        save_report(path, external_report(frame), metadata)
 
     return write
 
 
-def label(field: str, schema: str) -> str:
-    """Cabeçalho de Mapeamentos no esquema dado, como as mensagens de erro o citam."""
-    return report_schema.header_label("mappings", field, schema)
+def label(field: str) -> str:
+    """Cabeçalho de Mapeamentos, como as mensagens de erro o citam."""
+    return report_schema.header_label("mappings", field)
 
 
 def banner_row(field: str) -> int:
@@ -230,9 +212,8 @@ def test_banner_labels_are_the_portuguese_headers_and_confidences_are_keyed_by_f
     assert FIRST_DATA_EXCEL_ROW == 23
 
 
-def test_deliverable_is_written_in_portuguese_from_either_schema(tmp_path, write_mapping) -> None:
-    # O mesmo relatório, legado ou em português, dá o mesmo entregável em
-    # português: valores de máquina e etapas traduzidos, texto livre intacto.
+def test_deliverable_is_written_in_portuguese(tmp_path, write_mapping) -> None:
+    # Valores de máquina e etapas em português, texto livre intacto.
     model_path = tmp_path / "model.xlsx"
     client_path = tmp_path / "client.xlsx"
     mapping_path = tmp_path / "mapping.xlsx"
@@ -273,9 +254,7 @@ def test_deliverable_is_written_in_portuguese_from_either_schema(tmp_path, write
                                        "Reviewer supplied the source column."]
 
 
-def test_legacy_report_prints_a_one_line_migration_notice(
-    tmp_path, write_mapping, schema, capsys
-) -> None:
+def test_apply_prints_the_counts_and_no_warning(tmp_path, write_mapping, capsys) -> None:
     model_path = tmp_path / "model.xlsx"
     client_path = tmp_path / "client.xlsx"
     mapping_path = tmp_path / "mapping.xlsx"
@@ -289,12 +268,7 @@ def test_legacy_report_prints_a_one_line_migration_notice(
 
     captured = capsys.readouterr()
     assert "colunas_modelo=3 linhas_cliente=1 colunas_mapeadas=2" in captured.out
-    if schema == report_schema.LEGACY_EN:
-        notice = captured.err.strip()
-        assert "\n" not in notice
-        assert "mapping.xlsx" in notice and "migrate_reports.py" in notice
-    else:
-        assert captured.err == ""
+    assert captured.err == ""
 
 
 def test_include_review_populates_unconfirmed_proposal(tmp_path, write_mapping) -> None:
@@ -423,10 +397,10 @@ def test_accepted_only_leaves_unreviewed_review_mapping_blank(tmp_path, write_ma
     assert pd.isna(raw.iloc[first_data_row, 3])
 
 
-@pytest.mark.parametrize("typed", ["incorrect", "Incorreto", " INCORRETO ", "incorreto"])
-def test_reviewer_status_is_accepted_in_either_language(tmp_path, schema, typed) -> None:
-    # O parecer é digitado por pessoas: vale nas duas línguas, com qualquer
-    # caixa e espaços nas pontas, num relatório de qualquer esquema.
+@pytest.mark.parametrize("typed", ["incorreto", "Incorreto", " INCORRETO ", "Incorréto"])
+def test_reviewer_status_tolerates_case_accents_and_spaces(tmp_path, typed) -> None:
+    # O parecer é digitado por pessoas: vale com qualquer caixa, com ou sem
+    # acento e com espaços nas pontas. No banner sai a grafia canônica.
     model_path = tmp_path / "model.xlsx"
     client_path = tmp_path / "client.xlsx"
     mapping_path = tmp_path / "mapping.xlsx"
@@ -434,9 +408,9 @@ def test_reviewer_status_is_accepted_in_either_language(tmp_path, schema, typed)
     write_workbook(model_path, ["CFOP", "Valor COFINS", "Nº do NCM"], [["5102", 10.0, "85167910"]])
     write_workbook(client_path, ["Other", "CFOP source", "COFI value", "Corrected NCM"],
                    [["A", "5102", 12.5, "85167910"]])
-    report = external_report(mapping_rows(), schema)
-    report.loc[2, label("reviewer_status", schema)] = typed
-    save_report(mapping_path, report, schema)
+    report = external_report(mapping_rows())
+    report.loc[2, label("reviewer_status")] = typed
+    save_report(mapping_path, report)
 
     build_mapped_workbook(client_path=client_path, mapping_path=mapping_path,
                           output_path=output_path, model_path=model_path)
@@ -446,25 +420,34 @@ def test_reviewer_status_is_accepted_in_either_language(tmp_path, schema, typed)
     assert sheet.cell(banner_excel_row("reviewer_status"), 4).value == "incorreto"
 
 
-def test_unknown_reviewer_status_is_refused(tmp_path, schema) -> None:
+@pytest.mark.parametrize(
+    "typed",
+    # Os pareceres em inglês do formato antigo também são desconhecidos.
+    ["talvez", "correct", "incorrect", "no_mapping_exists", " Correct "],
+)
+def test_unknown_reviewer_status_is_refused(tmp_path, typed) -> None:
     model_path = tmp_path / "model.xlsx"
     client_path = tmp_path / "client.xlsx"
     mapping_path = tmp_path / "mapping.xlsx"
     write_workbook(model_path, ["CFOP", "Valor COFINS", "Nº do NCM"], [["5102", 10.0, "85167910"]])
     write_workbook(client_path, ["Other", "CFOP source", "COFI value", "Corrected NCM"],
                    [["A", "5102", 12.5, "85167910"]])
-    report = external_report(mapping_rows(), schema)
-    report.loc[0, label("reviewer_status", schema)] = "talvez"
-    save_report(mapping_path, report, schema)
+    report = external_report(mapping_rows())
+    report.loc[0, label("reviewer_status")] = typed
+    save_report(mapping_path, report)
 
     with pytest.raises(
-        ValueError, match=f"Valor desconhecido em {label('reviewer_status', schema)}: 'talvez'"
+        ValueError,
+        match=re.escape(
+            f"Valor desconhecido em parecer_revisor: {typed!r}, na coluna do modelo 'CFOP'. "
+            "Use correto, incorreto ou inexistente"
+        ),
     ):
         build_mapped_workbook(client_path=client_path, mapping_path=mapping_path,
                               output_path=tmp_path / "out.xlsx", model_path=model_path)
 
 
-def test_incorrect_review_requires_a_corrected_column(tmp_path, write_mapping, schema) -> None:
+def test_incorrect_review_requires_a_corrected_column(tmp_path, write_mapping) -> None:
     model_path = tmp_path / "model.xlsx"
     client_path = tmp_path / "client.xlsx"
     mapping_path = tmp_path / "mapping.xlsx"
@@ -480,7 +463,7 @@ def test_incorrect_review_requires_a_corrected_column(tmp_path, write_mapping, s
     write_mapping(mapping, mapping_path)
 
     with pytest.raises(
-        ValueError, match=f"{label('correct_client_column', schema)} está em branco"
+        ValueError, match=f"{label('correct_client_column')} está em branco"
     ):
         build_mapped_workbook(
             client_path=client_path,
@@ -550,38 +533,11 @@ def test_portuguese_header_conflict_agrees_with_the_model_input_text(left, right
         assert portuguese.startswith(kinds[kind])
 
 
-def test_mapping_run_metadata_detects_changed_inputs(tmp_path) -> None:
-    # Canário do esquema legado: as abas Mappings e Run Metadata, com key/value
-    # e a chave client_sha256, como nos relatórios arquivados.
-    model_path = tmp_path / "model.xlsx"
-    client_path = tmp_path / "client.xlsx"
-    mapping_path = tmp_path / "mapping.xlsx"
-    output_path = tmp_path / "mapped.xlsx"
-    write_workbook(model_path, ["CFOP"], [["5102"]])
-    write_workbook(client_path, ["CFOP source"], [["5102"]])
-    mapping = mapping_rows().iloc[[0]].copy()
-    mapping["client_column_number"] = 1
-    mapping["client_column"] = "CFOP source"
-    with pd.ExcelWriter(mapping_path, engine="openpyxl") as writer:
-        mapping.to_excel(writer, sheet_name="Mappings", index=False)
-        pd.DataFrame(
-            [["client_sha256", "not-the-current-hash"]],
-            columns=["key", "value"],
-        ).to_excel(writer, sheet_name="Run Metadata", index=False)
-
-    with pytest.raises(ValueError, match="client.xlsx difere do arquivo usado"):
-        build_mapped_workbook(
-            client_path=client_path,
-            mapping_path=mapping_path,
-            output_path=output_path,
-            model_path=model_path,
-        )
-
-
-def test_portuguese_run_metadata_detects_changed_inputs(tmp_path) -> None:
-    # Gêmea em português do canário: abas Mapeamentos e Metadados da Execução,
-    # com chave/valor e a chave sha256_cliente. Sem reconhecer os nomes, a
-    # verificação de hash seria pulada em silêncio.
+def test_run_metadata_detects_changed_inputs(tmp_path) -> None:
+    # Canário da verificação de hash: abas Mapeamentos e Metadados da
+    # Execução, com chave/valor e a chave sha256_cliente, como nos relatórios
+    # arquivados. Sem reconhecer os nomes, a verificação seria pulada em
+    # silêncio.
     model_path = tmp_path / "model.xlsx"
     client_path = tmp_path / "client.xlsx"
     mapping_path = tmp_path / "mapping.xlsx"
@@ -610,17 +566,17 @@ def test_portuguese_run_metadata_detects_changed_inputs(tmp_path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("schema_of_mappings", "metadata_sheet", "metadata_columns"),
+    ("metadata_sheet", "metadata_columns", "message"),
     [
-        (report_schema.PT_BR, "Run Metadata", ["key", "value"]),
-        (report_schema.LEGACY_EN, "Metadados da Execução", ["chave", "valor"]),
+        ("Run Metadata", ["key", "value"], "Renomeie 'Run Metadata'"),
+        ("Metadados da Execução", ["key", "value"], "Renomeie 'key' para 'chave'"),
     ],
-    ids=["mapeamentos_pt_metadados_en", "mapeamentos_en_metadados_pt"],
+    ids=["aba_antiga", "cabecalho_antigo"],
 )
-def test_metadata_sheet_from_the_other_schema_is_refused(
-    tmp_path, schema_of_mappings, metadata_sheet, metadata_columns
+def test_metadata_with_old_names_is_refused(
+    tmp_path, metadata_sheet, metadata_columns, message
 ) -> None:
-    # Uma aba de metadados com o nome do outro esquema não pode ser ignorada:
+    # Uma aba de metadados com nomes do formato antigo não pode ser ignorada:
     # a verificação de hash seria pulada sem aviso.
     model_path = tmp_path / "model.xlsx"
     client_path = tmp_path / "client.xlsx"
@@ -631,15 +587,14 @@ def test_metadata_sheet_from_the_other_schema_is_refused(
     mapping["client_column_number"] = 1
     mapping["client_column"] = "CFOP source"
     with pd.ExcelWriter(mapping_path, engine="openpyxl") as writer:
-        external_report(mapping, schema_of_mappings).to_excel(
-            writer, sheet_name=report_schema.sheet_name("mappings", schema_of_mappings),
-            index=False,
+        external_report(mapping).to_excel(
+            writer, sheet_name=report_schema.sheet_name("mappings"), index=False
         )
         pd.DataFrame([["client_sha256", "x"]], columns=metadata_columns).to_excel(
             writer, sheet_name=metadata_sheet, index=False
         )
 
-    with pytest.raises(ValueError, match="Esquema misto"):
+    with pytest.raises(ValueError, match=re.escape(message)):
         build_mapped_workbook(client_path=client_path, mapping_path=mapping_path,
                               output_path=tmp_path / "out.xlsx", model_path=model_path)
 
@@ -669,7 +624,7 @@ def test_a_correction_outside_the_incorrect_branch_is_refused(tmp_path, write_ma
             )
 
 
-def test_confirming_a_row_that_names_no_column_is_refused(tmp_path, write_mapping, schema) -> None:
+def test_confirming_a_row_that_names_no_column_is_refused(tmp_path, write_mapping) -> None:
     # 'correct' afirma que a proposta está certa, então precisa haver proposta.
     # Sem a trava a linha é confirmada sobre nada e entrega uma coluna em
     # branco assinada pelo revisor, com código de saída 0.
@@ -684,7 +639,7 @@ def test_confirming_a_row_that_names_no_column_is_refused(tmp_path, write_mappin
     mapping.loc[2, "correct_client_column"] = ""
     write_mapping(mapping, mapping_path)
     with pytest.raises(
-        ValueError, match=f"{label('client_column_number', schema)} está em branco"
+        ValueError, match=f"{label('client_column_number')} está em branco"
     ):
         build_mapped_workbook(
             client_path=client_path,
@@ -694,13 +649,11 @@ def test_confirming_a_row_that_names_no_column_is_refused(tmp_path, write_mappin
         )
 
 
-def test_duplicated_header_is_selected_by_either_occurrence_suffix(
-    tmp_path, write_mapping, schema
-) -> None:
+def test_duplicated_header_is_selected_by_the_occurrence_suffix(tmp_path, write_mapping) -> None:
     # Cabeçalho repetido na exportação: em memória a segunda ocorrência é
     # 'Valor ICMS (occurrence 2)'; para pessoas é 'Valor ICMS (ocorrência 2)'.
-    # O relatório em português grava o sufixo em português, e o revisor pode
-    # digitar qualquer uma das formas, com ou sem acento, em qualquer esquema.
+    # O relatório grava o sufixo em português, e o revisor pode digitá-lo com
+    # ou sem acento, em qualquer caixa.
     model_path = tmp_path / "model.xlsx"
     client_path = tmp_path / "client.xlsx"
     mapping_path = tmp_path / "mapping.xlsx"
@@ -717,9 +670,8 @@ def test_duplicated_header_is_selected_by_either_occurrence_suffix(
 
     # A proposta aceita aponta a segunda ocorrência pelo nome de exibição.
     write_mapping(proposal, mapping_path)
-    if schema == report_schema.PT_BR:
-        stored = pd.read_excel(mapping_path, dtype=object)
-        assert stored.loc[0, "coluna_cliente"] == "Valor ICMS (ocorrência 2)"
+    stored = pd.read_excel(mapping_path, dtype=object)
+    assert stored.loc[0, "coluna_cliente"] == "Valor ICMS (ocorrência 2)"
     build_mapped_workbook(client_path=client_path, mapping_path=mapping_path,
                           output_path=output_path, model_path=model_path)
     sheet = load_workbook(output_path)[MAPPED_SHEET]
@@ -729,11 +681,10 @@ def test_duplicated_header_is_selected_by_either_occurrence_suffix(
     delivered = dict(zip(coverage[0], coverage[1]))
     assert delivered["coluna_cliente"] == "Valor ICMS (ocorrência 2)"
 
-    # A correção do revisor aceita os dois sufixos e o número da coluna.
+    # A correção do revisor aceita o sufixo, com ou sem acento, e o número da coluna.
     for typed in (
         "Valor ICMS (ocorrência 2)",
         "valor icms (OCORRENCIA 2)",
-        "Valor ICMS (occurrence 2)",
         "2",
     ):
         corrected = proposal.copy()
@@ -840,7 +791,7 @@ def test_coverage_sheet_separates_absence_from_a_pending_decision(tmp_path, writ
     assert data[3]["coluna_modelo"] == "Valor IPI"
 
 
-def test_coverage_states_are_the_portuguese_of_the_legacy_states() -> None:
+def test_coverage_states_are_the_portuguese_of_the_old_states() -> None:
     states = report_schema.ENUMS["coverage_state"]
     assert states["delivered"] == STATE_DELIVERED
     assert states["awaiting decision"] == STATE_PENDING

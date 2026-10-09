@@ -76,21 +76,18 @@ reference_data/ ────────────────┘   (duas pass
                                                            └─> python -m mapeval  (pontua os relatórios contra data/keys/)
 ```
 
-Um relatório gravado antes da tradução, no esquema legado em inglês, passa por `migrate_reports.py` para chegar ao esquema em português sem reexecutar o mapeador (ver [Relatórios legados](#relatórios-legados-legacy_reports-e-migrate_reports)).
+Um relatório gravado antes da tradução, no formato antigo em inglês, não é lido: os leitores o recusam e dizem como convertê-lo (ver [Relatórios do formato antigo](#relatórios-do-formato-antigo)).
 
 | Arquivo | Papel | Símbolos principais |
 |---|---|---|
 | [`invoice_mapper.py`](../invoice_mapper.py) | CLI e o algoritmo inteiro: pontuação de cabeçalhos, evidências, as duas passagens, o relatório e as frases em português que ele grava | `map_columns`, `main`, `write_results` |
 | [`reference_catalog.py`](../reference_catalog.py) | Carrega as tabelas oficiais de códigos, conferidas por checksum, e pontua uma coluna contra uma delas | `ReferenceCatalogs`, `expected_catalogs`, `best_catalog_evidence` |
 | [`mapping_steps.py`](../mapping_steps.py) | Nomeia as etapas de evidência e as travas que o relatório cita | `EVIDENCE_STEPS`, `GUARDS`, `deciding_step`, `format_steps` |
-| [`report_schema.py`](../report_schema.py) | Fronteira entre o vocabulário interno e o esquema em português dos arquivos: nomes de aba, cabeçalhos, valores, chaves de metadados, detecção do esquema e vírgula decimal | `COLUMNS`, `ENUMS`, `to_external_frame`, `to_internal_frame`, `detect_schema`, `find_sheet` |
+| [`report_schema.py`](../report_schema.py) | Fronteira entre o vocabulário interno e o esquema em português dos arquivos: nomes de aba, cabeçalhos, valores, chaves de metadados, recusa do formato antigo e vírgula decimal | `COLUMNS`, `ENUMS`, `to_external_frame`, `to_internal_frame`, `check_header`, `find_sheet` |
 | [`cli_ptbr.py`](../cli_ptbr.py) | `ArgumentParser` com a ajuda e os erros do argparse em português, usado por todas as CLIs | `PortugueseArgumentParser` |
-| [`apply_invoice_mapping.py`](../apply_invoice_mapping.py) | Monta a planilha no layout do modelo a partir de uma exportação, de um relatório (em qualquer dos dois esquemas) e dos pareceres do revisor | `build_mapped_workbook`, `_effective_columns` |
-| [`legacy_reports.py`](../legacy_reports.py) | Reconhece as frases em inglês dos relatórios legados e as reescreve com as constantes em português do mapeador | `TEMPLATES`, `translate_text` |
-| [`migrate_reports.py`](../migrate_reports.py) | Migra um relatório do esquema legado em inglês para o esquema em português, no próprio arquivo, sem reexecutar nada | `migrate_report`, `cross_check_by_regeneration`, `verify_migration` |
-| [`backfill_mapping_steps.py`](../backfill_mapping_steps.py) | Ferramenta de uso único que acrescentou as colunas de etapas, no próprio arquivo, aos relatórios gravados antes de `mapping_steps.py`; só aceita relatórios legados em inglês | `backfill` |
+| [`apply_invoice_mapping.py`](../apply_invoice_mapping.py) | Monta a planilha no layout do modelo a partir de uma exportação, de um relatório e dos pareceres do revisor | `build_mapped_workbook`, `_effective_columns` |
 | [`update_reference_data.py`](../update_reference_data.py) | Reconstrói `reference_data/`; baixa de sites do governo | `official_frames`, `static_frames`, `write_snapshot` |
-| [`mapeval/`](../mapeval) | Pontua os relatórios arquivados contra os gabaritos; lê os dois esquemas | ver [EVALUATION.md](EVALUATION.md) |
+| [`mapeval/`](../mapeval) | Pontua os relatórios arquivados contra os gabaritos | ver [EVALUATION.md](EVALUATION.md) |
 
 ## Língua e esquema dos arquivos
 
@@ -106,7 +103,7 @@ Como o mesmo dado aparece em cada lado:
 
 | O quê | Em memória | No arquivo |
 |---|---|---|
-| aba de mapeamentos | | `Mapeamentos` (legado: `Mappings`) |
+| aba de mapeamentos | | `Mapeamentos` (no formato antigo: `Mappings`) |
 | cabeçalho | `final_confidence` | `confianca_final` |
 | situação | `accepted` | `aceito` |
 | método | `name_only` | `somente_nome` |
@@ -120,28 +117,29 @@ Como o mesmo dado aparece em cada lado:
 
 ### `report_schema`: a única fronteira
 
-`report_schema.py` guarda as tabelas de nomes e as conversões, mais os auxiliares descritos abaixo: `SHEETS`, `COLUMNS` (cabeçalhos por tabela, na ordem gravada), `METADATA_KEYS` e `METADATA_SENTINELS`, `STEP_IDS`, `GUARD_IDS` e `LEGACY_STEP_IDS`, `ENUMS`, `TEXT_LABELS` (rótulos usados dentro de frases) e `FIELD_KIND`, que diz como cada célula é tratada (enum, frase fixa, etapas, sinais, nome de exibição ou texto livre). Ele não tem modelos de frase e não importa `invoice_mapper` nem `apply_invoice_mapping`, para que os dois possam importá-lo sem ciclo (`test_the_boundary_modules_import_nothing_from_the_mapper`).
+`report_schema.py` guarda as tabelas de nomes e as conversões, mais os auxiliares descritos abaixo: `SHEETS` (e `LEGACY_SHEETS`, os nomes de aba do formato antigo, só para recusá-los), `COLUMNS` (cabeçalhos por tabela, na ordem gravada), `METADATA_KEYS` e `METADATA_SENTINELS`, `STEP_IDS`, `GUARD_IDS` e `LEGACY_STEP_IDS`, `ENUMS`, `TEXT_LABELS` (rótulos usados dentro de frases) e `FIELD_KIND`, que diz como cada célula é tratada (enum, frase fixa, etapas, sinais, nome de exibição ou texto livre). Ele não tem modelos de frase e não importa `invoice_mapper` nem `apply_invoice_mapping`, para que os dois possam importá-lo sem ciclo (`test_the_boundary_modules_import_nothing_from_the_mapper`).
 
 **Quem grava** mantém tudo interno em memória e converte na gravação. `invoice_mapper.write_results` passa cada aba por `to_external_frame` e os metadados por `to_external_metadata`; o `apply` monta o entregável com `sheet_name`, `header_label` e `external_value`. O texto livre passa intacto pela fronteira, porque já chega escrito na língua certa.
 
-**Quem lê** aceita os dois esquemas e converte para o vocabulário interno antes de qualquer comparação:
+**Quem lê** só aceita o esquema em português e converte para o vocabulário interno antes de qualquer comparação:
 
-- `detect_schema(header, table)` decide o esquema pela coluna marcadora de cada tabela (na aba de mapeamentos, `numero_coluna_modelo` indica o esquema em português, `PT_BR`; `model_column_number`, o legado, `LEGACY_EN`).
-- `to_internal_frame` (pandas, usado pelo `apply`) e `internal_header_index` (linhas do openpyxl, usado pelo mapeval) renomeiam os cabeçalhos; `internal_value` converte os valores. Um enum só volta ao interno quando o esquema é `PT_BR` e o valor em português é exato, e etapas e sinais só são convertidos no esquema `PT_BR`; num relatório legado eles já estão no vocabulário interno.
-- `find_sheet(sheet_names, kind, schema)` localiza uma aba comparando sem caixa, acentos e espaços nas pontas, e devolve o nome como está na pasta de trabalho. Com `schema=None` aceita o nome dos dois esquemas; é assim que o mapeval acha a aba de mapeamentos antes de conhecer o esquema.
-- `internal_metadata` lê a aba de metadados; `normalize_reviewer_status` aceita o parecer nas duas línguas em qualquer esquema; `display_name_to_internal` aceita `(ocorrência N)`, `(ocorrencia N)` e `(occurrence N)`.
+- `check_header(header, table)` confere o cabeçalho de cada tabela: ele precisa ter a coluna da tabela (na aba de mapeamentos, `numero_coluna_modelo`) e nenhum cabeçalho do formato antigo, em inglês.
+- `to_internal_frame` (pandas, usado pelo `apply`) e `internal_header_index` (linhas do openpyxl, usado pelo mapeval) conferem o cabeçalho e o renomeiam para os nomes internos; `internal_value` converte os valores. Um enum só volta ao interno quando o valor em português é exato; etapas, sinais e nomes de exibição voltam pela forma em português (`display_name_to_internal` reconhece `(ocorrência N)` e `(ocorrencia N)`, em qualquer caixa). Um valor desconhecido passa como está.
+- O parecer do revisor é a exceção: passa pela fronteira como foi digitado, e o `apply` o valida com `normalize_reviewer_status`, que ignora caixa, acentos e espaços nas pontas, só reconhece `correto`, `incorreto` e `inexistente` e devolve `None` para qualquer outro valor, inclusive os pareceres em inglês do formato antigo. Como eles coincidem com os valores internos (`correct`...), só essa recusa explícita impede que passem calados.
+- `find_sheet(sheet_names, kind)` localiza uma aba comparando sem caixa, acentos e espaços nas pontas, e devolve o nome como está na pasta de trabalho.
+- `internal_metadata` lê a aba de metadados e converte as chaves e os sentinelas em português.
 
-**Esquema misto é recusado** com `ValueError`: um cabeçalho com as duas colunas marcadoras ou com colunas dos dois esquemas, as abas dos dois esquemas na mesma pasta de trabalho, ou a aba de metadados num esquema diferente do da aba de mapeamentos. Lido pela metade, um relatório meio traduzido faria a verificação de hash ser pulada ou os pareceres do revisor serem ignorados sem aviso. A mensagem diz o que renomear (`'reviewer_status' para 'parecer_revisor'`).
+**O formato antigo é recusado** com `ValueError`. Quando a aba de mapeamentos está no formato antigo (a aba se chama `Mappings`, ou o cabeçalho tem nomes em inglês e não tem `numero_coluna_modelo`), a mensagem diz que o relatório está no formato antigo, em inglês (versão 2 do esquema), e como convertê-lo com o `migrate_reports.py` do commit `5fe5092` (ver [Relatórios do formato antigo](#relatórios-do-formato-antigo)). Um nome do formato antigo dentro de um relatório em português (uma aba `Run Metadata`, um cabeçalho `reviewer_status`, uma chave `client_sha256`) é recusado com o que renomear (`'reviewer_status' para 'parecer_revisor'`). Lido pela metade, um relatório assim faria a verificação de hash ser pulada ou os pareceres do revisor serem ignorados sem aviso.
 
-Os leitores são o `apply` (`_read_mapping_report`, `_run_metadata`) e o mapeval (`mapeval.score.read_mappings`), que leem os dois esquemas e dão o mesmo resultado nos dois. `backfill_mapping_steps.py` só aceita o esquema legado e recusa, sem gravar nada, um relatório em português; `migrate_reports.py` converte do legado para o português.
+Os leitores são o `apply` (`_read_mapping_report`, `_run_metadata`) e o mapeval (`mapeval.score.read_mappings`).
 
-`MAPPING_SCHEMA_VERSION` é 3 no esquema em português (`report_schema.SCHEMA_VERSION_PT`); o legado é 2 (`SCHEMA_VERSION_LEGACY`). Um relatório migrado leva `versao_esquema_mapeamento` = 3 e a chave extra `migrado_da_versao_esquema` = 2, com o `gerado_em_utc` original.
+`MAPPING_SCHEMA_VERSION` é 3 no esquema em português (`report_schema.SCHEMA_VERSION_PT`); o formato antigo é 2 (`SCHEMA_VERSION_LEGACY`). Um relatório migrado, como os quatro arquivados, leva `versao_esquema_mapeamento` = 3 e a chave extra `migrado_da_versao_esquema` = 2, com o `gerado_em_utc` original.
 
 **Mudança incompatível no entregável.** A planilha mapeada também sai em português: abas `Dados Mapeados` e `Cobertura` (antes `Mapped Data` e `Coverage`), célula A1 `__info_mapeamento__` (antes `__mapping_info__`), rótulos e valores. Qualquer leitor a jusante que procure os nomes antigos precisa ser atualizado. O que mudou e o que ficou igual (a posição dos dados, a partir da linha 23, não mudou) está em [DATA.md](DATA.md#planilhas-mapeadas-datamapped).
 
 ### Frases escritas em português na origem
 
-As frases para pessoas não são traduzidas na gravação: elas são escritas em português no lugar em que são montadas. Quando a frase tem uma equivalente em inglês nos relatórios legados, ela é uma constante de módulo em `invoice_mapper.py`, para que `legacy_reports` reaproveite exatamente o mesmo texto:
+As frases para pessoas não são traduzidas na gravação: elas são escritas em português no lugar em que são montadas. As frases fixas do relatório são constantes de módulo em `invoice_mapper.py`:
 
 | Constantes | Coluna |
 |---|---|
@@ -152,13 +150,13 @@ As frases para pessoas não são traduzidas na gravação: elas são escritas em
 | `RESOLVER_DISAGREES` | `divergencia_ia` |
 | `HEADER_CONFLICT_FAMILY_PT`, `HEADER_CONFLICT_QUALIFIER_PT`, `HEADER_CONFLICT_ROLE_PT` | dentro de `REASON_CONFLICT_REVIEW` e nas mensagens do `apply` |
 
-As mensagens, a ajuda e os erros, que não têm equivalente legado, ficam escritos em português no módulo que os usa, em geral no próprio ponto de uso.
+As mensagens, a ajuda e os erros ficam escritos em português no módulo que os usa, em geral no próprio ponto de uso.
 
 Números dentro de frases usam vírgula decimal, por `report_schema.format_decimal_br` (`0.998` vira `0,998`) e `format_percent_br` (`0.882` vira `88,2%`), com os mesmos dígitos que a frase em inglês mostrava. As células numéricas continuam numéricas. Os rótulos que entram nas frases (papel do cabeçalho, qualificador do tributo, posição no trio, tipo de DV, nome do catálogo) vêm de `report_schema.TEXT_LABELS`.
 
-A prova aritmética que não distingue a coluna termina com o marcador `report_schema.PROOF_NOT_DECISIVE_PT` (`"não distingue esta coluna"`). `report_schema.proof_is_decisive` reconhece esse marcador e o legado em inglês (`"does not single out"`), e é o que `_supporting_step_ids`, o mapeval e o backfill usam para decidir se a prova conta como evidência aritmética.
+A prova aritmética que não distingue a coluna termina com o marcador `report_schema.PROOF_NOT_DECISIVE_PT` (`"não distingue esta coluna"`). `report_schema.proof_is_decisive` reconhece esse marcador, e é o que `_supporting_step_ids` e o mapeval usam para decidir se a prova conta como evidência aritmética.
 
-As CLIs usam `cli_ptbr.PortugueseArgumentParser`, que traduz os textos fixos do argparse (`uso:`, títulos das seções, ajuda de `-h`, mensagens de erro) só enquanto um método do próprio parser está rodando; nenhum outro parser do processo muda de língua. As flags continuam em inglês e os metavars são português em ASCII (`EXPORTACAO`, `RELATORIO`, `ARQUIVO`, `DIRETORIO`, ...). A saída também é em português: o mapeador imprime `aceito=... revisao=... sem_correspondencia=...`, o `apply` imprime `colunas_mapeadas=...` e o mapeval imprime a linha `TOTAL COM GABARITO`. No mapeador, no `apply`, no backfill e no `migrate_reports.py`, um arquivo ausente sai como `Arquivo não encontrado: ...`, com código de saída 1; o mapeval ainda mostra o traceback do Python, em inglês.
+As CLIs usam `cli_ptbr.PortugueseArgumentParser`, que traduz os textos fixos do argparse (`uso:`, títulos das seções, ajuda de `-h`, mensagens de erro) só enquanto um método do próprio parser está rodando; nenhum outro parser do processo muda de língua. As flags continuam em inglês e os metavars são português em ASCII (`EXPORTACAO`, `RELATORIO`, `ARQUIVO`, `DIRETORIO`, ...). A saída também é em português: o mapeador imprime `aceito=... revisao=... sem_correspondencia=...`, o `apply` imprime `colunas_mapeadas=...` e o mapeval imprime a linha `TOTAL COM GABARITO`. No mapeador e no `apply`, um arquivo ausente sai como `Arquivo não encontrado: ...`, com código de saída 1; o mapeval ainda mostra o traceback do Python, em inglês, inclusive diante de um relatório do formato antigo (a última linha traz a mensagem em português, com o caminho da conversão).
 
 ### Entrada dos modelos: inglês, byte a byte
 
@@ -184,24 +182,11 @@ O teste [`tests/test_model_input_golden.py`](../tests/test_model_input_golden.py
 
 Consequência: a justificativa que a IA escreve (`DataMappingDecision.reason`) chega em inglês e é gravada como veio, ao lado das frases em português do mapeador.
 
-### Relatórios legados: `legacy_reports` e `migrate_reports`
+### Relatórios do formato antigo
 
-Os relatórios gravados antes da tradução estão no esquema legado em inglês (versão 2), com as frases do mapeador em inglês.
+Os relatórios gravados antes da tradução estão no formato antigo, em inglês (versão 2 do esquema), com as frases do mapeador em inglês. Os quatro de `data/reports/` foram convertidos para o esquema em português no commit `09ebda9` pelo `migrate_reports.py`, sem reexecutar o mapeador, e as planilhas de `data/mapped/` foram regeneradas a partir deles. Nenhuma decisão mudou: as contagens por situação, os 26 pareceres e as 26 observações de sap_procosa, as 502 justificativas da IA e os números do mapeval são os mesmos de antes; sap_procosa manteve o layout antigo, com duas abas. O que a conversão fez está em [DATA.md](DATA.md#migração-dos-relatórios-arquivados).
 
-`legacy_reports.py` traduz essas frases. Cada `LegacyTemplate` em `TEMPLATES` guarda o modelo em inglês copiado de `invoice_mapper.py` no commit `2ae4b6d`, transformado numa expressão regular de casamento completo, e uma função que monta o português com a constante atual do mapeador e a mesma preparação dos valores (vírgula decimal, rótulos, sigla do tributo em maiúsculas, nome de exibição em português). A frase migrada é, portanto, exatamente a que o mapeador atual gravaria para os mesmos valores. O que não casa com nenhum modelo passa intacto (a prosa da IA, as observações do revisor, texto já em português), então traduzir duas vezes dá o mesmo resultado. O módulo é usado só por `migrate_reports.py` e pelos testes; o `apply` não traduz frases: num relatório legado ele grava a planilha em português, copia as frases como estão e imprime um aviso de uma linha recomendando a migração.
-
-`migrate_reports.py` edita o relatório célula a célula com o openpyxl, sem reexecutar o mapeador. Muda os nomes de aba, os cabeçalhos, as chaves e sentinelas dos metadados, os valores enumerados, as etapas (inclusive `unrecorded` e `(agrees)`), o sufixo de ocorrência e as frases do mapeador; passa a versão para 3 e acrescenta `migrado_da_versao_esquema`. Números (os inteiros digitados em `coluna_cliente_correta` continuam inteiros), `coluna_modelo`, valores de amostra, observações do revisor, a ordem das colunas, os tipos das células e a formatação ficam como estão, e nenhuma aba ou coluna é acrescentada. Quando os hashes gravados conferem com a exportação, o modelo e o manifesto atuais, a ferramenta regenera as partes derivadas (provas aritméticas, `Colunas do Cliente sem Uso`, `Fila de Revisão`) e as compara com o arquivado antes de traduzir (`cross_check_by_regeneration`); uma divergência recusa a migração. Se os hashes não conferem, a conferência não é possível: a ferramenta avisa e traduz só pelos modelos de frase. O resultado vai para um arquivo temporário, passa pela verificação embutida (`verify_migration`: cada célula é a regra aplicada à original, com o mesmo tipo e a mesma formatação; lidos pelo `report_schema`, o original e o migrado dão os mesmos quadros internos nas colunas que não são frase; os metadados, a contagem por situação e os pareceres, correções e observações do revisor, linha a linha, são iguais) e só então substitui o original. Um relatório que já está em português sai com uma mensagem e não é gravado; um de esquema misto é recusado.
-
-Para ver a migração funcionando, sem tocar em `data/`, migre uma cópia legada tirada do histórico:
-
-```bash
-git show 2ae4b6d:data/reports/mapping_oracle_full.xlsx > /tmp/mapping_oracle_legado.xlsx
-python migrate_reports.py /tmp/mapping_oracle_legado.xlsx data/clients/oracle.xlsx
-```
-
-A saída relata a conferência por regeneração sem divergência, as contagens do que foi traduzido, 160 justificativas da IA mantidas em inglês e `Verificação: ok (aceito=18 revisao=37 sem_correspondencia=172)`. `--dry-run` faz tudo num temporário sem alterar o relatório.
-
-Os quatro relatórios de `data/reports/` foram migrados assim no commit `09ebda9`, e as planilhas de `data/mapped/` foram regeneradas a partir deles. Nenhuma decisão mudou: as contagens por situação, os 26 pareceres e as 26 observações de sap_procosa, as 502 justificativas da IA e os números do mapeval são os mesmos de antes; sap_procosa manteve o layout antigo, com duas abas.
+Com a conversão feita, o `migrate_reports.py`, o `legacy_reports.py` (que reescrevia em português as frases do mapeador) e o `backfill_mapping_steps.py` (que acrescentou as colunas de etapas aos relatórios gravados antes delas) saíram do repositório depois do commit `5fe5092`, junto com a leitura do formato antigo. Hoje um relatório antigo é recusado pelos leitores (ver [`report_schema`: a única fronteira](#report_schema-a-única-fronteira)), e a mensagem diz como convertê-lo com o `migrate_reports.py` daquele commit; os comandos estão no [README](../README.md#comandos-do-dia-a-dia).
 
 ## Leitura das planilhas
 
@@ -496,7 +481,7 @@ Como as colunas são preenchidas numa execução nova:
 - **`decidido_por`** é a maior posição presente. Como a etapa de cabeçalho entra sempre que a pontuação de nome passa de 0 e está acima do resolvedor, na prática `decidido_por` nunca é `resolvedor_ia`.
 - **`vetado_por`** só é gravado em linhas da segunda passagem que mantêm uma proposta: `coluna_vazia` quando a linha teria sido aceita não fosse a coluna vazia, senão `conflito_tributario` quando o cabeçalho escolhido conflita. As travas `cabecalho_generico` e `coluna_ja_consumida` estão registradas mas nunca são gravadas, assim como as recusas da primeira passagem, as contradições aritméticas e os aceites reabertos (ver o item [2.1 de KNOWN_ISSUES.md](KNOWN_ISSUES.md#21-vetado_por-só-registra-duas-das-quatro-travas)).
 
-Os quatro relatórios de `data/reports/` foram gravados antes de `mapping_steps.py` existir. As colunas de etapas foram acrescentadas depois por `backfill_mapping_steps.py`, que reconstrói as etapas a partir das pontuações que o relatório já guarda, sem reexecutar o mapeador (isso mudaria as linhas em revisão e apagaria os pareceres de sap_procosa), e os quatro foram depois migrados para o esquema em português. Por isso eles diferem de um relatório novo: as três colunas ficam antes de `prova_aritmetica` (ou antes de `parecer_revisor`), podem conter `nao_registrado` (evidência objetiva que as pontuações gravadas não conseguem nomear; `unrecorded` no legado) e `catalogo (concorda)` (`catalog (agrees)` no legado), e o preenchimento retroativo aplica uma barra de catálogo própria (item [2.3 de KNOWN_ISSUES.md](KNOWN_ISSUES.md#23-o-backfill-e-a-execução-nova-creditam-a-evidência-de-catálogo-de-jeitos-diferentes)). O backfill também tem um defeito de deslocamento de coluna (item [1.1](KNOWN_ISSUES.md#11-o-backfill-lê-células-deslocadas-e-resolvedor_ia-não-aparece-em-apoiado_por)). Hoje o backfill só aceita relatórios legados em inglês e recusa, sem gravar nada, um relatório em português: a ordem é preencher retroativamente primeiro e migrar depois.
+Os quatro relatórios de `data/reports/` foram gravados antes de `mapping_steps.py` existir. As colunas de etapas foram acrescentadas depois pelo `backfill_mapping_steps.py`, uma ferramenta de uso único (removida depois do commit `5fe5092`) que reconstruiu as etapas a partir das pontuações que o relatório já guardava, sem reexecutar o mapeador (isso mudaria as linhas em revisão e apagaria os pareceres de sap_procosa), e os quatro foram depois migrados para o esquema em português. Por isso eles diferem de um relatório novo: as três colunas ficam antes de `prova_aritmetica` (ou antes de `parecer_revisor`), podem conter `nao_registrado` (evidência objetiva que as pontuações gravadas não conseguiam nomear; `unrecorded` em memória) e `catalogo (concorda)` (`catalog (agrees)` em memória), e o preenchimento retroativo aplicou uma barra de catálogo própria (item [2.3 de KNOWN_ISSUES.md](KNOWN_ISSUES.md#23-os-relatórios-arquivados-e-uma-execução-nova-creditam-a-evidência-de-catálogo-de-jeitos-diferentes)). Um defeito de deslocamento de coluna do backfill deixou `resolvedor_ia` fora de `apoiado_por` em três deles (item [1.1](KNOWN_ISSUES.md#11-resolvedor_ia-não-aparece-em-apoiado_por-em-três-relatórios-arquivados)).
 
 ## Catálogos de referência
 
@@ -547,7 +532,7 @@ A evidência distintiva pode escolher uma coluna (a decisão local por catálogo
 
 ## Aplicação de um relatório
 
-`apply_invoice_mapping.py` monta `<cliente>_mapped.xlsx` a partir de uma exportação do cliente e de um relatório de mapeamento, em qualquer um dos dois esquemas:
+`apply_invoice_mapping.py` monta `<cliente>_mapped.xlsx` a partir de uma exportação do cliente e de um relatório de mapeamento:
 
 ```bash
 python apply_invoice_mapping.py data/clients/sap_procosa.XLSX data/reports/mapping_sap_procosa_full.xlsx \
@@ -558,9 +543,9 @@ python apply_invoice_mapping.py data/clients/sap_procosa.XLSX data/reports/mappi
 
 **Verificações antes de gravar qualquer coisa.**
 
-- *Esquema*: `_read_mapping_report` lê a primeira aba pela posição e a converte para o vocabulário interno com `report_schema.to_internal_frame`, que detecta o esquema pelo cabeçalho. `_run_metadata` procura a aba de metadados com `find_sheet` no esquema detectado. Um relatório de esquema misto é recusado.
+- *Esquema*: `_read_mapping_report` lê a primeira aba pela posição e a converte para o vocabulário interno com `report_schema.to_internal_frame`, que confere o cabeçalho. `_run_metadata` procura a aba de metadados com `find_sheet`. Um relatório no formato antigo, ou com nomes dele, é recusado.
 - *Relatório desatualizado*: `_validate_input_hashes` compara `sha256_cliente` e `sha256_modelo` de `Metadados da Execução` com os arquivos dados e levanta `<arquivo> difere do arquivo usado para gerar o relatório de mapeamento`. Um relatório sem a aba de metadados, ou sem uma das chaves, pula essa comparação. Um relatório fica, portanto, preso aos bytes exatos de uma exportação.
-- *Formato do relatório*: `_ordered_mapping` exige as 12 colunas essenciais (`REQUIRED_MAPPING_COLUMNS`), exige cada número de coluna do modelo exatamente uma vez e exige que cada `coluna_modelo` seja igual ao cabeçalho do modelo naquela posição. As colunas acrescentadas em versões posteriores do esquema (`decidido_por`, `prova_aritmetica`, `confianca_dados_ia`, as colunas do revisor, ...) entram em branco quando o relatório não as tem, para que relatórios antigos continuem aplicáveis.
+- *Formato do relatório*: `_ordered_mapping` exige as 12 colunas essenciais (`REQUIRED_MAPPING_COLUMNS`), exige cada número de coluna do modelo exatamente uma vez e exige que cada `coluna_modelo` seja igual ao cabeçalho do modelo naquela posição. As colunas acrescentadas em versões posteriores do esquema (`decidido_por`, `prova_aritmetica`, `confianca_dados_ia`, as colunas do revisor, ...) entram em branco quando o relatório não as tem, para que relatórios antigos continuem aplicáveis. Em seguida normaliza o parecer do revisor e recusa um valor desconhecido, citando o que foi digitado e a coluna do modelo.
 
 **Quais linhas são preenchidas** (`_effective_columns`, uma linha por coluna do modelo):
 
@@ -572,11 +557,11 @@ python apply_invoice_mapping.py data/clients/sap_procosa.XLSX data/reports/mappi
 | `inexistente` | precisa ficar em branco | a coluna do modelo fica vazia, mesmo que o mapeador a tenha aceitado | há uma correção preenchida |
 | qualquer outro valor | | | sempre |
 
-O parecer passa por `report_schema.normalize_reviewer_status`, que ignora espaços nas pontas, caixa e acentos e aceita as duas línguas em qualquer esquema (`correct`/`correto`, `incorrect`/`incorreto`, `no_mapping_exists`/`inexistente`). Uma correção ao lado de qualquer parecer que não seja `incorreto` é recusada em vez de descartada. A correção aceita o sufixo `(ocorrência N)`, `(ocorrencia N)` ou `(occurrence N)`. Além disso, o texto de `coluna_cliente` da proposta precisa ser igual ao nome de exibição da exportação naquele número de coluna, e as colunas aceitas ou confirmadas precisam ser um para um (propostas em revisão não confirmadas podem dividir uma coluna). `--include-review` preenche também as propostas não confirmadas, numa planilha só para revisão; `--accepted-only` está obsoleta: sozinha não muda nada, e junto com `--include-review` o apply para com erro.
+O parecer passa por `report_schema.normalize_reviewer_status`, que ignora espaços nas pontas, caixa e acentos e só reconhece `correto`, `incorreto` e `inexistente`; os pareceres em inglês do formato antigo (`correct`...) são recusados como qualquer valor desconhecido. Uma correção ao lado de qualquer parecer que não seja `incorreto` é recusada em vez de descartada. A correção aceita o sufixo `(ocorrência N)` ou `(ocorrencia N)`. Além disso, o texto de `coluna_cliente` da proposta precisa ser igual ao nome de exibição da exportação naquele número de coluna, e as colunas aceitas ou confirmadas precisam ser um para um (propostas em revisão não confirmadas podem dividir uma coluna). `--include-review` preenche também as propostas não confirmadas, numa planilha só para revisão; `--accepted-only` está obsoleta: sozinha não muda nada, e junto com `--include-review` o apply para com erro.
 
 **Os valores são copiados como estão.** A exportação é lida com `dtype=object` e cada coluna selecionada é copiada sem mudança. A única alteração é que valores `datetime.time` voltam a ser gravados como células de hora do Excel.
 
-**Saída.** Na aba `Dados Mapeados`, a linha 1 tem `__info_mapeamento__` seguido dos cabeçalhos do modelo, na ordem do modelo; as linhas 2 a 22 são um banner de 21 linhas de metadados do mapeamento (`MAPPING_METADATA`, com os rótulos em português de `report_schema.COLUMNS["banner"]`, os valores de máquina em português e `numero_coluna_cliente` e `coluna_cliente` mostrando a escolha depois da revisão); os dados do cliente começam na linha 23 do Excel (`FIRST_DATA_EXCEL_ROW`). Colunas do modelo que não recebem coluna do cliente são ocultadas, não apagadas. A aba `Cobertura` põe cada coluna do modelo num de três estados: **`entregue`**, **`aguardando decisão`** (o mapeador deixou uma proposta em revisão e nada foi entregue) ou **`não consta na exportação do cliente`**. O estado segue a situação dada pelo mapeador, não o parecer do revisor (ver o item [1.2 de KNOWN_ISSUES.md](KNOWN_ISSUES.md#12-a-cobertura-mostra-como-aguardando-decisão-linhas-que-o-revisor-marcou-inexistente)). O texto livre (`justificativa`, `prova_aritmetica`, `observacao_revisor`) é copiado do relatório como está; com um relatório legado, as frases do mapeador ficam em inglês e o programa avisa, em uma linha na saída de erro, que `migrate_reports.py` as traduz. Esses nomes de aba e de A1 são uma mudança incompatível para quem lia os nomes antigos (ver [Planilhas mapeadas](DATA.md#planilhas-mapeadas-datamapped) em DATA.md).
+**Saída.** Na aba `Dados Mapeados`, a linha 1 tem `__info_mapeamento__` seguido dos cabeçalhos do modelo, na ordem do modelo; as linhas 2 a 22 são um banner de 21 linhas de metadados do mapeamento (`MAPPING_METADATA`, com os rótulos em português de `report_schema.COLUMNS["banner"]`, os valores de máquina em português e `numero_coluna_cliente` e `coluna_cliente` mostrando a escolha depois da revisão); os dados do cliente começam na linha 23 do Excel (`FIRST_DATA_EXCEL_ROW`). Colunas do modelo que não recebem coluna do cliente são ocultadas, não apagadas. A aba `Cobertura` põe cada coluna do modelo num de três estados: **`entregue`**, **`aguardando decisão`** (o mapeador deixou uma proposta em revisão e nada foi entregue) ou **`não consta na exportação do cliente`**. O estado segue a situação dada pelo mapeador, não o parecer do revisor (ver o item [1.2 de KNOWN_ISSUES.md](KNOWN_ISSUES.md#12-a-cobertura-mostra-como-aguardando-decisão-linhas-que-o-revisor-marcou-inexistente)). O texto livre (`justificativa`, `prova_aritmetica`, `observacao_revisor`) é copiado do relatório como está. Esses nomes de aba e de A1 são uma mudança incompatível para quem lia os nomes antigos (ver [Planilhas mapeadas](DATA.md#planilhas-mapeadas-datamapped) em DATA.md).
 
 ## Constantes
 
@@ -614,7 +599,7 @@ Os números de linha valem para o código atual; o nome do símbolo é a referê
 | `_CLAMPED_BAND` | 0,0002 | `invoice_mapper.py:3348` | Ordem da `Fila de Revisão` |
 | Fator de amostra do catálogo | min(1, √(não vazios / 5)) | `ReferenceCatalogs.analyze` | Pontuação de catálogo |
 | Especificidades dos catálogos | de 0,50 a 1,0 | `reference_data/manifest.json` | Pontuação de catálogo |
-| `FIRST_DATA_EXCEL_ROW` | 23 | `apply_invoice_mapping.py:78` | Primeira linha do cliente em `Dados Mapeados` |
+| `FIRST_DATA_EXCEL_ROW` | 23 | `apply_invoice_mapping.py:75` | Primeira linha do cliente em `Dados Mapeados` |
 
 ## Onde fazer as mudanças mais comuns
 
@@ -626,7 +611,7 @@ python invoice_mapper.py data/clients/oracle.xlsx --offline --output /tmp/mappin
 python -m mapeval --show-losses
 ```
 
-`python -m pytest -q` roda 451 testes em cerca de 10 segundos. Ficam de fora 10 provas de ponta a ponta marcadas `lento`, que refazem a migração e as execuções offline sobre os dados reais (extraindo o código de `2ae4b6d` com `git archive`); rode-as com `python -m pytest -m lento` (cerca de 4 minutos). A execução offline exercita a primeira passagem, as auditorias e a gravação do relatório em português; a segunda passagem de verdade precisa do modo online. O mapeval pontua os relatórios que já estão em `data/reports/`; para pontuar uma mudança é preciso um relatório regenerado (online), como descrito no [protocolo de EVALUATION.md](EVALUATION.md#protocolo-para-uma-mudança-proposta).
+`python -m pytest -q` roda 344 testes em cerca de 8 segundos. A execução offline exercita a primeira passagem, as auditorias e a gravação do relatório em português; a segunda passagem de verdade precisa do modo online. O mapeval pontua os relatórios que já estão em `data/reports/`; para pontuar uma mudança é preciso um relatório regenerado (online), como descrito no [protocolo de EVALUATION.md](EVALUATION.md#protocolo-para-uma-mudança-proposta).
 
 **Acrescentar um sinônimo ou uma stopword de cabeçalho.** Edite `_HEADER_TOKEN_ALIASES` ou `_HEADER_STOPWORDS`; uma reescrita de várias palavras vai nas expressões regulares de `semantic_header_signature`. Um sinônimo muda assinaturas, então pode levar um par a 0,98 e deixar a primeira passagem aceitá-lo nos dois avaliadores, e também muda papéis e famílias. Acrescente só vocabulário fiscal geral, em português ou inglês: `test_client_specific_header_pairs_are_not_encoded_as_equivalents` existe porque um par de cabeçalhos de um cliente não é vocabulário. Quando houver escolha, prefira uma etapa de evidência transferível a um sinônimo novo.
 
@@ -657,6 +642,6 @@ python -m mapeval --show-losses
 
 **Acrescentar uma coluna ou um valor ao relatório.** Acrescente um campo a `MappingResult`; a posição dele define a ordem das colunas. Todo campo precisa de um cabeçalho em português em `report_schema.COLUMNS["mappings"]`, na mesma ordem (`test_every_mapping_result_field_has_a_header`), e de uma entrada em `report_schema.FIELD_KIND` se a célula for enum, etapas, nome de exibição ou frase. O mesmo vale para `UnmatchedColumn` e `AdjudicationRow` (`COLUMNS["unmatched"]`, `COLUMNS["queue"]`), para uma chave nova de metadados (`METADATA_KEYS`) e para um valor novo de situação ou de método (`ENUMS`); `tests/test_report_schema.py` falha quando algum deles fica sem nome em português. O `apply` lê as colunas pelo nome interno: acrescente o campo à lista de opcionais em `_ordered_mapping` para que relatórios antigos continuem aplicáveis e, se ele pertencer ao banner, inclua-o em `MAPPING_METADATA` e em `COLUMNS["banner"]` (isso move `FIRST_DATA_EXCEL_ROW`; `test_every_banner_row_has_a_label` exige as duas listas iguais). Aumente `MAPPING_SCHEMA_VERSION` quando o significado do relatório mudar. Mantenha `Mapeamentos` como primeira aba.
 
-**Acrescentar ou mudar uma frase para pessoas.** Escreva-a em português, no ponto em que é montada, com os números passados por `report_schema.format_decimal_br` ou `format_percent_br` e os rótulos de `report_schema.TEXT_LABELS`. Se ela substitui uma frase que os relatórios legados têm em inglês, mantenha-a como constante de módulo e faça o `LegacyTemplate` correspondente em `legacy_reports.TEMPLATES` apontar para ela, com a mesma preparação dos valores; `test_legacy_sentence_translates_to_what_the_current_producer_writes` compara a tradução do inglês antigo com o que a função produtora atual grava, e `test_every_legacy_template_has_a_drift_case` exige um caso por modelo. Se a frase precisa citar algo que também vai para a IA (como o conflito de cabeçalho), monte a versão em português a partir das mesmas entradas estruturadas; nunca traduza o texto em inglês em memória.
+**Acrescentar ou mudar uma frase para pessoas.** Escreva-a em português, no ponto em que é montada, com os números passados por `report_schema.format_decimal_br` ou `format_percent_br` e os rótulos de `report_schema.TEXT_LABELS`. Se a frase precisa citar algo que também vai para a IA (como o conflito de cabeçalho), monte a versão em português a partir das mesmas entradas estruturadas; nunca traduza o texto em inglês em memória.
 
 **Mudar o prompt ou o modelo de IA.** As instruções ficam em `OpenAIDataResolver.resolve` e continuam em inglês. Qualquer mudança no que os modelos recebem (prompt, payload, `DataMappingDecision`, prefixo do embedding, texto de `semantic_header_conflict`, `ColumnRef.name` ou `display_name`) faz `tests/test_model_input_golden.py` falhar, e isso é o esperado. Uma mudança deliberada exige três passos juntos: aumentar `PROMPT_VERSION`; regenerar a fixture com `python tests/test_model_input_golden.py --write` e revisar o diff; e medir de novo online, regenerando os relatórios e pontuando com o mapeval (fabricações em 0, ENTREGUES sem cair), como no [protocolo de EVALUATION.md](EVALUATION.md#protocolo-para-uma-mudança-proposta). Nunca regenere a fixture só para fazer o teste passar. O modelo vem de `--llm-model` ou `OPENAI_MODEL`. Lembre que as confianças da IA nunca chegam à regra de aceite, então uma mudança de prompt só pode mudar qual coluna é proposta, ou se alguma é.

@@ -1,10 +1,9 @@
 """Pontua um relatório de mapeamento contra um gabarito.
 
-O relatório pode estar no esquema em português ou no legado em inglês. A
-leitura passa por ``report_schema``: os cabeçalhos viram os nomes internos e
-os valores de situação e método voltam ao vocabulário interno (``accepted``,
-``catalog`` ...) antes de qualquer comparação. Assim os números são os mesmos
-nas duas línguas.
+O relatório está no esquema em português. A leitura passa por
+``report_schema``: os cabeçalhos viram os nomes internos e os valores de
+situação e método voltam ao vocabulário interno (``accepted``, ``catalog``
+...) antes de qualquer comparação.
 """
 
 from __future__ import annotations
@@ -30,8 +29,7 @@ class Row:
     model_column: int
     model_name: str
     client_column: int | None
-    #: Situação no vocabulário interno (``accepted``, ``review``, ``no_match``),
-    #: qualquer que seja a língua do relatório.
+    #: Situação no vocabulário interno (``accepted``, ``review``, ``no_match``).
     status: str
     #: Método no vocabulário interno (``name``, ``data``, ``catalog`` ...).
     method: str
@@ -53,9 +51,8 @@ class Row:
         # Uma prova confirma o *escopo* de um tributo. Quando o cliente tem
         # dois blocos disjuntos para o mesmo tributo, os dois satisfazem a
         # identidade, então a prova vale para qualquer um e não distingue
-        # nenhum - e o mapeador diz isso na própria frase. proof_is_decisive
-        # reconhece o marcador nas duas línguas: "does not single out" nos
-        # relatórios legados e "não distingue esta coluna" nos em português.
+        # nenhum - e o mapeador diz isso na própria frase, com o marcador
+        # "não distingue esta coluna", que proof_is_decisive reconhece.
         # Contar uma prova assim como evidência independente deixaria um cara
         # ou coroa entre dois blocos se passar por aritmética. Hoje quatro
         # aceites de datasul (m53, m54, m55 e m184) têm uma prova assim, e
@@ -195,37 +192,31 @@ def _vacuous_client_columns(client_path: str | Path, sheet: int = 0) -> frozense
     return frozenset(i + 1 for i, count in enumerate(populated) if count == 0)
 
 
-def read_mappings(report_path: str | Path) -> tuple[list[tuple], dict[str, int], str]:
-    """Lê a aba de mapeamentos de um relatório, em qualquer um dos dois esquemas.
+def read_mappings(report_path: str | Path) -> tuple[list[tuple], dict[str, int]]:
+    """Lê a aba de mapeamentos de um relatório.
 
-    Devolve as linhas cruas (a primeira é o cabeçalho), o índice {nome
-    interno do campo: posição da coluna} e o esquema detectado pelo
-    cabeçalho (``report_schema.PT_BR`` ou ``report_schema.LEGACY_EN``). As
-    células continuam cruas: quem compara situação ou método converte o
-    valor com ``report_schema.internal_value`` e o esquema devolvido.
+    Devolve as linhas cruas (a primeira é o cabeçalho) e o índice {nome
+    interno do campo: posição da coluna}. As células continuam cruas: quem
+    compara situação ou método converte o valor com
+    ``report_schema.internal_value``.
 
-    Levanta ``ValueError`` se o relatório não tem a aba (nem
-    ``Mapeamentos`` nem a legada ``Mappings``) ou se mistura os dois
-    esquemas, por exemplo cabeçalhos em português numa aba ``Mappings``.
+    Levanta ``ValueError`` se o relatório não tem a aba ``Mapeamentos`` ou
+    se está no formato antigo, em inglês, inteiro ou em parte (por exemplo,
+    a aba ``Mappings`` ou o cabeçalho ``model_column_number``); a mensagem
+    diz como converter um relatório antigo.
     """
     workbook = openpyxl.load_workbook(report_path, read_only=True, data_only=True)
     try:
-        sheet_names = list(workbook.sheetnames)
-        name = report_schema.find_sheet(sheet_names, "mappings", None)
+        name = report_schema.find_sheet(list(workbook.sheetnames), "mappings")
         if name is None:
             raise ValueError(
                 f"{report_path}: o relatório não tem a aba "
-                f"{report_schema.sheet_name('mappings')!r} (nem a legada "
-                f"{report_schema.sheet_name('mappings', report_schema.LEGACY_EN)!r})."
+                f"{report_schema.sheet_name('mappings')!r}."
             )
         raw = list(workbook[name].iter_rows(values_only=True))
     finally:
         workbook.close()
-    column, schema = report_schema.internal_header_index(raw[0], "mappings")
-    # O nome da aba precisa ser o do esquema do cabeçalho; um relatório meio
-    # traduzido é recusado em vez de lido pela metade.
-    report_schema.find_sheet(sheet_names, "mappings", schema)
-    return raw, column, schema
+    return raw, report_schema.internal_header_index(raw[0], "mappings")
 
 
 def score_report(
@@ -236,7 +227,7 @@ def score_report(
     """Pontua um relatório de mapeamento arquivado. Não roda mapeamento e não custa nada."""
     vacuous = _vacuous_client_columns(Path(client_path))
 
-    raw, column, schema = read_mappings(report_path)
+    raw, column = read_mappings(report_path)
 
     result = Score(client=key.client, present=key.denominator)
     for position, raw_row in enumerate(raw[1:], start=1):
@@ -245,13 +236,10 @@ def score_report(
         expected = key.present.get(position)
         confidence = raw_row[column["final_confidence"]]
         # Situação e método no vocabulário interno: "aceito" vira "accepted",
-        # "catalogo" vira "catalog". Num relatório legado nada muda.
-        status = str(
-            report_schema.internal_value("mappings", "status", raw_row[column["status"]], schema)
-        )
+        # "catalogo" vira "catalog".
+        status = str(report_schema.internal_value("mappings", "status", raw_row[column["status"]]))
         method = str(
-            report_schema.internal_value("mappings", "method", raw_row[column["method"]], schema)
-            or ""
+            report_schema.internal_value("mappings", "method", raw_row[column["method"]]) or ""
         )
         row = Row(
             model_column=position,

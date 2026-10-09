@@ -84,10 +84,10 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             print(f"\n{name}  SEM GABARITO — nenhum número de precisão ou recall seria honesto aqui.")
             from mapeval.score import _vacuous_client_columns, read_mappings  # noqa: PLC0415
-            rows, column, schema = read_mappings(report)
+            rows, column = read_mappings(report)
             accepted = [
                 r for r in rows[1:]
-                if report_schema.internal_value("mappings", "status", r[column["status"]], schema)
+                if report_schema.internal_value("mappings", "status", r[column["status"]])
                 == "accepted"
             ]
             vacuous = _vacuous_client_columns(Path(root / client_file))
