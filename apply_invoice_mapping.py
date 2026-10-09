@@ -1,18 +1,11 @@
 """Monta a planilha no layout do modelo a partir da exportação e do relatório de mapeamento.
 
-O relatório está no esquema em português (aba Mapeamentos,
-``numero_coluna_modelo``, situação ``aceito`` ...). A leitura passa por
-``report_schema``, que confere o cabeçalho da primeira aba e converte nomes e
-valores para o vocabulário interno do código; as decisões deste módulo
-comparam só valores internos. Um relatório no formato antigo, em inglês, é
-recusado com a indicação de como convertê-lo.
-
-O entregável é gravado em português: abas Dados Mapeados e Cobertura,
-``__info_mapeamento__`` na célula A1, rótulos do banner, valores enumerados,
-etapas e o sufixo ``(ocorrência N)`` dos nomes de coluna repetidos. O texto
-livre (justificativa, prova aritmética, observação do revisor) é copiado como
-está no relatório; a prosa escrita pela IA e as observações dos revisores
-ficam como foram escritas.
+O relatório é lido no esquema em português e convertido por ``report_schema``
+para o vocabulário interno, o único que este módulo compara. Um relatório no
+formato antigo, em inglês, é recusado com a indicação de como convertê-lo.
+O entregável (abas Dados Mapeados e Cobertura) sai em português; o texto livre
+do relatório (justificativa, prova aritmética, observação do revisor) é
+copiado como está.
 """
 
 from __future__ import annotations
@@ -40,10 +33,8 @@ from invoice_mapper import (
 )
 
 
-#: Linhas do banner de Dados Mapeados (linhas 2 a 22 do Excel), na ordem em
-#: que são gravadas: (rótulo da coluna A, campo de Mapeamentos de onde sai o
-#: valor). O rótulo é o cabeçalho em português do campo; o campo continua com
-#: o nome interno, que é o usado em memória e nas comparações.
+#: Linhas do banner de Dados Mapeados (linhas 2 a 22 do Excel), na ordem
+#: gravada: (rótulo da coluna A, campo de Mapeamentos de onde sai o valor).
 MAPPING_METADATA = [
     ("numero_coluna_cliente", "client_column_number"),
     ("coluna_cliente", "client_column"),
@@ -68,15 +59,11 @@ MAPPING_METADATA = [
     ("observacao_revisor", "reviewer_note"),
 ]
 
-#: Linha do Excel onde começam os dados do cliente: cabeçalho, depois o banner
-#: de metadados. Exportada porque esse deslocamento já mudou duas vezes (de 17
-#: para 19, quando entraram as pontuações de auditoria da IA, e de novo aqui),
-#: e qualquer código a jusante que fixe o número quebra em silêncio.
+#: Primeira linha do Excel com dados do cliente, abaixo do cabeçalho e do
+#: banner. Já mudou mais de uma vez: importe-a em vez de fixar o número.
 FIRST_DATA_EXCEL_ROW = len(MAPPING_METADATA) + 2
 
-#: Campos do banner que são confianças: gravados como número e exibidos como
-#: porcentagem. Indexado pelo campo, e não pelo rótulo da coluna A, para que
-#: o texto do rótulo possa mudar sem afetar a formatação.
+#: Campos do banner gravados como número e exibidos como porcentagem.
 CONFIDENCE_ROWS = {
     "name_confidence",
     "name_runner_up_confidence",
@@ -89,8 +76,7 @@ CONFIDENCE_ROWS = {
     "final_confidence",
 }
 
-#: Colunas sem as quais o relatório não pode ser aplicado (nomes internos; as
-#: mensagens citam o cabeçalho em português).
+#: Colunas sem as quais o relatório não pode ser aplicado.
 REQUIRED_MAPPING_COLUMNS = {
     "model_column_number",
     "model_column",
@@ -106,6 +92,55 @@ REQUIRED_MAPPING_COLUMNS = {
     "reason",
 }
 
+#: Colunas que os relatórios mais antigos não têm; entram em branco, para que
+#: esses relatórios continuem aplicáveis.
+OPTIONAL_MAPPING_COLUMNS = (
+    "decided_by",
+    "supported_by",
+    "vetoed_by",
+    "arithmetic_proof",
+    "catalog_name",
+    "catalog_coverage",
+    "catalog_confidence",
+    "llm_data_confidence",
+    "llm_final_confidence",
+    "reviewer_status",
+    "correct_client_column",
+    "reviewer_note",
+)
+
+#: Situação de cada coluna do modelo na aba Cobertura, na ordem em que a aba
+#: as lista. Só a do meio é trabalho de alguém: uma coluna que o cliente não
+#: envia é uma resposta completa.
+STATE_DELIVERED = "entregue"
+STATE_PENDING = "aguardando decisão"
+STATE_ABSENT = "não consta na exportação do cliente"
+COVERAGE_STATE_ORDER = (STATE_DELIVERED, STATE_PENDING, STATE_ABSENT)
+
+#: Colunas da aba Cobertura (nome interno -> largura). O cabeçalho gravado é o
+#: português de ``report_schema.COLUMNS["coverage"]``.
+COVERAGE_FIELDS = {
+    "state": 26,
+    "model_column_number": 10,
+    "model_column": 34,
+    "excel_column": 8,
+    "client_column_number": 10,
+    "client_column": 30,
+    "final_confidence": 12,
+    "reason": 78,
+}
+
+PERCENT_FORMAT = "0.00%"
+TIME_FORMAT = "hh:mm:ss"
+#: Fundo azul do banner (e do cabeçalho da Cobertura).
+BANNER_COLOR = "E8F0FE"
+#: Fundo verde do cabeçalho das colunas entregues.
+DELIVERED_COLOR = "D7E9DC"
+INFO_COLUMN_WIDTH = 34
+MODEL_COLUMN_WIDTH = 18
+#: Até esta coluna do Excel (AD) a largura é fixada mesmo nas colunas ocultas.
+LAST_FIXED_WIDTH_EXCEL_COLUMN = 30
+
 
 def _sheet_argument(value: str) -> str | int:
     """Aba dada na linha de comando: só dígitos é o índice; outro texto é o nome."""
@@ -117,12 +152,13 @@ def _clean_text(value: object) -> str:
     return "" if pd.isna(value) else str(value).strip()
 
 
-def _column_label(field: str) -> str:
-    """Cabeçalho em português de um campo de Mapeamentos, para citar em mensagens.
+def _blank_if_missing(value: object) -> object:
+    """Célula vazia vira ``""``; qualquer outro valor passa intacto."""
+    return "" if pd.isna(value) else value
 
-    Quem lê a mensagem procura a coluna pelo nome que vê na planilha
-    (``parecer_revisor``), e não pelo nome interno.
-    """
+
+def _column_label(field: str) -> str:
+    """Cabeçalho de Mapeamentos de um campo, como a pessoa o vê na planilha."""
     return report_schema.header_label("mappings", field)
 
 
@@ -132,171 +168,31 @@ def _status_label(status: str) -> str:
 
 
 def _display_name(text: object) -> object:
-    """Nome de exibição interno de coluna do cliente -> como aparece para pessoas.
-
-    ``"Valor ICMS (occurrence 2)"`` vira ``"Valor ICMS (ocorrência 2)"``. Em
-    memória o nome continua em inglês, porque ``ColumnRef.name`` é entrada do
-    embedding e da IA.
-    """
+    """Nome de exibição interno -> português (``(occurrence 2)`` -> ``(ocorrência 2)``)."""
     return report_schema.display_name_to_external(text)
 
 
-def _column_from_number(client: SheetTable, value: object) -> ColumnRef | None:
-    """Coluna do cliente pelo número (contado a partir de 1); célula vazia devolve ``None``."""
-    if pd.isna(value) or _clean_text(value) == "":
-        return None
-    number = float(value)
-    if not number.is_integer():
-        raise ValueError(f"O número da coluna do cliente deve ser inteiro; recebido {value!r}")
-    index = int(number) - 1
-    if index < 0 or index >= len(client.columns):
-        raise ValueError(
-            f"O número da coluna do cliente {int(number)} está fora do intervalo "
-            f"1..{len(client.columns)}"
-        )
-    return client.columns[index]
-
-
-def _corrected_column(client: SheetTable, value: object) -> ColumnRef:
-    """Coluna do cliente indicada pelo revisor em ``correct_client_column``.
-
-    Aceita o número da coluna (contado a partir de 1), o cabeçalho da
-    exportação ou, para um cabeçalho repetido, o nome com a ocorrência, nas
-    formas ``(ocorrência N)`` ou ``(ocorrencia N)``. A comparação ignora
-    maiúsculas e minúsculas. Texto que pode ser lido como número é sempre um
-    número de coluna.
-    """
-    typed = _clean_text(value)
-    if not typed:
-        raise ValueError(
-            f"{_column_label('reviewer_status')} é {_status_label('incorrect')!r}, mas "
-            f"{_column_label('correct_client_column')} está em branco"
-        )
-
-    try:
-        number = float(typed)
-    except ValueError:
-        number = math.nan
-    if not math.isnan(number):
-        column = _column_from_number(client, number)
-        if column is None:
-            raise ValueError("A coluna do cliente corrigida não pode ficar em branco")
-        return column
-
-    # O sufixo em português volta aqui à forma interna de ColumnRef.display_name.
-    text = report_schema.display_name_to_internal(typed)
-    display_matches = [
-        column for column in client.columns if column.display_name.casefold() == text.casefold()
-    ]
-    if len(display_matches) == 1:
-        return display_matches[0]
-
-    name_matches = [
-        column for column in client.columns if column.name.casefold() == text.casefold()
-    ]
-    if len(name_matches) == 1:
-        return name_matches[0]
-    if len(name_matches) > 1:
-        raise ValueError(
-            f"O cabeçalho corrigido {_display_name(typed)!r} está repetido na exportação do "
-            "cliente; use o número da coluna (contado a partir de 1) ou o nome com a "
-            "ocorrência, como 'Nome (ocorrência 2)'"
-        )
-    raise ValueError(
-        f"A coluna do cliente corrigida {_display_name(typed)!r} não foi encontrada"
-    )
+# ---------------------------------------------------------------------------
+# Leitura e conferência do relatório
+# ---------------------------------------------------------------------------
 
 
 def _read_mapping_report(mapping_path: str | Path) -> pd.DataFrame:
     """Lê a primeira aba do relatório e a converte para nomes e valores internos.
 
-    A aba de mapeamentos é lida pela posição, e não pelo nome, como sempre
-    foi: ela precisa continuar sendo a primeira. Um relatório no formato
-    antigo, em inglês, é recusado aqui (``report_schema.check_header``).
+    A aba é lida pela posição, não pelo nome, então Mapeamentos precisa
+    continuar sendo a primeira. ``to_internal_frame`` recusa o formato antigo.
     """
     mapping = pd.read_excel(mapping_path, dtype=object)
     return report_schema.to_internal_frame(mapping, "mappings")
 
 
-def _ordered_mapping(mapping: pd.DataFrame, model: SheetTable) -> pd.DataFrame:
-    """Confere o relatório com o modelo e devolve uma linha por coluna do modelo, na ordem dele.
-
-    O parecer do revisor sai daqui no vocabulário interno. Um parecer que não
-    é ``correto``, ``incorreto``, ``inexistente`` nem vazio é recusado, com o
-    que foi digitado e a coluna do modelo.
-    """
-    missing = REQUIRED_MAPPING_COLUMNS - set(mapping.columns)
-    if missing:
-        labels = sorted(_column_label(field) for field in missing)
-        raise ValueError(f"Faltam colunas no relatório de mapeamento: {labels}")
-
-    mapping = mapping.copy()
-    mapping["model_column_number"] = pd.to_numeric(
-        mapping["model_column_number"], errors="raise"
-    ).astype(int)
-    if mapping["model_column_number"].duplicated().any():
-        raise ValueError(
-            "O relatório de mapeamento tem valores repetidos em "
-            f"{_column_label('model_column_number')}"
-        )
-
-    expected_numbers = list(range(1, len(model.columns) + 1))
-    actual_numbers = sorted(mapping["model_column_number"].tolist())
-    if actual_numbers != expected_numbers:
-        raise ValueError(
-            f"O relatório de mapeamento deve conter cada coluna do modelo "
-            f"1..{len(model.columns)} exatamente uma vez"
-        )
-
-    mapping = mapping.set_index("model_column_number").loc[expected_numbers].reset_index()
-    for row, model_column in zip(mapping.to_dict("records"), model.columns, strict=True):
-        if _clean_text(row["model_column"]) != model_column.name:
-            raise ValueError(
-                f"A coluna do modelo {model_column.index + 1} difere entre o modelo e o "
-                f"relatório de mapeamento: {model_column.name!r} != "
-                f"{_clean_text(row['model_column'])!r}"
-            )
-
-    for optional in [
-        # Relatórios gravados antes de essas colunas existirem continuam aplicáveis.
-        "decided_by",
-        "supported_by",
-        "vetoed_by",
-        "arithmetic_proof",
-        "catalog_name",
-        "catalog_coverage",
-        "catalog_confidence",
-        "llm_data_confidence",
-        "llm_final_confidence",
-        "reviewer_status",
-        "correct_client_column",
-        "reviewer_note",
-    ]:
-        if optional not in mapping.columns:
-            mapping[optional] = ""
-
-    statuses = []
-    for row in mapping.to_dict("records"):
-        status = report_schema.normalize_reviewer_status(row["reviewer_status"])
-        if status is None:
-            raise ValueError(
-                f"Valor desconhecido em {_column_label('reviewer_status')}: "
-                f"{row['reviewer_status']!r}, na coluna do modelo {row['model_column']!r}. Use "
-                f"{_status_label('correct')}, {_status_label('incorrect')} ou "
-                f"{_status_label('no_mapping_exists')}, ou deixe em branco."
-            )
-        statuses.append(status)
-    mapping["reviewer_status"] = statuses
-    return mapping
-
-
 def _run_metadata(mapping_path: str | Path) -> dict[str, str]:
-    """Metadados da execução do relatório, com chaves internas.
+    """Metadados da execução que gerou o relatório, com chaves internas.
 
-    Procura a aba Metadados da Execução. Uma aba com o nome do formato
-    antigo, em inglês (Run Metadata), levanta ``ValueError``: ignorada, ela
-    faria a verificação de hash ser pulada em silêncio. Relatórios antigos
-    sem a aba continuam aplicáveis, sem verificação.
+    Relatório sem a aba devolve ``{}`` e é aplicado sem verificação de hash.
+    Uma aba com o nome do formato antigo é recusada, para que a verificação
+    não seja pulada em silêncio.
     """
     workbook = pd.ExcelFile(mapping_path)
     name = report_schema.find_sheet(workbook.sheet_names, "run_metadata")
@@ -313,15 +209,206 @@ def _validate_input_hashes(
     model_path: str | Path,
 ) -> None:
     """Recusa o relatório se a exportação ou o modelo mudaram desde a execução que o gerou."""
-    for key, path in (
-        ("client_sha256", client_path),
-        ("model_sha256", model_path),
-    ):
+    for key, path in (("client_sha256", client_path), ("model_sha256", model_path)):
         expected = metadata.get(key)
         if expected and expected != file_sha256(path):
             raise ValueError(
                 f"{Path(path).name} difere do arquivo usado para gerar o relatório de mapeamento"
             )
+
+
+def _ordered_mapping(mapping: pd.DataFrame, model: SheetTable) -> pd.DataFrame:
+    """Confere o relatório com o modelo e devolve uma linha por coluna do modelo, na ordem dele.
+
+    Também completa as colunas opcionais ausentes e traz o parecer do revisor
+    para o vocabulário interno.
+    """
+    missing = REQUIRED_MAPPING_COLUMNS - set(mapping.columns)
+    if missing:
+        labels = sorted(_column_label(field) for field in missing)
+        raise ValueError(f"Faltam colunas no relatório de mapeamento: {labels}")
+
+    mapping = mapping.copy()
+    mapping["model_column_number"] = pd.to_numeric(
+        mapping["model_column_number"], errors="raise"
+    ).astype(int)
+    if mapping["model_column_number"].duplicated().any():
+        raise ValueError(
+            "O relatório de mapeamento tem valores repetidos em "
+            f"{_column_label('model_column_number')}"
+        )
+    expected_numbers = list(range(1, len(model.columns) + 1))
+    if sorted(mapping["model_column_number"].tolist()) != expected_numbers:
+        raise ValueError(
+            f"O relatório de mapeamento deve conter cada coluna do modelo "
+            f"1..{len(model.columns)} exatamente uma vez"
+        )
+
+    mapping = mapping.set_index("model_column_number").loc[expected_numbers].reset_index()
+    for row, model_column in zip(mapping.to_dict("records"), model.columns, strict=True):
+        written = _clean_text(row["model_column"])
+        if written != model_column.name:
+            raise ValueError(
+                f"A coluna do modelo {model_column.index + 1} difere entre o modelo e o "
+                f"relatório de mapeamento: {model_column.name!r} != {written!r}"
+            )
+
+    for field in OPTIONAL_MAPPING_COLUMNS:
+        if field not in mapping.columns:
+            mapping[field] = ""
+    mapping["reviewer_status"] = [_reviewer_status(row) for row in mapping.to_dict("records")]
+    return mapping
+
+
+def _reviewer_status(row: dict) -> str:
+    """Parecer do revisor no vocabulário interno; um valor desconhecido é recusado."""
+    status = report_schema.normalize_reviewer_status(row["reviewer_status"])
+    if status is None:
+        raise ValueError(
+            f"Valor desconhecido em {_column_label('reviewer_status')}: "
+            f"{row['reviewer_status']!r}, na coluna do modelo {row['model_column']!r}. Use "
+            f"{_status_label('correct')}, {_status_label('incorrect')} ou "
+            f"{_status_label('no_mapping_exists')}, ou deixe em branco."
+        )
+    return status
+
+
+# ---------------------------------------------------------------------------
+# Escolha da coluna do cliente de cada coluna do modelo
+# ---------------------------------------------------------------------------
+
+
+def _column_from_number(client: SheetTable, value: object) -> ColumnRef | None:
+    """Coluna do cliente pelo número (a partir de 1); célula vazia devolve ``None``."""
+    if pd.isna(value) or _clean_text(value) == "":
+        return None
+    number = float(value)
+    if not number.is_integer():
+        raise ValueError(f"O número da coluna do cliente deve ser inteiro; recebido {value!r}")
+    if not 1 <= number <= len(client.columns):
+        raise ValueError(
+            f"O número da coluna do cliente {int(number)} está fora do intervalo "
+            f"1..{len(client.columns)}"
+        )
+    return client.columns[int(number) - 1]
+
+
+def _corrected_column(client: SheetTable, value: object) -> ColumnRef:
+    """Coluna do cliente que o revisor indicou em ``coluna_cliente_correta``.
+
+    Aceita o número da coluna (a partir de 1), o cabeçalho ou, para um
+    cabeçalho repetido, o nome com ``(ocorrência N)`` ou ``(ocorrencia N)``,
+    sem diferenciar maiúsculas. Texto que se lê como número é sempre um número
+    de coluna.
+    """
+    typed = _clean_text(value)
+    if not typed:
+        raise ValueError(
+            f"{_column_label('reviewer_status')} é {_status_label('incorrect')!r}, mas "
+            f"{_column_label('correct_client_column')} está em branco"
+        )
+
+    try:
+        number = float(typed)
+    except ValueError:
+        number = math.nan
+    if not math.isnan(number):
+        return _column_from_number(client, number)
+
+    wanted = report_schema.display_name_to_internal(typed).casefold()
+    by_display_name = [c for c in client.columns if c.display_name.casefold() == wanted]
+    if len(by_display_name) == 1:
+        return by_display_name[0]
+    by_name = [c for c in client.columns if c.name.casefold() == wanted]
+    if len(by_name) == 1:
+        return by_name[0]
+    if len(by_name) > 1:
+        raise ValueError(
+            f"O cabeçalho corrigido {_display_name(typed)!r} está repetido na exportação do "
+            "cliente; use o número da coluna (contado a partir de 1) ou o nome com a "
+            "ocorrência, como 'Nome (ocorrência 2)'"
+        )
+    raise ValueError(
+        f"A coluna do cliente corrigida {_display_name(typed)!r} não foi encontrada"
+    )
+
+
+def _refuse_unused_correction(row: dict) -> None:
+    """Recusa uma correção ao lado de um parecer que não é ``incorreto``.
+
+    Só ``incorreto`` usa a correção. Com ``correto`` ela seria descartada e a
+    linha entregue com a coluna do mapeador, não com a do revisor.
+    """
+    correction = _clean_text(row["correct_client_column"])
+    reviewer_status = row["reviewer_status"]
+    if not correction or reviewer_status == "incorrect":
+        return
+    situation = (
+        "está em branco" if reviewer_status == "" else f"é {_status_label(reviewer_status)!r}"
+    )
+    raise ValueError(
+        f"{_column_label('correct_client_column')} {correction!r} está preenchida na coluna "
+        f"do modelo {row['model_column']!r}, mas {_column_label('reviewer_status')} "
+        f"{situation}. Só {_status_label('incorrect')!r} usa uma correção; com qualquer "
+        "outro parecer ela seria descartada em silêncio."
+    )
+
+
+def _reviewed_column(
+    row: dict, client: SheetTable, accepted_only: bool
+) -> tuple[ColumnRef | None, bool]:
+    """(coluna do cliente que a linha entrega, se ela é aceita ou confirmada pelo revisor)."""
+    reviewer_status = row["reviewer_status"]
+    if reviewer_status == "no_mapping_exists":
+        return None, False
+    if reviewer_status == "incorrect":
+        return _corrected_column(client, row["correct_client_column"]), True
+
+    proposal = _column_from_number(client, row["client_column_number"])
+    if reviewer_status == "correct":
+        # Sem proposta, confirmar entregaria uma coluna em branco assinada pelo revisor.
+        if proposal is None:
+            raise ValueError(
+                f"{_column_label('reviewer_status')} é {_status_label('correct')!r} na coluna "
+                f"do modelo {row['model_column']!r}, mas "
+                f"{_column_label('client_column_number')} está em branco. Use "
+                f"{_status_label('no_mapping_exists')!r} para confirmar que o cliente não "
+                f"tem este campo, ou {_status_label('incorrect')!r} com "
+                f"{_column_label('correct_client_column')}."
+            )
+        return proposal, True
+
+    accepted = row["status"] == "accepted"
+    if accepted_only and not accepted:
+        return None, False
+    return proposal, accepted
+
+
+def _refuse_header_conflict(model_column: ColumnRef, column: ColumnRef) -> None:
+    """Recusa um par que as regras atuais de coerência entre cabeçalhos proíbem."""
+    conflict = semantic_header_conflict(model_column.name, column.name)
+    if conflict is None:
+        return
+    description = describe_header_conflict_pt(model_column.name, column.name) or conflict
+    raise ValueError(
+        f"O mapeamento aceito {model_column.name!r} -> "
+        f"{_display_name(column.display_name)!r} viola as regras atuais de "
+        f"coerência entre cabeçalhos: {description}. Revise-o explicitamente "
+        f"(preencha {_column_label('reviewer_status')}) antes de aplicar."
+    )
+
+
+def _refuse_proposal_from_another_export(row: dict, client: SheetTable) -> None:
+    """Recusa a linha se a coluna proposta não tem na exportação o nome gravado no relatório."""
+    proposed = _column_from_number(client, row["client_column_number"])
+    proposed_name = _clean_text(row["client_column"])
+    if proposed is None or not proposed_name or proposed.display_name == proposed_name:
+        return
+    raise ValueError(
+        f"O relatório de mapeamento não confere com a planilha do cliente na coluna "
+        f"{proposed.index + 1}: {_display_name(proposed_name)!r} != "
+        f"{_display_name(proposed.display_name)!r}"
+    )
 
 
 def _effective_columns(
@@ -332,128 +419,151 @@ def _effective_columns(
 ) -> list[ColumnRef | None]:
     """Coluna do cliente que cada coluna do modelo recebe, depois dos pareceres do revisor.
 
-    ``mapping`` já está no vocabulário interno, inclusive o parecer do revisor
-    (ver ``_ordered_mapping``).
+    Só as colunas aceitas ou confirmadas precisam ser um para um: propostas em
+    revisão não confirmadas podem apontar para a mesma coluna de origem.
     """
     selected: list[ColumnRef | None] = []
-    used: set[int] = set()
-    status_column = _column_label("reviewer_status")
-    correction_column = _column_label("correct_client_column")
+    confirmed_indexes: set[int] = set()
+    for row, model_column in zip(mapping.to_dict("records"), model.columns, strict=True):
+        _refuse_unused_correction(row)
+        column, confirmed = _reviewed_column(row, client, accepted_only)
+        if column is not None and row["status"] == "accepted" and row["reviewer_status"] == "":
+            _refuse_header_conflict(model_column, column)
+        _refuse_proposal_from_another_export(row, client)
 
-    for row, model_column in zip(
-        mapping.to_dict("records"), model.columns, strict=True
-    ):
-        reviewer_status = row["reviewer_status"]
-
-        # Uma correção só é usada no ramo ``incorrect``. Em todos os outros ela
-        # seria descartada em silêncio, e no ``correct`` o descarte é pior do
-        # que perder a resposta: a linha continua sendo entregue, com a coluna
-        # do *mapeador* e não a do revisor, e um revisor que escolhe o parecer
-        # errado põe dado errado do cliente no modelo base em vez de deixá-lo
-        # em branco. O erro espelhado (``incorrect`` com a correção em branco)
-        # sempre foi recusado. Aqui a regra fica simétrica.
-        correction = _clean_text(row["correct_client_column"])
-        if correction and reviewer_status != "incorrect":
-            situation = (
-                "está em branco"
-                if reviewer_status == ""
-                else f"é {_status_label(reviewer_status)!r}"
-            )
-            raise ValueError(
-                f"{correction_column} {correction!r} está preenchida na coluna do modelo "
-                f"{row['model_column']!r}, mas {status_column} {situation}. Só "
-                f"{_status_label('incorrect')!r} usa uma correção; com qualquer "
-                "outro parecer ela seria descartada em silêncio."
-            )
-
-        confirmed = False
-        if reviewer_status == "no_mapping_exists":
-            column = None
-        elif reviewer_status == "incorrect":
-            column = _corrected_column(client, row["correct_client_column"])
-            confirmed = True
-        elif reviewer_status == "correct":
-            column = _column_from_number(client, row["client_column_number"])
-            # 'correct' afirma que a proposta está certa, então precisa haver
-            # proposta. Sem esta trava a linha é confirmada sobre nada e
-            # entrega uma coluna em branco assinada pelo revisor, com código
-            # de saída 0.
-            if column is None:
-                raise ValueError(
-                    f"{status_column} é {_status_label('correct')!r} na coluna do "
-                    f"modelo {row['model_column']!r}, mas "
-                    f"{_column_label('client_column_number')} está em branco. Use "
-                    f"{_status_label('no_mapping_exists')!r} para confirmar que o "
-                    f"cliente não tem este campo, ou {_status_label('incorrect')!r} "
-                    f"com {correction_column}."
-                )
-            confirmed = True
-        elif accepted_only and reviewer_status != "correct" and row["status"] != "accepted":
-            column = None
-        else:
-            column = _column_from_number(client, row["client_column_number"])
-            confirmed = row["status"] == "accepted"
-
-        if (
-            column is not None
-            and row["status"] == "accepted"
-            and reviewer_status == ""
-        ):
-            conflict = semantic_header_conflict(model_column.name, column.name)
-            if conflict is not None:
-                description = (
-                    describe_header_conflict_pt(model_column.name, column.name) or conflict
-                )
-                raise ValueError(
-                    f"O mapeamento aceito {model_column.name!r} -> "
-                    f"{_display_name(column.display_name)!r} viola as regras atuais de "
-                    f"coerência entre cabeçalhos: {description}. Revise-o explicitamente "
-                    f"(preencha {status_column}) antes de aplicar."
-                )
-
-        proposed = _column_from_number(client, row["client_column_number"])
-        proposed_name = _clean_text(row["client_column"])
-        if proposed is not None and proposed_name and proposed.display_name != proposed_name:
-            raise ValueError(
-                f"O relatório de mapeamento não confere com a planilha do cliente na coluna "
-                f"{proposed.index + 1}: {_display_name(proposed_name)!r} != "
-                f"{_display_name(proposed.display_name)!r}"
-            )
-
-        # Propostas em revisão não confirmadas podem apontar de propósito para a
-        # mesma coluna de origem. Só os mapeamentos aceitos ou confirmados pelo
-        # revisor precisam ser um para um.
         if column is not None and confirmed:
-            if column.index in used:
+            if column.index in confirmed_indexes:
                 raise ValueError(
                     f"A coluna do cliente {_display_name(column.display_name)!r} foi mapeada "
                     "mais de uma vez após as correções do revisor"
                 )
-            used.add(column.index)
+            confirmed_indexes.add(column.index)
         selected.append(column)
     return selected
 
 
-#: O que uma coluna do modelo vazia significa. Só o estado do meio é trabalho
-#: de alguém: "não consta na exportação do cliente" é uma resposta completa e
-#: correta, e uma execução que deixa a maior parte do modelo vazia pode estar
-#: inteiramente certa.
-STATE_DELIVERED = "entregue"
-STATE_PENDING = "aguardando decisão"
-STATE_ABSENT = "não consta na exportação do cliente"
+# ---------------------------------------------------------------------------
+# Gravação da planilha
+# ---------------------------------------------------------------------------
 
-#: Colunas da aba Cobertura, pelo nome interno. O cabeçalho gravado é o
-#: português de ``report_schema.COLUMNS["coverage"]``.
-COVERAGE_FIELDS = (
-    "state",
-    "model_column_number",
-    "model_column",
-    "excel_column",
-    "client_column_number",
-    "client_column",
-    "final_confidence",
-    "reason",
-)
+
+def _banner_rows(
+    mapping: pd.DataFrame, selected: Sequence[ColumnRef | None]
+) -> list[list[object]]:
+    """Linhas do banner: o rótulo e um valor por coluna do modelo, em português.
+
+    ``numero_coluna_cliente`` e ``coluna_cliente`` mostram a coluna de fato
+    entregue, depois dos pareceres do revisor.
+    """
+    delivered = {
+        "client_column_number": ["" if column is None else column.index + 1 for column in selected],
+        "client_column": ["" if column is None else column.display_name for column in selected],
+    }
+    rows: list[list[object]] = []
+    for label, field in MAPPING_METADATA:
+        if field in delivered:
+            values = delivered[field]
+        else:
+            values = [_blank_if_missing(value) for value in mapping[field]]
+        rows.append(
+            [label, *(report_schema.external_value("banner", field, value) for value in values)]
+        )
+    return rows
+
+
+def _client_data(
+    client: SheetTable, model: SheetTable, selected: Sequence[ColumnRef | None], info_header: str
+) -> pd.DataFrame:
+    """Valores do cliente sem alteração, uma coluna por coluna do modelo; sem origem, vazia."""
+    row_count = len(client.data)
+    data = pd.concat(
+        [
+            pd.Series([pd.NA] * row_count, dtype=object)
+            if column is None
+            else client.series(column).reset_index(drop=True)
+            for column in selected
+        ],
+        axis=1,
+    )
+    data.columns = [column.name for column in model.columns]
+    data.insert(0, info_header, "")
+    return data
+
+
+def _format_banner(worksheet, column_count: int) -> None:
+    """Fundo azul no banner e confianças exibidas como porcentagem."""
+    fill = PatternFill(fill_type="solid", fgColor=BANNER_COLOR)
+    for excel_row in range(2, FIRST_DATA_EXCEL_ROW):
+        for cell in worksheet[excel_row]:
+            cell.fill = fill
+    for excel_row, (_, field) in enumerate(MAPPING_METADATA, start=2):
+        if field in CONFIDENCE_ROWS:
+            for excel_column in range(2, column_count + 1):
+                worksheet.cell(excel_row, excel_column).number_format = PERCENT_FORMAT
+
+
+def _restore_time_cells(
+    worksheet, client: SheetTable, selected: Sequence[ColumnRef | None]
+) -> None:
+    """Regrava como hora do Excel os ``datetime.time``, que o pandas grava como texto."""
+    for excel_column, column in enumerate(selected, start=2):
+        if column is None:
+            continue
+        for excel_row, value in enumerate(client.series(column), start=FIRST_DATA_EXCEL_ROW):
+            if isinstance(value, time):
+                cell = worksheet.cell(excel_row, excel_column)
+                cell.value = value
+                cell.number_format = TIME_FORMAT
+
+
+def _arrange_columns(worksheet, selected: Sequence[ColumnRef | None], column_count: int) -> None:
+    """Larguras, cabeçalho verde nas colunas entregues e colunas sem dado ocultas.
+
+    Um cliente preenche uma minoria das colunas do modelo, e as entregues
+    ficam espalhadas. Ocultar as vazias põe as entregues lado a lado sem
+    remover nada: um clique as reexibe, e quem lê por programa vê todas.
+    """
+    worksheet.column_dimensions["A"].width = INFO_COLUMN_WIDTH
+    for excel_column in range(2, min(column_count, LAST_FIXED_WIDTH_EXCEL_COLUMN) + 1):
+        worksheet.column_dimensions[get_column_letter(excel_column)].width = MODEL_COLUMN_WIDTH
+
+    delivered_fill = PatternFill(fill_type="solid", fgColor=DELIVERED_COLOR)
+    for excel_column, column in enumerate(selected, start=2):
+        letter = get_column_letter(excel_column)
+        if column is None:
+            worksheet.column_dimensions[letter].hidden = True
+        else:
+            worksheet.column_dimensions[letter].width = MODEL_COLUMN_WIDTH
+            worksheet.cell(1, excel_column).fill = delivered_fill
+
+
+def _coverage_row(
+    model_column: ColumnRef, column: ColumnRef | None, row: dict
+) -> list[object]:
+    """Linha da Cobertura de uma coluna do modelo.
+
+    A situação segue a ``situacao`` do mapeador, não o parecer do revisor, e
+    uma linha entregue fica sem ``numero_coluna_cliente`` (KNOWN_ISSUES 1.2 e
+    1.3).
+    """
+    if column is not None:
+        state = STATE_DELIVERED
+        client_number, client_name = "", column.display_name
+    else:
+        mapper_status = _clean_text(row["status"]).casefold()
+        state = STATE_PENDING if mapper_status == "review" else STATE_ABSENT
+        client_number = _blank_if_missing(row["client_column_number"])
+        client_name = _blank_if_missing(row["client_column"])
+    return [
+        state,
+        model_column.index + 1,
+        model_column.name,
+        get_column_letter(model_column.index + 2),
+        client_number,
+        _display_name(client_name),
+        _blank_if_missing(row["final_confidence"]),
+        _blank_if_missing(row["reason"]),
+    ]
 
 
 def _write_coverage_sheet(
@@ -461,65 +571,36 @@ def _write_coverage_sheet(
     *,
     model: SheetTable,
     selected: Sequence[ColumnRef | None],
-    statuses: Sequence[str],
     mapping: pd.DataFrame,
 ) -> None:
-    """Índice da situação de cada coluna do modelo, ordenado pelo que falta fazer.
+    """Aba Cobertura: a situação de cada coluna do modelo, entregues primeiro.
 
-    A aba mapeada responde "o dado entregue está certo?". Ela não responde "o
-    que não está aqui e deveria estar", porque toda coluna que ela preenche é
-    aceita por construção. Esta aba responde, e é a primeira a ler: cada
-    coluna do modelo está entregue, aguardando decisão ou é algo que este
-    cliente de fato não envia.
-
-    A justificativa é copiada do relatório como está (a prosa da IA fica em
-    inglês).
+    Dados Mapeados só mostra o que foi entregue; esta aba diz o que falta e se
+    é decisão pendente ou algo que o cliente de fato não envia.
     """
     sheet = book.create_sheet(report_schema.sheet_name("coverage"))
-    headers = [report_schema.header_label("coverage", field) for field in COVERAGE_FIELDS]
-    sheet.append(headers)
-
-    order = {STATE_DELIVERED: 0, STATE_PENDING: 1, STATE_ABSENT: 2}
-    rows = []
-    for index, (model_column, column) in enumerate(zip(model.columns, selected)):
-        status = statuses[index] if index < len(statuses) else ""
-        if column is not None:
-            state = STATE_DELIVERED
-        elif status == "review":
-            state = STATE_PENDING
-        else:
-            state = STATE_ABSENT
-        proposed = mapping["client_column_number"][index]
-        proposed_name = mapping["client_column"][index]
-        confidence = mapping["final_confidence"][index]
-        rows.append((
-            order[state], index + 1,
-            [
-                state, index + 1, model_column.name,
-                get_column_letter(index + 2),
-                "" if column is not None else ("" if pd.isna(proposed) else proposed),
-                _display_name(
-                    column.display_name if column is not None
-                    else ("" if pd.isna(proposed_name) else proposed_name)
-                ),
-                "" if pd.isna(confidence) else confidence,
-                "" if pd.isna(mapping["reason"][index]) else mapping["reason"][index],
-            ],
-        ))
-    for _, _, values in sorted(rows, key=lambda item: (item[0], item[1])):
+    sheet.append([report_schema.header_label("coverage", field) for field in COVERAGE_FIELDS])
+    rows = [
+        _coverage_row(model_column, column, row)
+        for model_column, column, row in zip(model.columns, selected, mapping.to_dict("records"))
+    ]
+    for values in sorted(rows, key=lambda values: COVERAGE_STATE_ORDER.index(values[0])):
         sheet.append(values)
 
+    last_letter = get_column_letter(len(COVERAGE_FIELDS))
     sheet.freeze_panes = "A2"
-    sheet.auto_filter.ref = f"A1:H{sheet.max_row}"
-    for letter, width in (("A", 26), ("B", 10), ("C", 34), ("D", 8),
-                          ("E", 10), ("F", 30), ("G", 12), ("H", 78)):
-        sheet.column_dimensions[letter].width = width
-    header_fill = PatternFill(fill_type="solid", fgColor="E8F0FE")
+    sheet.auto_filter.ref = f"A1:{last_letter}{sheet.max_row}"
+    for position, width in enumerate(COVERAGE_FIELDS.values(), start=1):
+        sheet.column_dimensions[get_column_letter(position)].width = width
+    header_fill = PatternFill(fill_type="solid", fgColor=BANNER_COLOR)
     for cell in sheet[1]:
         cell.fill = header_fill
         cell.font = Font(bold=True)
-    for row in sheet.iter_rows(min_row=2, min_col=7, max_col=7):
-        row[0].number_format = "0.00%"
+    confidence_column = list(COVERAGE_FIELDS).index("final_confidence") + 1
+    for (cell,) in sheet.iter_rows(
+        min_row=2, min_col=confidence_column, max_col=confidence_column
+    ):
+        cell.number_format = PERCENT_FORMAT
 
 
 def build_mapped_workbook(
@@ -533,62 +614,26 @@ def build_mapped_workbook(
     client_header_row: int = 0,
     accepted_only: bool = True,
 ) -> None:
-    """Aplica os mapeamentos confirmados e grava o banner de metadados seguido dos dados do cliente.
+    """Aplica os mapeamentos e grava Dados Mapeados (banner e dados do cliente) e Cobertura.
 
-    Lê o relatório no esquema em português e grava o entregável em português
-    (abas Dados Mapeados e Cobertura). Por padrão só entram as linhas aceitas
-    sem parecer e as confirmadas pelo revisor; com ``accepted_only=False``
-    entram também as propostas em revisão não confirmadas, numa planilha que
-    não deve ser entregue.
+    Por padrão só entram as linhas aceitas sem parecer e as confirmadas pelo
+    revisor; com ``accepted_only=False`` entram também as propostas em revisão
+    não confirmadas, numa planilha que não deve ser entregue.
     """
     report = _read_mapping_report(mapping_path)
-    metadata = _run_metadata(mapping_path)
     _validate_input_hashes(
-        metadata,
-        client_path=client_path,
-        model_path=model_path,
+        _run_metadata(mapping_path), client_path=client_path, model_path=model_path
     )
     model = SheetTable.from_excel(model_path, model_sheet, model_header_row)
     client = SheetTable.from_excel(client_path, client_sheet, client_header_row)
     mapping = _ordered_mapping(report, model)
     selected = _effective_columns(mapping, client, model, accepted_only)
 
-    effective_numbers = [column.index + 1 if column is not None else "" for column in selected]
-    effective_names = [column.display_name if column is not None else "" for column in selected]
-    metadata_overrides = {
-        "client_column_number": effective_numbers,
-        "client_column": effective_names,
-    }
-
-    metadata_rows: list[list[object]] = []
-    for label, mapping_field in MAPPING_METADATA:
-        if mapping_field in metadata_overrides:
-            values = metadata_overrides[mapping_field]
-        else:
-            values = ["" if pd.isna(value) else value for value in mapping[mapping_field]]
-        # Valores de máquina (situação, método, etapas, trava, catálogo,
-        # parecer) e o sufixo de ocorrência saem em português; números e
-        # texto livre passam intactos.
-        values = [
-            report_schema.external_value("banner", mapping_field, value) for value in values
-        ]
-        metadata_rows.append([label, *values])
-
-    row_count = len(client.data)
-    mapped_series = []
-    for column in selected:
-        if column is None:
-            mapped_series.append(pd.Series([pd.NA] * row_count, dtype=object))
-        else:
-            mapped_series.append(client.series(column).reset_index(drop=True))
-    mapped_data = pd.concat(mapped_series, axis=1)
-    mapped_data.columns = [column.name for column in model.columns]
     info_header = report_schema.header_label("mapped_data", "__mapping_info__")
-    mapped_data.insert(0, info_header, "")
-
     output_columns = [info_header, *[column.name for column in model.columns]]
-    metadata_frame = pd.DataFrame(metadata_rows, columns=output_columns)
-    output_frame = pd.concat([metadata_frame, mapped_data], axis=0, ignore_index=True)
+    banner = pd.DataFrame(_banner_rows(mapping, selected), columns=output_columns)
+    data = _client_data(client, model, selected, info_header)
+    output_frame = pd.concat([banner, data], axis=0, ignore_index=True)
 
     output = Path(output_path)
     if output.suffix.lower() != ".xlsx":
@@ -597,69 +642,15 @@ def build_mapped_workbook(
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         output_frame.to_excel(writer, sheet_name=mapped_sheet, index=False)
         worksheet = writer.book[mapped_sheet]
-        first_data_excel_row = FIRST_DATA_EXCEL_ROW
-        worksheet.freeze_panes = f"B{first_data_excel_row}"
-
-        metadata_fill = PatternFill(fill_type="solid", fgColor="E8F0FE")
-        for excel_row in range(2, first_data_excel_row):
-            for cell in worksheet[excel_row]:
-                cell.fill = metadata_fill
-
-        field_to_excel_row = {
-            field: index + 2 for index, (_, field) in enumerate(MAPPING_METADATA)
-        }
-        for field in CONFIDENCE_ROWS:
-            excel_row = field_to_excel_row[field]
-            for excel_column in range(2, len(output_columns) + 1):
-                worksheet.cell(excel_row, excel_column).number_format = "0.00%"
-
-        # O pandas grava objetos datetime.time como texto. Aqui eles voltam a
-        # ser células de hora do Excel, para que os valores mapeados mantenham
-        # o tipo e continuem ordenáveis.
-        for model_index, column in enumerate(selected):
-            if column is None:
-                continue
-            output_excel_column = model_index + 2
-            for row_offset, value in enumerate(client.series(column)):
-                if isinstance(value, time):
-                    cell = worksheet.cell(
-                        first_data_excel_row + row_offset,
-                        output_excel_column,
-                    )
-                    cell.value = value
-                    cell.number_format = "hh:mm:ss"
-
-        worksheet.column_dimensions["A"].width = 34
-        for excel_column in range(2, min(len(output_columns), 30) + 1):
-            worksheet.column_dimensions[get_column_letter(excel_column)].width = 18
-
-        # Um cliente preenche uma minoria do modelo, e isso é o desenho, não uma
-        # falha: o modelo é um superconjunto que cobre todo campo que algum
-        # cliente possa enviar. Mas isso deixa as colunas entregues espalhadas
-        # pelas 227: as 19 de datasul vão de AI a GW, com 101 colunas vazias
-        # entre duas delas. Ocultar as colunas sem dado as põe lado a lado.
-        # Nada é removido, nenhum valor muda, um clique reexibe, e quem lê o
-        # arquivo por programa não é afetado.
-        statuses = [
-            _clean_text(value).casefold() for value in mapping["status"]
-        ]
-        delivered_fill = PatternFill(fill_type="solid", fgColor="D7E9DC")
-        for model_index, column in enumerate(selected):
-            letter = get_column_letter(model_index + 2)
-            if column is None:
-                worksheet.column_dimensions[letter].hidden = True
-            else:
-                worksheet.column_dimensions[letter].width = 18
-                worksheet.cell(1, model_index + 2).fill = delivered_fill
-
-        _write_coverage_sheet(
-            writer.book, model=model, selected=selected, statuses=statuses,
-            mapping=mapping,
-        )
+        worksheet.freeze_panes = f"B{FIRST_DATA_EXCEL_ROW}"
+        _format_banner(worksheet, len(output_columns))
+        _restore_time_cells(worksheet, client, selected)
+        _arrange_columns(worksheet, selected, len(output_columns))
+        _write_coverage_sheet(writer.book, model=model, selected=selected, mapping=mapping)
 
     print(f"Arquivo gravado: {output}")
     print(
-        f"colunas_modelo={len(model.columns)} linhas_cliente={row_count} "
+        f"colunas_modelo={len(model.columns)} linhas_cliente={len(client.data)} "
         f"colunas_mapeadas={sum(column is not None for column in selected)}"
     )
 
@@ -752,10 +743,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             accepted_only=not args.include_review,
         )
     except OSError as exc:
-        # Arquivo ausente ou ilegível: a mesma mensagem em português do mapeador.
         raise SystemExit(_error_message(exc)) from exc
     except ValueError as exc:
-        # As validações do apply já levantam mensagens em português.
+        # As validações deste módulo já falam português; as do pandas passam
+        # como vieram (KNOWN_ISSUES 6.2).
         raise SystemExit(str(exc)) from exc
     return 0
 
