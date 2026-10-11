@@ -1,11 +1,10 @@
-"""Testes do mapeador (invoice_mapper).
+"""Testa as decisões, as mensagens e os arquivos produzidos pelo mapeador.
 
-Os valores de máquina são verificados em memória, no vocabulário interno em
-inglês; as frases para pessoas, em português, contra as constantes do
-mapeador; os arquivos gravados, no esquema em português. Os cabeçalhos de
-cliente em inglês ('COFINS Value', 'Posting date' ...) testam a tabela de
-sinônimos, e as justificativas dos resolvedores falsos fazem o papel da prosa
-da IA, que continua em inglês.
+As decisões são verificadas pelos valores internos em inglês; as mensagens,
+pelas constantes em português; e os arquivos, pelo schema de saída.
+Cabeçalhos como ``COFINS Value`` e ``Posting date`` exercitam os sinônimos.
+As respostas dos fake resolvers permanecem em inglês para representar as
+justificativas retornadas pela IA.
 """
 
 from __future__ import annotations
@@ -99,7 +98,7 @@ def table(headers: list[str], rows: list[list[object]]) -> SheetTable:
 
 @dataclass
 class FixedScorer:
-    """Avaliador de cabeçalhos falso: devolve sempre a mesma matriz."""
+    """Fake scorer que retorna uma matriz fixa de scores de cabeçalho."""
 
     matrix: np.ndarray
 
@@ -108,7 +107,7 @@ class FixedScorer:
 
 
 class FixedResolver:
-    """Resolvedor de IA falso: devolve a decisão fixa de cada coluna do modelo e registra as chamadas."""
+    """Fake resolver que retorna decisões predefinidas e registra as chamadas recebidas."""
 
     def __init__(self, decisions: dict[str, DataMappingDecision]) -> None:
         self.decisions = decisions
@@ -244,7 +243,7 @@ def test_review_proposal_does_not_reserve_source_column() -> None:
     # conflito em português.
     assert results[0].vetoed_by == "family_conflict"
     assert results[0].reason == REASON_CONFLICT_REVIEW.format(
-        header_conflict="conflito de papel semântico (situação tributária vs base de cálculo)"
+        header_conflict="tipos de campo incompatíveis (situação tributária vs base de cálculo)"
     )
     assert results[1].client_column == "CBS Base"
     assert results[1].status == "review"
@@ -274,93 +273,59 @@ def test_generic_numeric_evidence_cannot_rescue_explicit_semantic_conflict() -> 
     assert result.reason == REASON_UNSUPPORTED_NO_MATCH
 
 
-def test_semantic_header_conflict_is_generic_and_conservative() -> None:
-    assert semantic_header_conflict("Base IBS", "IBSS Rate") == (
-        "semantic-role conflict (base vs rate)"
-    )
-    assert semantic_header_conflict("Valor ICMS", "IPI Value") == (
-        "tax-family conflict (icms vs ipi)"
-    )
-    assert semantic_header_conflict("Base ICMS", "ICMS Mont.base excl.") == (
-        "semantic-role conflict (base vs exempt)"
-    )
-    assert semantic_header_conflict("CST PIS", "PIS Mont.") == (
-        "semantic-role conflict (tax_status vs base)"
-    )
-    assert semantic_header_conflict(
-        "Tipo de Imposto CBS", "Tax Classification Code for CBS and IBS"
-    ) == "semantic-role conflict (tax_status vs tax_classification)"
-    assert semantic_header_conflict("Nº item do documento", "SAP Nº do NF") == (
-        "semantic-role conflict (item_id vs document_id)"
-    )
-    assert semantic_header_conflict("Aliquota ICMS_ST", "ICMS Taxa") == (
-        "tax-qualifier conflict (st vs regular)"
-    )
-    assert semantic_header_conflict("Grupo de imposto", "Grupo de mercadorias") == (
-        "semantic-role conflict (tax_group vs product_group)"
-    )
-    assert semantic_header_conflict("Chave de acesso", "X9") is None
-
-
-#: Pares de cabeçalhos com os três tipos de conflito e sem conflito.
-CONFLICT_PAIRS = [
-    ("Base IBS", "IBSS Rate"),
-    ("Valor ICMS", "IPI Value"),
-    ("Base ICMS", "ICMS Mont.base excl."),
-    ("CST PIS", "PIS Mont."),
-    ("Tipo de Imposto CBS", "Tax Classification Code for CBS and IBS"),
-    ("Nº item do documento", "SAP Nº do NF"),
-    ("Aliquota ICMS_ST", "ICMS Taxa"),
-    ("ICMS Taxa", "Aliquota ICMS_ST"),
-    ("Grupo de imposto", "Grupo de mercadorias"),
-    ("Valor ICMS", "Valor COFINS e PIS"),
-    ("Lei COFINS", "Aliq. COFINS"),
-    ("Chave de acesso", "X9"),
-    ("Base ICMS", "ICMS Monta"),
-    ("Valor líquido", "TOTAL DO ITEM"),
-]
-
-
-def test_the_header_conflict_is_described_in_portuguese_for_people() -> None:
-    # O texto em inglês continua sendo a entrada da IA; o gêmeo em português
-    # é o que vai para a justificativa, com rótulos fiscais legíveis.
-    assert describe_header_conflict_pt("Base IBS", "IBSS Rate") == (
-        "conflito de papel semântico (base de cálculo vs alíquota)"
-    )
-    assert describe_header_conflict_pt("Valor ICMS", "IPI Value") == (
-        "conflito de família de tributo (ICMS vs IPI)"
-    )
-    assert describe_header_conflict_pt("Valor ICMS", "Valor COFINS e PIS") == (
-        "conflito de família de tributo (ICMS vs COFINS, PIS)"
-    )
-    assert describe_header_conflict_pt("CST PIS", "PIS Mont.") == (
-        "conflito de papel semântico (situação tributária vs base de cálculo)"
-    )
-    assert describe_header_conflict_pt("Aliquota ICMS_ST", "ICMS Taxa") == (
-        "conflito de qualificador do tributo (ST vs normal)"
-    )
-    assert describe_header_conflict_pt("Grupo de imposto", "Grupo de mercadorias") == (
-        "conflito de papel semântico (grupo de imposto vs grupo de produto)"
-    )
-    assert describe_header_conflict_pt("Chave de acesso", "X9") is None
-
-
-@pytest.mark.parametrize(("left", "right"), CONFLICT_PAIRS)
-def test_the_portuguese_conflict_always_agrees_with_the_english_one(left, right) -> None:
-    # Os dois saem da mesma análise estruturada: existe um quando existe o
-    # outro, e o tipo de conflito é o mesmo.
-    english = semantic_header_conflict(left, right)
-    portuguese = describe_header_conflict_pt(left, right)
-    assert (english is None) == (portuguese is None)
-    if english is None:
-        return
-    kinds = {
-        "tax-family conflict": "conflito de família de tributo",
-        "tax-qualifier conflict": "conflito de qualificador do tributo",
-        "semantic-role conflict": "conflito de papel semântico",
-    }
-    english_kind = english.split(" (", 1)[0]
-    assert portuguese.startswith(kinds[english_kind] + " (")
+@pytest.mark.parametrize(
+    ("left", "right", "english", "portuguese"),
+    [
+        ("Base IBS", "IBSS Rate", "semantic-role conflict (base vs rate)",
+         "tipos de campo incompatíveis (base de cálculo vs alíquota)"),
+        ("Valor ICMS", "IPI Value", "tax-family conflict (icms vs ipi)",
+         "tributos diferentes (ICMS vs IPI)"),
+        ("Base ICMS", "ICMS Mont.base excl.", "semantic-role conflict (base vs exempt)",
+         "tipos de campo incompatíveis (base de cálculo vs isentas)"),
+        ("CST PIS", "PIS Mont.", "semantic-role conflict (tax_status vs base)",
+         "tipos de campo incompatíveis (situação tributária vs base de cálculo)"),
+        ("Tipo de Imposto CBS", "Tax Classification Code for CBS and IBS",
+         "semantic-role conflict (tax_status vs tax_classification)",
+         "tipos de campo incompatíveis (situação tributária vs classificação tributária)"),
+        ("Nº item do documento", "SAP Nº do NF", "semantic-role conflict (item_id vs document_id)",
+         "tipos de campo incompatíveis (número do item vs número do documento)"),
+        ("Aliquota ICMS_ST", "ICMS Taxa", "tax-qualifier conflict (st vs regular)",
+         "tratamentos tributários diferentes (ST vs normal)"),
+        ("ICMS Taxa", "Aliquota ICMS_ST", "tax-qualifier conflict (regular vs st)",
+         "tratamentos tributários diferentes (normal vs ST)"),
+        ("Grupo de imposto", "Grupo de mercadorias", "semantic-role conflict (tax_group vs product_group)",
+         "tipos de campo incompatíveis (grupo de imposto vs grupo de produto)"),
+        ("Valor ICMS", "Valor COFINS e PIS", "tax-family conflict (icms vs cofins, pis)",
+         "tributos diferentes (ICMS vs COFINS, PIS)"),
+        ("Lei COFINS", "Aliq. COFINS", "semantic-role conflict (tax_rule vs rate)",
+         "tipos de campo incompatíveis (lei tributária vs alíquota)"),
+        ("Chave de acesso", "X9", None, None),
+        ("Base ICMS", "ICMS Monta", None, None),
+        ("Valor líquido", "TOTAL DO ITEM", None, None),
+        ("Base ICMS_ST", "ICMS Base", "tax-qualifier conflict (st vs regular)",
+         "tratamentos tributários diferentes (ST vs normal)"),
+        ("Valor PIS", "Valor COFINS", "tax-family conflict (pis vs cofins)",
+         "tributos diferentes (PIS vs COFINS)"),
+        ("Valor IBS", "Valor CBS", "tax-family conflict (ibs vs cbs)",
+         "tributos diferentes (IBS vs CBS)"),
+        ("Base ICMS", "Valor ICMS", "semantic-role conflict (base vs value)",
+         "tipos de campo incompatíveis (base de cálculo vs valor)"),
+        ("Alíquota IPI", "Valor IPI", "semantic-role conflict (rate vs value)",
+         "tipos de campo incompatíveis (alíquota vs valor)"),
+        ("Vlr Isen ICM", "Vlr Outr ICM", "semantic-role conflict (exempt vs other)",
+         "tipos de campo incompatíveis (isentas vs outras)"),
+        ("CST ICMS", "Valor ICMS", "semantic-role conflict (tax_status vs value)",
+         "tipos de campo incompatíveis (situação tributária vs valor)"),
+        ("CFOP", "CFOP source", None, None),
+        ("Base PIS/COFINS", "Base PIS", None, None),
+    ],
+)
+def test_header_conflicts_preserve_fiscal_meaning_in_both_languages(
+    left, right, english, portuguese,
+) -> None:
+    # Uma tabela cobre o texto enviado à IA e a descrição exibida ao revisor.
+    assert semantic_header_conflict(left, right) == english
+    assert describe_header_conflict_pt(left, right) == portuguese
 
 
 def test_one_word_subset_header_is_not_decisive_by_itself() -> None:
@@ -689,7 +654,7 @@ def test_tax_relationship_reopens_an_inconsistent_exact_header_match() -> None:
 
     results = map_columns(model, client, scorer, resolver)
 
-    assert resolver.calls == ["Aliquota CBS"]
+    assert resolver.calls == []  # A relação aritmética já resolve a escolha localmente.
     assert results[1].client_column == "Tax rate 4 decimals"
     assert results[1].status == "accepted"
 
@@ -792,7 +757,7 @@ def test_ambiguous_names_with_all_zero_rows_remain_for_review() -> None:
 
     assert result.client_column == "Tax value"
     assert result.status == "review"
-    # Abaixo do limiar, a justificativa é a prosa da IA, que passa intacta.
+    # Abaixo do threshold, a justificativa é a prosa da IA, que passa intacta.
     assert "zero" in result.reason
 
 
@@ -1112,7 +1077,7 @@ def test_a_trio_is_discovered_from_the_client_alone() -> None:
 
 
 def test_a_trio_needs_enough_rows_to_be_proof() -> None:
-    # Um encaixe perfeito em poucas linhas não prova nada.
+    # Poucas linhas não bastam para confirmar a relação, mesmo com aderência perfeita.
     base = [1000.0 + index for index in range(10)]
     sheet = table(
         ["IPI Base", "IPI Taxa", "IPI Valor"],
@@ -1212,7 +1177,7 @@ def test_unmatched_means_not_consumed_not_merely_unreferenced() -> None:
 
 
 def test_nothing_is_omitted_only_demoted() -> None:
-    # Uma coluna que não casa com nada continua listada, com o motivo.
+    # Uma coluna que não apresenta correspondência continua listada, com o motivo.
     client = table(["Vazio", "Ruido"], [[None, 7]] * 40)
     model = table(["Frete"], [[1]] * 40)
     rows = _unmatched({}, client, model)
@@ -1365,7 +1330,7 @@ def test_the_queue_holds_only_proposals_the_gate_did_not_deliver() -> None:
     )
     assert [r.model_column_number for r in rows] == [2]
     assert rows[0].gate_distance == pytest.approx(0.02)
-    assert rows[0].why_held == WHY_HELD_BELOW_THRESHOLD == "abaixo do limiar de aceite"
+    assert rows[0].why_held == WHY_HELD_BELOW_THRESHOLD == "confiança abaixo do threshold de aceitação"
 
 
 def test_a_proposal_onto_an_empty_column_can_never_be_confirmed() -> None:
@@ -1387,7 +1352,7 @@ def test_a_proposal_onto_an_empty_column_can_never_be_confirmed() -> None:
 
 def test_margin_breaks_ties_only_inside_the_clamped_band() -> None:
     # No teto, a confiança deixa de ordenar as linhas e a margem desempata;
-    # fora dele a confiança manda.
+    # fora dele, a ordenação usa a confiança.
     sheet = table(["A", "B", "C"], [["x", "y", "z"], ["x", "y", "z"]])
     rows = summarize_adjudication_queue(
         client_table=sheet,
@@ -1419,7 +1384,7 @@ def test_the_resolver_disagreement_uses_a_decimal_comma() -> None:
         final_threshold=0.90, sample_size=8,
     )
     assert rows[0].resolver_disagrees == RESOLVER_DISAGREES.format(llm_final="0,75")
-    assert rows[0].resolver_disagrees == "o resolvedor de IA atribuiu confiança 0,75"
+    assert rows[0].resolver_disagrees == "confiança informada pelo resolver de IA: 0,75"
 
 
 def test_the_report_names_the_step_that_carried_each_decision() -> None:
@@ -1433,9 +1398,9 @@ def test_the_report_names_the_step_that_carried_each_decision() -> None:
     results = map_columns(model, client, LexicalHeaderScorer(), None)
     by_name = {r.model_column: r for r in results}
     icms = by_name["Base ICMS"]
-    # cabeçalho e trio aparecem; a decisão vai para a evidência que se transfere
+    # O trio apoia a escolha, mas o aceite veio do cabeçalho.
     assert icms.supported_by == "lexical + arithmetic"
-    assert icms.decided_by == "arithmetic"
+    assert icms.decided_by == "lexical"
     assert icms.reason == REASON_PASS_ONE_ACCEPTED
     # uma coluna que só tem o cabeçalho diz isso, e só isso
     serie = by_name["Série"]
@@ -1476,7 +1441,7 @@ def test_a_decisive_proof_is_reported_as_arithmetic_support() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Frases escritas em português na origem
+# Mensagens do relatório em português
 # ---------------------------------------------------------------------------
 
 
@@ -1521,12 +1486,12 @@ def test_a_catalog_decision_explains_itself_in_portuguese() -> None:
         coverage="85,7%",
     )
     assert decision.reason.startswith(
-        "A tabela oficial versionada de CFOP cobre 85,7% dos 7 códigos distintos usados"
+        "Na versão consultada da tabela oficial de CFOP, 85,7% dos 7 códigos distintos"
     )
 
 
 def test_a_vacuous_proposal_names_the_column_in_portuguese() -> None:
-    # A segunda ocorrência de 'Nº FCI' casa perfeitamente pelo cabeçalho e
+    # A segunda ocorrência de 'Nº FCI' corresponde exatamente pelo cabeçalho e
     # está vazia: a trava de coluna vazia recusa o aceite e a justificativa
     # cita a coluna com o sufixo em português; em memória ele segue em inglês.
     model = table(["Nº FCI"], [["A1"], ["B2"]])
@@ -1561,7 +1526,7 @@ def test_an_offline_review_explains_itself_in_portuguese() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Gravação no esquema em português e ida e volta pelo report_schema
+# Gravação no schema em português e ida e volta pelo report_schema
 # ---------------------------------------------------------------------------
 
 #: Colunas do revisor, acrescentadas em branco ao fim da aba Mapeamentos.
@@ -1710,11 +1675,10 @@ def _assert_same_cell(expected, actual, where) -> None:
 
 
 def _assert_round_trip(rows, frame: pd.DataFrame, table_name: str, extra=()) -> None:
-    """O quadro lido do arquivo, convertido pelo report_schema, é igual a asdict(linhas).
+    """Verifica se gravar e ler os resultados preserva os valores de ``asdict``.
 
-    Os campos de máquina (situação, método, etapas, veto, catálogo, sinais,
-    nomes de exibição) voltam ao valor interno; as frases, já escritas em
-    português na origem, voltam intactas; os números voltam iguais.
+    Campos estruturados retornam à representação interna. Mensagens e valores
+    numéricos devem ser preservados durante a conversão pelo ``report_schema``.
     """
     internal = rs.to_internal_frame(frame, table_name)
     expected = [asdict(row) for row in rows]
@@ -1852,7 +1816,7 @@ def test_an_unknown_output_extension_is_refused_in_portuguese(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Linha de comando
+# CLI
 # ---------------------------------------------------------------------------
 
 

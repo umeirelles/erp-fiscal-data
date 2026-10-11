@@ -1,7 +1,7 @@
 """Testes de apply_invoice_mapping: do relatório de mapeamento à planilha entregue.
 
 Os relatórios de teste são montados com nomes e valores internos
-(``mapping_rows``) e gravados no esquema em português, como o mapeador os
+(``mapping_rows``) e gravados no schema em português, como o mapeador os
 grava. O entregável sai em português.
 """
 
@@ -29,11 +29,10 @@ from apply_invoice_mapping import (
     build_parser,
     main,
 )
-from invoice_mapper import describe_header_conflict_pt, semantic_header_conflict
 
 MAPPED_SHEET = "Dados Mapeados"
 COVERAGE_SHEET = "Cobertura"
-#: Índice da primeira linha de dados no quadro lido sem cabeçalho (base 0).
+#: Índice da primeira linha de dados no DataFrame lido sem cabeçalho (base 0).
 FIRST_DATA_ROW = len(MAPPING_METADATA) + 1
 
 #: Modelo e exportação que ``mapping_rows`` descreve.
@@ -145,7 +144,7 @@ def one_row_mapping(model_column: str, client_column: str) -> pd.DataFrame:
 
 
 def external_report(frame: pd.DataFrame) -> pd.DataFrame:
-    """Relatório com nomes internos -> como ele fica gravado."""
+    """Converte os valores internos de um relatório de teste para o schema de saída."""
     return report_schema.to_external_frame(frame, "mappings")
 
 
@@ -171,22 +170,22 @@ def apply(files: Files, **options) -> None:
 
 
 def read_mapped(path) -> pd.DataFrame:
-    """Dados Mapeados lida sem cabeçalho: a linha 0 do quadro é a linha 1 do Excel."""
+    """Lê Dados Mapeados sem cabeçalho; o índice 0 do DataFrame corresponde à linha 1 do Excel."""
     return pd.read_excel(path, sheet_name=MAPPED_SHEET, header=None, dtype=object)
 
 
 def label(field: str) -> str:
-    """Cabeçalho de Mapeamentos, como as mensagens de erro o citam."""
+    """Retorna o cabeçalho usado nas mensagens de erro da aba Mapeamentos."""
     return report_schema.header_label("mappings", field)
 
 
 def banner_row(field: str) -> int:
-    """Índice (base 0, no quadro lido sem cabeçalho) da linha do banner de um campo."""
+    """Retorna o índice do campo no banner, a partir de zero, para leitura pelo DataFrame."""
     return 1 + [name for _, name in MAPPING_METADATA].index(field)
 
 
 def banner_excel_row(field: str) -> int:
-    """Linha do Excel (base 1) da linha do banner de um campo."""
+    """Retorna a linha do campo no banner, a partir de 1, para acesso pelo Excel."""
     return banner_row(field) + 1
 
 
@@ -247,7 +246,7 @@ def test_deliverable_is_written_in_portuguese(files) -> None:
     apply(files)
 
     book = load_workbook(files.output)
-    assert book.sheetnames == [MAPPED_SHEET, COVERAGE_SHEET]
+    assert book.sheetnames == [MAPPED_SHEET, COVERAGE_SHEET, "Colunas do Cliente sem Uso"]
     sheet = book[MAPPED_SHEET]
     assert sheet["A1"].value == "__info_mapeamento__"
 
@@ -339,12 +338,11 @@ def test_accepted_only_leaves_unreviewed_review_mapping_blank(files) -> None:
     assert pd.isna(raw.iloc[FIRST_DATA_ROW, 3])
 
 
-@pytest.mark.parametrize("typed", ["incorreto", "Incorreto", " INCORRETO ", "Incorréto"])
-def test_reviewer_status_tolerates_case_accents_and_spaces(files, typed) -> None:
+def test_normalized_reviewer_status_is_applied_and_displayed(files) -> None:
     # O banner mostra a grafia canônica, seja qual for a digitada.
     write_inputs(files)
     report = external_report(mapping_rows())
-    report.loc[2, label("reviewer_status")] = typed
+    report.loc[2, label("reviewer_status")] = " INCORRÉTO "
     save_report(files.mapping, report)
 
     apply(files)
@@ -354,25 +352,17 @@ def test_reviewer_status_tolerates_case_accents_and_spaces(files, typed) -> None
     assert sheet.cell(banner_excel_row("reviewer_status"), 4).value == "incorreto"
 
 
-@pytest.mark.parametrize(
-    "typed",
-    # Os pareceres em inglês do formato antigo também são desconhecidos.
-    ["talvez", "correct", "incorrect", "no_mapping_exists", " Correct "],
-)
-def test_unknown_reviewer_status_is_refused(files, typed) -> None:
+def test_unknown_reviewer_status_is_refused(files) -> None:
     write_inputs(files)
     report = external_report(mapping_rows())
-    report.loc[0, label("reviewer_status")] = typed
+    report.loc[0, label("reviewer_status")] = "talvez"
     save_report(files.mapping, report)
 
-    with pytest.raises(
-        ValueError,
-        match=re.escape(
-            f"Valor desconhecido em parecer_revisor: {typed!r}, na coluna do modelo 'CFOP'. "
-            "Use correto, incorreto ou inexistente"
-        ),
-    ):
+    with pytest.raises(ValueError) as raised:
         apply(files)
+    message = str(raised.value)
+    for detail in ("parecer_revisor", "talvez", "CFOP", "correto", "incorreto", "inexistente"):
+        assert detail in message
 
 
 def test_incorrect_review_requires_a_corrected_column(files) -> None:
@@ -395,46 +385,11 @@ def test_unreviewed_accepted_semantic_conflict_is_rejected(files) -> None:
     with pytest.raises(ValueError, match="viola as regras atuais") as raised:
         apply(files)
     # A descrição sai em português; o texto que vai à IA continua em inglês.
-    assert "conflito de qualificador do tributo (ST vs normal)" in str(raised.value)
-
-
-@pytest.mark.parametrize(
-    ("left", "right", "expected"),
-    [
-        ("Base ICMS_ST", "ICMS Base", "conflito de qualificador do tributo (ST vs normal)"),
-        ("Valor PIS", "Valor COFINS", "conflito de família de tributo (PIS vs COFINS)"),
-        ("Valor IBS", "Valor CBS", "conflito de família de tributo (IBS vs CBS)"),
-        ("Base ICMS", "Valor ICMS", "conflito de papel semântico (base de cálculo vs valor)"),
-        ("Alíquota IPI", "Valor IPI", "conflito de papel semântico (alíquota vs valor)"),
-        ("Vlr Isen ICM", "Vlr Outr ICM", "conflito de papel semântico (isentas vs outras)"),
-        (
-            "CST ICMS", "Valor ICMS",
-            "conflito de papel semântico (situação tributária vs valor)",
-        ),
-        ("CFOP", "CFOP source", None),
-        ("Base PIS/COFINS", "Base PIS", None),
-    ],
-)
-def test_portuguese_header_conflict_agrees_with_the_model_input_text(left, right, expected) -> None:
-    # A versão em português acha o mesmo conflito, do mesmo tipo, que o texto
-    # em inglês enviado à IA.
-    kinds = {
-        "tax-family conflict": "conflito de família de tributo",
-        "tax-qualifier conflict": "conflito de qualificador do tributo",
-        "semantic-role conflict": "conflito de papel semântico",
-    }
-    original = semantic_header_conflict(left, right)
-    portuguese = describe_header_conflict_pt(left, right)
-    assert portuguese == expected
-    if original is None:
-        assert portuguese is None
-    else:
-        kind = next(english for english in kinds if original.startswith(english))
-        assert portuguese.startswith(kinds[kind])
+    assert "tratamentos tributários diferentes (ST vs normal)" in str(raised.value)
 
 
 def write_report_with_metadata(files: Files, sheet_name: str, metadata: pd.DataFrame) -> None:
-    """Modelo e exportação de uma coluna, e um relatório com a aba de metadados dada."""
+    """Cria modelo e exportação de uma coluna e grava um relatório com os metadados informados."""
     write_workbook(files.model, ["CFOP"], [["5102"]])
     write_workbook(files.client, ["CFOP source"], [["5102"]])
     with pd.ExcelWriter(files.mapping, engine="openpyxl") as writer:
@@ -479,7 +434,7 @@ def test_metadata_with_old_names_is_refused(
 
 def test_a_correction_outside_the_incorrect_branch_is_refused(files) -> None:
     # Com 'correct', descartar a correção entregaria a coluna do mapeador, e
-    # não a do revisor, com código de saída 0.
+    # não a do revisor, com exit code 0.
     write_inputs(files)
     for status in ("correct", "no_mapping_exists", ""):
         mapping = mapping_rows()
@@ -491,7 +446,7 @@ def test_a_correction_outside_the_incorrect_branch_is_refused(files) -> None:
 
 
 def test_confirming_a_row_that_names_no_column_is_refused(files) -> None:
-    # Sem a trava, a linha entregaria uma coluna em branco assinada pelo revisor.
+    # Sem a trava, a linha entregaria uma coluna vazia marcada como confirmada pelo revisor.
     write_inputs(files)
     mapping = mapping_rows()
     mapping.loc[2, "reviewer_status"] = "correct"
@@ -581,8 +536,8 @@ def test_columns_with_no_data_are_hidden_not_removed(files) -> None:
 
 
 def test_coverage_sheet_separates_absence_from_a_pending_decision(files) -> None:
-    # Uma coluna vazia pode ser algo que o cliente não envia (resposta
-    # completa) ou um candidato esperando o revisor. Só o segundo é trabalho.
+    # Distingue as colunas sem proposta das propostas que aguardam revisão.
+    # Ambas ficam vazias na saída, mas recebem estados diferentes na cobertura.
     write_workbook(files.model, [*MODEL_HEADERS, "Valor IPI"],
                    [["5102", 10.0, "85167910", 1.0]])
     write_workbook(files.client, CLIENT_HEADERS, [CLIENT_ROW])

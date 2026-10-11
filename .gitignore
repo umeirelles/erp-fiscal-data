@@ -1,14 +1,18 @@
+# Configuração local e ambiente Python
 .env
 .venv/
+
+# Arquivos regeneráveis
 __pycache__/
-.pytest_cache/
 *.py[cod]
-
-# Reexecuções temporárias de auditoria; os relatórios de mapeamento publicados
-# continuam versionados explicitamente.
-mapping_*_review_v*.xlsx
-
-# Caches de ferramentas e dados de cobertura de testes; são gerados de novo
-# quando necessário.
-.coverage
+.pytest_cache/
 .ruff_cache/
+.coverage
+
+# Rascunhos de mapeamento e avaliação; as saídas atuais ficam em data/.
+scratch/
+
+# Metadados do macOS e arquivos temporários do Excel
+.DS_Store
+~$*.xlsx
+~$*.XLSX

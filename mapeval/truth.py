@@ -6,6 +6,7 @@ especificação no nível de registro, e sap_terumo não tem de-para.
 
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -13,11 +14,10 @@ import openpyxl
 
 from mapeval.excel import parse_coluna_annotation
 
-# Linhas em que o próprio gabarito está errado e o mapeador está certo, cada
-# uma verificada nos dados do cliente. Sem elas a avaliação puniria o
-# comportamento correto; --strict-key-only pontua contra o gabarito cru e
-# mostra que só estas linhas separam os dois números. As justificativas nunca
-# são impressas (a CLI mostra só os números das colunas).
+# Correções do gabarito verificadas nos dados do cliente. Sem elas, a avaliação
+# classificaria essas escolhas corretas como erros. --strict-key-only usa o
+# gabarito original para permitir a comparação. A CLI mostra apenas os números
+# das colunas corrigidas; as justificativas ficam neste registro.
 KEY_CORRECTIONS: dict[str, dict[int, tuple[int, str]]] = {
     "oracle": {
         213: (36, "o gabarito aponta c37 ALIQ COFINS; c36 ALIQ PIS é a alíquota do PIS"),
@@ -33,7 +33,7 @@ KEY_CORRECTIONS: dict[str, dict[int, tuple[int, str]]] = {
 
 @dataclass(frozen=True)
 class AnswerKey:
-    """As colunas que um cliente de fato tem, segundo a anotação do próprio cliente."""
+    """Reúne as correspondências anotadas pelo cliente e as correções verificadas do gabarito."""
 
     client: str
     #: número da coluna do modelo (a partir de 1) -> número da coluna do cliente (a partir de 1)
@@ -42,8 +42,17 @@ class AnswerKey:
     corrections: dict[int, str] = field(default_factory=dict)
 
     @property
+    def source_conflicts(self) -> dict[int, list[int]]:
+        """Lista origens atribuídas a mais de um destino; exige revisão do gabarito."""
+        targets = defaultdict(list)
+        for target, source in self.present.items():
+            targets[source].append(target)
+        return {source: sorted(columns) for source, columns in sorted(targets.items())
+                if len(columns) > 1}
+
+    @property
     def denominator(self) -> int:
-        """O único denominador legítimo do recall. Nunca 227."""
+        """Retorna o número de colunas anotadas no gabarito, usado como denominador do recall."""
         return len(self.present)
 
 
@@ -53,7 +62,7 @@ def load_answer_key(
     *,
     apply_corrections: bool = True,
 ) -> AnswerKey:
-    """Lê a linha 1 de uma planilha de-para num mapa coluna do modelo -> coluna do cliente."""
+    """Lê a primeira linha do de-para e associa os números das colunas do modelo aos do cliente."""
     workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
     try:
         sheet = workbook[workbook.sheetnames[0]]

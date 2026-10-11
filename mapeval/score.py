@@ -1,6 +1,6 @@
-"""Pontua um relatório de mapeamento contra um gabarito.
+"""Calcula as métricas de um relatório de mapeamento usando o gabarito do cliente.
 
-O relatório está no esquema em português. A leitura passa por
+O relatório está no schema em português. A leitura passa por
 ``report_schema``, que devolve os cabeçalhos com os nomes internos; a
 situação e o método voltam ao vocabulário interno (``accepted``,
 ``catalog``...) antes de qualquer comparação.
@@ -16,6 +16,8 @@ from pathlib import Path
 import openpyxl
 
 import report_schema
+from mapping_review import normalize_review, resolve_mapping
+from spreadsheet import SheetTable, positive_column_number
 from mapeval.outcomes import Outcome, classify
 from mapeval.truth import AnswerKey
 
@@ -35,16 +37,16 @@ class Row:
     method: str
     final_confidence: float | None
     outcome: Outcome
-    #: Identidade aritmética, nos dados do próprio cliente, que põe esta coluna aqui.
+    #: Relação aritmética nos dados do cliente que sustenta a escolha da coluna.
     arithmetic_proof: str | None = None
 
     @property
     def header_independent(self) -> bool:
-        """Se algo além do cabeçalho sustenta o mapeamento: prova aritmética decisiva ou catálogo.
+        """Verifica se a escolha tem apoio de uma prova aritmética decisiva ou de um catálogo.
 
-        Uma prova que dois blocos disjuntos do mesmo tributo satisfazem não
-        distingue nenhum deles; o mapeador a marca com "não distingue esta
-        coluna", e ``proof_is_decisive`` a descarta.
+        Quando dois blocos do mesmo tributo satisfazem a equação, ela não identifica
+        qual deles usar. ``proof_is_decisive`` reconhece o marcador desse caso e
+        desconsidera a prova no cálculo da métrica.
         """
         return (
             report_schema.proof_is_decisive(self.arithmetic_proof)
@@ -57,9 +59,9 @@ class Score:
     client: str
     rows: list[Row] = field(default_factory=list)
     present: int = 0
-    #: Entregues sobre uma coluna sem dado. Bloqueante.
+    #: Mapeamentos aceitos para colunas vazias; fazem a avaliação retornar exit code 1.
     vacuous_targets: list[Row] = field(default_factory=list)
-    #: Propostas sobre uma coluna sem dado, mas não entregues. Só informativo.
+    #: Propostas para colunas vazias ainda não entregues; não alteram o exit code.
     vacuous_proposals: list[Row] = field(default_factory=list)
 
     def count(self, outcome: Outcome) -> int:
@@ -67,7 +69,7 @@ class Score:
 
     @property
     def recall_on_present(self) -> float | None:
-        """Corretos / colunas que o cliente de fato tem. Nunca sobre 227."""
+        """Calcula o recall usando apenas as colunas presentes no gabarito como denominador."""
         return self.count(Outcome.CORRECT) / self.present if self.present else None
 
     @property
@@ -76,11 +78,7 @@ class Score:
 
     @property
     def delivered_correct(self) -> int:
-        """Mapeamentos corretos com situação ``accepted``: o que o cliente recebe.
-
-        O apply também entrega as linhas confirmadas pelo revisor; esta conta
-        ainda as ignora (KNOWN_ISSUES 2.6).
-        """
+        """Conta os acertos entregues após aplicar os pareceres do revisor."""
         return sum(
             1
             for r in self.rows
@@ -89,15 +87,14 @@ class Score:
 
     @property
     def delivered_recall(self) -> float | None:
-        """O número que descreve o produto. Nunca acima de recall_on_present."""
+        """Calcula o recall dos mapeamentos corretos aceitos; não ultrapassa ``recall_on_present``."""
         return self.delivered_correct / self.present if self.present else None
 
     @property
     def withheld_correct(self) -> list[Row]:
-        """Coluna certa encontrada e retida pelo limiar de aceite.
+        """Retorna as propostas corretas ainda não aceitas, por confiança decrescente.
 
-        Em ordem decrescente de confiança, que é a ordem em que um revisor deve
-        trabalhá-las.
+        Essa ordenação ajuda o revisor a priorizar a análise.
         """
         held = [
             r
@@ -108,8 +105,10 @@ class Score:
 
     @property
     def accept_precision_lower(self) -> float | None:
-        """Aceites sem veredito contam como errados, para que um aceite novo e
-        não verificado baixe o limite, em vez de deixá-lo lisonjeiramente igual."""
+        """Calcula o limite inferior de precisão considerando apenas os acertos confirmados.
+
+        Mapeamentos fora do gabarito entram no denominador, mas não no numerador.
+        Assim, uma nova escolha sem validação reduz o limite inferior."""
         accepts = self.accepted
         if not accepts:
             return None
@@ -120,9 +119,9 @@ class Score:
     def undetermined_accepts(self) -> list[Row]:
         """Aceites em colunas do modelo fora do gabarito, que ele não consegue julgar.
 
-        O código de saída lê só as fabricações, então uma mudança que inventa
-        mapeamentos fora do gabarito (uma regra de ICSP<-ICMS ajustada à mão,
-        por exemplo) sai com 0. Esta contagem, impressa, é o que a denuncia.
+        O exit code considera apenas fabricações. Uma escolha errada em coluna
+        preenchida fora do gabarito pode passar pela avaliação com exit code 0;
+        esta contagem permite acompanhar os casos sem validação.
         """
         return [r for r in self.accepted if r.outcome is Outcome.UNDETERMINED]
 
@@ -138,9 +137,9 @@ class Score:
     def correct_pairs(self) -> set[tuple[int, int]]:
         """Os pares (coluna do modelo, coluna do cliente) corretos.
 
-        Para comparar duas execuções como conjunto: perder uma coluna e ganhar
-        outra deixa a contagem igual e ainda assim é uma regressão. Usado pelo
-        protocolo de docs/EVALUATION.md.
+        Permite comparar os pares entre execuções. A mesma contagem pode esconder
+        a perda de um acerto compensada por outro. O procedimento de
+        docs/EVALUATION.md usa essa comparação.
         """
         return {
             (r.model_column, r.client_column)
@@ -150,12 +149,11 @@ class Score:
 
 
 @lru_cache(maxsize=None)
-def _vacuous_client_columns(client_path: str | Path) -> frozenset[int]:
-    """Colunas do cliente (a partir de 1) sem nenhuma célula preenchida na primeira aba.
+def _client_structure(client_path: str | Path) -> tuple[SheetTable, frozenset[int]]:
+    """Lê os cabeçalhos e identifica as colunas vazias (a partir de 1) na primeira aba.
 
-    Vazia, não toda zerada: uma coluna zerada pode ser legítima, e há colunas
-    zeradas nos próprios gabaritos. Fica em cache porque varrer a exportação
-    inteira é o único custo real da avaliação.
+    Valores zero contam como dados. O resultado fica em cache porque a leitura
+    completa da exportação concentra a maior parte do custo da avaliação.
     """
     workbook = openpyxl.load_workbook(client_path, read_only=True, data_only=True)
     try:
@@ -169,13 +167,19 @@ def _vacuous_client_columns(client_path: str | Path) -> frozenset[int]:
                     populated[index] += 1
     finally:
         workbook.close()
-    return frozenset(i + 1 for i, count in enumerate(populated) if count == 0)
+    return SheetTable.from_headers(header), frozenset(
+        i + 1 for i, count in enumerate(populated) if count == 0
+    )
+
+
+def _vacuous_client_columns(client_path: str | Path) -> frozenset[int]:
+    return _client_structure(Path(client_path))[1]
 
 
 def read_mappings(report_path: str | Path) -> tuple[list[tuple], dict[str, int]]:
     """Lê a aba de mapeamentos de um relatório.
 
-    Devolve as linhas cruas (a primeira é o cabeçalho) e o índice {nome
+    Retorna as linhas sem conversão (a primeira contém o cabeçalho) e o índice {nome
     interno do campo: posição da coluna}. Os valores das células não são
     convertidos; quem compara situação ou método usa
     ``report_schema.internal_value``.
@@ -203,14 +207,24 @@ def score_report(
     client_path: str | Path,
     key: AnswerKey,
 ) -> Score:
-    """Pontua um relatório de mapeamento arquivado. Não roda o mapeador."""
-    vacuous = _vacuous_client_columns(Path(client_path))
+    """Avalia um relatório já gravado, sem executar o mapeador."""
+    client, vacuous = _client_structure(Path(client_path))
     raw, column = read_mappings(report_path)
 
     result = Score(client=key.client, present=key.denominator)
-    # A linha de dados n é a coluna do modelo n (KNOWN_ISSUES 2.8).
-    for position, cells in enumerate(raw[1:], start=1):
-        row = _score_row(position, cells, column, key, vacuous)
+    numbers = [positive_column_number(cells[column["model_column_number"]],
+                                      "numero_coluna_modelo") for cells in raw[1:]]
+    if len(set(numbers)) != len(numbers):
+        raise ValueError("O relatório tem numero_coluna_modelo repetido")
+    if sorted(numbers) != list(range(1, len(numbers) + 1)):
+        raise ValueError("O relatório deve conter cada numero_coluna_modelo de 1 a N exatamente uma vez")
+    delivered_sources: set[int] = set()
+    for position, cells in sorted(zip(numbers, raw[1:])):
+        row = _score_row(position, cells, column, key, vacuous, client)
+        if row.status == "accepted" and row.client_column is not None:
+            if row.client_column in delivered_sources:
+                raise ValueError(f"A coluna do cliente {row.client_column} foi confirmada para mais de um destino")
+            delivered_sources.add(row.client_column)
         result.rows.append(row)
         if row.outcome is Outcome.FABRICATED:
             result.vacuous_targets.append(row)
@@ -225,11 +239,17 @@ def _score_row(
     column: dict[str, int],
     key: AnswerKey,
     vacuous: frozenset[int],
+    client: SheetTable,
 ) -> Row:
-    """Lê uma linha da aba de mapeamentos e classifica a coluna do modelo dela."""
-    chosen = cells[column["client_column_number"]]
-    chosen = None if chosen in (None, "") else int(chosen)
-    status = str(report_schema.internal_value("mappings", "status", cells[column["status"]]))
+    """Lê a proposta de uma linha, converte seus valores internos e classifica o resultado."""
+    record = {field: report_schema.internal_value("mappings", field, cells[index])
+              for field, index in column.items()}
+    record.setdefault("reviewer_status", "")
+    record.setdefault("correct_client_column", "")
+    record["reviewer_status"] = normalize_review(record)
+    decision = resolve_mapping(record, client)
+    chosen = decision.column.index + 1 if decision.column is not None else None
+    status = decision.status
     method = str(
         report_schema.internal_value("mappings", "method", cells[column["method"]]) or ""
     )
@@ -254,5 +274,5 @@ def _score_row(
 
 
 def method_census(score: Score) -> Counter[str]:
-    """Quantos aceites há por método, com os métodos no vocabulário interno."""
+    """Conta os mapeamentos aceitos por método, usando os nomes internos."""
     return Counter(r.method for r in score.accepted)

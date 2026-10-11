@@ -1,7 +1,7 @@
-"""Baixa cópias atualizadas das tabelas oficiais de códigos fiscais para reference_data/.
+"""Atualiza os catálogos fiscais de ``reference_data/`` a partir das fontes oficiais.
 
-Precisa de acesso à internet e regrava os CSV e o manifest.json do diretório
-de saída.
+O download requer acesso à internet. A gravação substitui os CSVs e o
+``manifest.json`` no diretório de saída.
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ def download(url: str, *, nfe: bool = False) -> bytes:
 
 
 def clean_code(value: object, width: int) -> str:
-    """Os dígitos do código completados com zeros até ``width``; vazio se não couber."""
+    """Completa o código com zeros até ``width``; retorna vazio se exceder o tamanho."""
     if pd.isna(value):
         return ""
     if isinstance(value, (int, float)) and float(value).is_integer():
@@ -64,7 +64,11 @@ def clean_code(value: object, width: int) -> str:
 
 
 def iso_date(value: object) -> str:
-    """A data em AAAA-MM-DD; vazio para célula vazia, inválida ou 9999-12-31 (sem fim)."""
+    """Converte a data para YYYY-MM-DD.
+
+    Retorna vazio para células ausentes, datas inválidas e ``9999-12-31``,
+    que representa ausência de data final.
+    """
     if pd.isna(value) or str(value).strip() in {"", "9999-12-31"}:
         return ""
     parsed = pd.to_datetime(value, errors="coerce")
@@ -90,7 +94,7 @@ def standard_frame(
 
 
 def official_frames() -> tuple[dict[str, pd.DataFrame], dict[str, dict[str, object]]]:
-    """Baixa as tabelas oficiais e as converte; devolve os quadros e os metadados do manifesto."""
+    """Baixa as tabelas oficiais e retorna os DataFrames convertidos e os metadados do manifesto."""
     cfop_bytes = download(CFOP_URL, nfe=True)
     ibs_bytes = download(IBS_CBS_URL, nfe=True)
     municipality_bytes = download(MUNICIPALITY_URL, nfe=True)
@@ -122,7 +126,7 @@ def _codes(column: pd.Series, width: int) -> pd.Series:
 
 
 def _full_width_unique(frame: pd.DataFrame, width: int) -> pd.DataFrame:
-    """Descarta os códigos que não têm a largura cheia e as repetições."""
+    """Remove códigos com tamanho diferente do esperado e elimina duplicatas."""
     return frame[frame["code"].str.len().eq(width)].drop_duplicates("code")
 
 
@@ -153,7 +157,7 @@ def _municipality_frame(content: bytes) -> pd.DataFrame:
 
 
 def _ibs_cbs_cst_frame(content: bytes) -> pd.DataFrame:
-    # O nome da aba muda a cada publicação (KNOWN_ISSUES 3.14).
+    # Confira o nome da aba ao atualizar a publicação.
     raw = _read_sheet(content, "CST 2026-06-01 Pub")
     frame = pd.DataFrame(
         {
@@ -163,7 +167,7 @@ def _ibs_cbs_cst_frame(content: bytes) -> pd.DataFrame:
             "valid_to": "",
         }
     )
-    # Sem o filtro de largura das outras tabelas (KNOWN_ISSUES 3.14).
+    # Esta extração ainda não aplica o filtro de largura das outras tabelas.
     return frame.drop_duplicates("code")
 
 
@@ -198,7 +202,7 @@ def _ncm_frame(payload: dict) -> pd.DataFrame:
 
 
 def _official_metadata(*, ncm_version: str) -> dict[str, dict[str, object]]:
-    """As entradas do manifesto das tabelas baixadas; só a versão do NCM vem do download."""
+    """Monta os metadados das tabelas baixadas; apenas a versão do NCM é obtida no download."""
     return {
         "cfop": {
             "width": 4,
@@ -231,10 +235,9 @@ def _official_metadata(*, ncm_version: str) -> dict[str, dict[str, object]]:
         "ibs_cbs_classification": {
             "width": 6,
             "normalizer": "digits",
-            # Muitos códigos válidos começam com zeros (000001), então uma
-            # coluna de situação com inteiros pode coincidir com eles depois
-            # que o Excel corta os zeros: evidência para a IA, nunca decisão
-            # só pelo catálogo.
+            # Códigos como 000001 podem coincidir com inteiros comuns quando
+            # o Excel remove os zeros. Por isso, o catálogo apoia a análise
+            # da IA, mas não basta para decidir o mapeamento.
             "specificity": 0.85,
             "source_version": "IT 2025.002 v1.60; published 2026-06-23",
             "source_url": IBS_CBS_URL,
@@ -243,7 +246,7 @@ def _official_metadata(*, ncm_version: str) -> dict[str, dict[str, object]]:
 
 
 def static_frames() -> tuple[dict[str, pd.DataFrame], dict[str, dict[str, object]]]:
-    """As tabelas de CST e CSOSN, escritas aqui a partir dos guias da EFD."""
+    """Monta as tabelas de CST e CSOSN mantidas no código com base nos guias da EFD."""
     # CST do ICMS = origem (0 a 8) + tratamento tributário.
     icms_treatments = {
         "00": "Tributada integralmente",

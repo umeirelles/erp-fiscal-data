@@ -1,8 +1,8 @@
-"""O resultado de cada coluna do modelo na avaliação.
+"""Classifica o resultado do mapeamento de cada coluna.
 
-Os resultados nunca se reduzem a um número só: perder uma coluna e fabricar
-outra são falhas de custo muito diferente, e numa saída fiscal uma 'Base CBS'
-fabricada é muito pior do que uma vazia.
+As categorias separam uma coluna não encontrada de uma escolha errada ou
+de uma coluna vazia aceita como origem. Essa distinção permite avaliar o
+impacto de cada erro, que uma taxa única de acerto não mostraria.
 """
 
 from __future__ import annotations
@@ -23,9 +23,9 @@ class Outcome(enum.Enum):
     MISSED = "missed"
     #: O gabarito indica uma coluna e o mapeador propôs outra.
     WRONG_COLUMN = "wrong_column"
-    #: Entregue sobre uma coluna do cliente sem nenhum dado.
+    #: Mapeamento aceito cuja coluna de origem está vazia.
     FABRICATED = "fabricated"
-    #: Coluna do modelo fora do gabarito: sem veredito, não conta a favor de nada.
+    #: Campo fora do gabarito; não há referência para confirmar a escolha.
     UNDETERMINED = "undetermined"
 
 
@@ -36,19 +36,19 @@ def classify(
     chosen_is_vacuous: bool,
     delivered: bool = True,
 ) -> Outcome:
-    """Classifica uma coluna do modelo; ``expected_client_column`` é None fora do gabarito.
+    """Compara a escolha com o gabarito e verifica se houve aceitação de uma coluna vazia.
 
-    A coluna vazia é verificada antes de tudo: entregue, ela chega ao cliente
-    parecendo mapeada e em branco, então é fabricação mesmo que o gabarito
-    concorde. Só vale para o que é entregue, porque o apply não preenche uma
-    proposta em revisão. Vazia é sem nenhuma célula preenchida, não toda
-    zerada: uma operação isenta tem base de cálculo zero legítima.
+    ``expected_client_column=None`` indica que o campo não consta no gabarito.
+    Antes dessa comparação, uma coluna vazia entregue é classificada como
+    fabricação, mesmo que o gabarito aponte para ela. Propostas ainda em revisão
+    não entram nessa categoria. Uma coluna preenchida com zeros contém dados
+    e não é considerada vazia.
     """
     if delivered and chosen_client_column is not None and chosen_is_vacuous:
         return Outcome.FABRICATED
     if expected_client_column is None:
-        # O gabarito não diz nada aqui; inventar um veredito, mesmo o de
-        # "ausente com acerto", inflaria todas as taxas.
+        # Fora do gabarito, não é possível confirmar nem a escolha nem a ausência.
+        # Contabilizar esses casos como acertos aumentaria as métricas sem validação.
         return Outcome.UNDETERMINED
     if chosen_client_column is None:
         return Outcome.MISSED

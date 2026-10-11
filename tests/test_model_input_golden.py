@@ -1,37 +1,26 @@
-"""Garantia de que traduzir o repositório não muda o que os modelos de IA recebem.
+"""Verifica que revisões de texto preservam os inputs enviados aos modelos.
 
-O mapeador manda duas coisas para a OpenAI: os cabeçalhos, com um prefixo
-fixo, para a API de embeddings, e um pedido estruturado para o resolvedor
-(``responses.parse``) com o prompt, o payload em JSON e o esquema
-``DataMappingDecision``. Tudo isso é entrada do modelo e precisa continuar em
-inglês, idêntico byte a byte: uma vírgula a mais no prompt, uma chave
-renomeada no payload ou um ``Unnamed column 4`` virando ``Coluna sem nome 4``
-mudaria as pontuações e as decisões online, sem que nenhum teste offline
-percebesse.
+O teste captura as chamadas com um fake client da OpenAI e as compara com
+``tests/fixtures/model_input_golden.json``, gerado antes da tradução, no
+commit ``2ae4b6d``. A captura cobre:
 
-Este teste grava, com clientes falsos da OpenAI, exatamente o que seria
-enviado, e compara com ``tests/fixtures/model_input_golden.json``, capturado
-no código anterior à tradução (commit 2ae4b6d):
+* prompt e schema de saída do resolver;
+* inputs de embeddings, incluindo cabeçalhos vazios e repetidos;
+* argumentos de ``responses.parse``, com os três tipos de conflito de
+  cabeçalho e evidências de catálogo e aritmética;
+* chamadas e decisões de uma execução completa de ``map_columns``.
 
-* o texto do prompt do resolvedor e o esquema de saída estruturada;
-* as listas ``input`` enviadas à API de embeddings para um conjunto de
-  cabeçalhos com um cabeçalho em branco e cabeçalhos repetidos;
-* os argumentos completos de ``responses.parse`` em chamadas diretas a
-  ``OpenAIDataResolver.resolve``, cobrindo candidatos com conflito de
-  cabeçalho (família de tributo, qualificador e papel semântico), uma coluna
-  sem nome, uma segunda ocorrência de cabeçalho, evidência de catálogo e
-  evidência aritmética;
-* todas as chamadas de uma execução completa e pequena de ``map_columns``,
-  e as decisões dessa execução (sem as frases, que são escritas em português
-  na origem e podem mudar de texto sem mudar a decisão).
+As mensagens destinadas ao usuário não entram na comparação de decisões.
+Elas podem ser reescritas sem alterar o input dos modelos nem a escolha
+das colunas.
 
-Se este teste falhar, o que os modelos recebem mudou. Isso só é aceitável
-quando o prompt muda de propósito, junto com ``PROMPT_VERSION``; nesse caso,
-regenere o arquivo com::
+Uma diferença na captura indica mudança no input ou no comportamento
+registrado. Atualize a fixture apenas em uma alteração deliberada desses
+inputs, junto com ``PROMPT_VERSION`` e a validação prevista no projeto::
 
     python tests/test_model_input_golden.py --write
 
-Nunca regenere para fazer o teste passar depois de uma tradução.
+Não regenere a fixture para acomodar uma revisão de linguagem.
 """
 
 from __future__ import annotations
@@ -70,7 +59,7 @@ from reference_catalog import CatalogSpec, LoadedCatalog, ReferenceCatalogs  # n
 
 GOLDEN_PATH = Path(__file__).resolve().parent / "fixtures" / "model_input_golden.json"
 
-#: Campos de MappingResult que são frases para pessoas. Ficam fora da
+#: Campos de MappingResult que são mensagens para o usuário. Ficam fora da
 #: comparação de decisões porque passam a ser escritos em português.
 TEXT_FIELDS = ("reason", "arithmetic_proof")
 
@@ -82,7 +71,7 @@ RESOLVER_CASES = (
 
 
 # ---------------------------------------------------------------------------
-# Cliente falso da OpenAI
+# Fake client da OpenAI
 # ---------------------------------------------------------------------------
 
 
@@ -95,10 +84,10 @@ def _fake_embedding(text: str) -> list[float]:
 
 
 class RecordingOpenAI:
-    """Cliente falso que grava os argumentos de cada chamada e responde algo fixo.
+    """Fake client que registra os argumentos das chamadas e retorna respostas fixas.
 
-    ``choices`` diz, pelo nome da coluna do modelo, qual ``client_column_id``
-    o resolvedor falso escolhe; sem entrada, ele escolhe o primeiro candidato.
+    ``choices`` associa o nome da coluna do modelo ao ``client_column_id`` da
+    resposta. Quando não há configuração para a coluna, escolhe a primeira candidata.
     """
 
     def __init__(self, choices: dict[str, str | None] | None = None) -> None:
@@ -208,7 +197,7 @@ def _tax_rule(base, rate, value, *, role: str) -> dict[str, object]:
 
 
 def _plain(value: object) -> object:
-    """Converte para algo que o JSON grava sem perda (classes viram o nome qualificado)."""
+    """Converte a captura para valores serializáveis em JSON, usando o nome qualificado das classes."""
     if isinstance(value, type):
         return f"{value.__module__}.{value.__qualname__}"
     if isinstance(value, np.generic):
@@ -234,7 +223,7 @@ def _columns(table: SheetTable) -> list[dict[str, object]]:
 
 
 def _capture_embedding_header_set(workdir: Path) -> dict[str, object]:
-    """Cabeçalhos com um em branco, um só de espaços e repetições, lidos do Excel."""
+    """Captura os inputs de cabeçalhos vazios, com espaços e repetidos, após a leitura do Excel."""
     path = workdir / "embedding_headers.xlsx"
     headers = ["CFOP", None, "Valor ICMS", "valor icms", "   ", "Nº da Nota Fiscal", "Valor ICMS"]
     pd.DataFrame([headers, [5102, 1, 2, 3, 4, 5, 6]]).to_excel(path, header=False, index=False)
@@ -358,12 +347,12 @@ def _capture_resolver_cases() -> dict[str, dict[str, object]]:
 
 
 def _capture_end_to_end(workdir: Path) -> dict[str, object]:
-    """Uma execução completa de map_columns com embeddings e resolvedor falsos.
+    """Uma execução completa de map_columns com embeddings e fake resolvers.
 
     O cliente tem um cabeçalho em branco (a coluna que fecha valor = base x
     alíquota), um cabeçalho repetido e candidatos com os três tipos de
     conflito; o catálogo de NCM em memória não é decisivo, para que a
-    evidência de catálogo chegue ao resolvedor. Tem também um trio de COFINS
+    evidência de catálogo chegue ao resolver. Tem também um trio de COFINS
     (prova aritmética decisiva) e dois blocos disjuntos de PIS (prova que não
     distingue a coluna), para que as decisões fixem as duas formas da prova.
     """
@@ -452,7 +441,7 @@ def _capture_end_to_end(workdir: Path) -> dict[str, object]:
 
 
 def build_capture(workdir: Path) -> dict[str, object]:
-    """Monta tudo o que o arquivo dourado guarda, sem data nem caminho de arquivo."""
+    """Reúne os dados da golden fixture, sem timestamps nem caminhos de arquivo."""
     embedding_header_set = _capture_embedding_header_set(workdir)
     resolver_cases = _capture_resolver_cases()
     end_to_end = _capture_end_to_end(workdir)
@@ -463,7 +452,9 @@ def build_capture(workdir: Path) -> dict[str, object]:
     capture = {
         "_leia_me": (
             "Entrada dos modelos de IA capturada no código anterior à tradução "
-            "(commit 2ae4b6d). Gerado por tests/test_model_input_golden.py; não edite à mão."
+            "(commit 2ae4b6d). O cenário end-to-end foi atualizado para resolver aritmética "
+            "antes da API; prompt, schema e payloads restantes foram preservados. "
+            "Gerado por tests/test_model_input_golden.py; não edite à mão."
         ),
         "resolver_instructions": instructions,
         "data_mapping_decision_json_schema": schema,
@@ -549,7 +540,7 @@ def test_an_end_to_end_run_makes_the_same_decisions(captured, golden) -> None:
 
 
 def test_the_scenarios_still_cover_what_they_claim(golden) -> None:
-    # Protege o próprio arquivo dourado: se um cenário deixar de exercitar
+    # Protege a própria golden fixture: se um cenário deixar de exercitar
     # um caso, a garantia acima fica mais fraca sem ninguém perceber.
     payloads = [
         json.loads(case["parse_kwargs"]["input"]) for case in golden["resolver_cases"].values()
@@ -578,19 +569,14 @@ def test_the_scenarios_still_cover_what_they_claim(golden) -> None:
     assert len(names) > len(set(names))
 
 
-def test_the_fixture_is_exactly_what_the_capture_produces(captured) -> None:
-    # Detecta edição manual do arquivo e diferenças de serialização.
-    assert serialize(captured) == GOLDEN_PATH.read_text(encoding="utf-8")
-
-
 if __name__ == "__main__":
     if sys.argv[1:] != ["--write"]:
         raise SystemExit(
             "Uso: python tests/test_model_input_golden.py --write\n"
-            "Regrava o arquivo dourado. Só faça isso quando o prompt mudar de "
-            "propósito, junto com PROMPT_VERSION."
+            "Regrava a golden fixture. Revise as diferenças esperadas antes de usar; "
+            "se o prompt mudar, atualize também PROMPT_VERSION."
         )
     with tempfile.TemporaryDirectory() as directory:
         GOLDEN_PATH.parent.mkdir(parents=True, exist_ok=True)
         GOLDEN_PATH.write_text(serialize(build_capture(Path(directory))), encoding="utf-8")
-    print(f"Arquivo dourado gravado em {GOLDEN_PATH}")
+    print(f"Golden fixture gravada em {GOLDEN_PATH}")

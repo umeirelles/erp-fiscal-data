@@ -1,0 +1,66 @@
+[
+  {
+    "client": "datasul",
+    "rows": 6804,
+    "source_columns": 348,
+    "confirmed_after_review": 19,
+    "unused_after_review": 329,
+    "unused_disposition": {
+      "nunca_referenciada": 276,
+      "proposta_nao_aceita": 53
+    },
+    "copied_cells_verified": 129276,
+    "unassigned_cells_verified_blank": 1415232,
+    "mismatches": 0,
+    "report_sha256": "f0f5ed71575d0e8fc1f588a88dec19f43d994ea68c0dd73451184746e4a4c342",
+    "output_sha256": "c07e0e4a481f6ff0f2b1b1dd5f2134ec42fc0dc11d0ca5ea70e017445a937f78"
+  },
+  {
+    "client": "oracle",
+    "rows": 7340,
+    "source_columns": 48,
+    "confirmed_after_review": 18,
+    "unused_after_review": 30,
+    "unused_disposition": {
+      "nunca_referenciada": 16,
+      "proposta_nao_aceita": 14
+    },
+    "copied_cells_verified": 132120,
+    "unassigned_cells_verified_blank": 1534060,
+    "mismatches": 0,
+    "report_sha256": "7c322c14e25db4fe5a9d3c71574f80c638918a85d60f11b7e0f3a340683cf053",
+    "output_sha256": "552672b658d97e513a148d2f5797b379487fee1fde096da44c9ef75ccda88a56"
+  },
+  {
+    "client": "sap_procosa",
+    "rows": 18209,
+    "source_columns": 118,
+    "confirmed_after_review": 62,
+    "unused_after_review": 56,
+    "unused_disposition": {
+      "proposta_nao_aceita": 18,
+      "nunca_referenciada": 38
+    },
+    "copied_cells_verified": 1128958,
+    "unassigned_cells_verified_blank": 3004485,
+    "mismatches": 0,
+    "report_sha256": "19ca0fe9261032595f067129fcbc8cd5cf33a0cf86117a492e9fd7283501f053",
+    "output_sha256": "3e649673fd12b10242ed069060dfe0a227539ec60ea9a7b96918c1570578f347"
+  },
+  {
+    "client": "sap_terumo",
+    "rows": 727,
+    "source_columns": 365,
+    "confirmed_after_review": 64,
+    "unused_after_review": 301,
+    "unused_disposition": {
+      "proposta_nao_aceita": 64,
+      "nunca_referenciada": 237
+    },
+    "copied_cells_verified": 46528,
+    "unassigned_cells_verified_blank": 118501,
+    "mismatches": 0,
+    "report_sha256": "6c26a9fd6390cbd6214cd579bae9b8911aa751c5bcb562534f8ac4d7b6e83984",
+    "output_sha256": "6aaab1ee3c83f2b8d065a6d9c5841ec667925843d44f3ce67a851601ba1f2a39"
+  }
+]

@@ -1,4 +1,4 @@
-"""python -m mapeval — avalia os relatórios arquivados contra os gabaritos."""
+"""Compara os relatórios arquivados com os gabaritos e apresenta as métricas de mapeamento."""
 
 from __future__ import annotations
 
@@ -10,9 +10,7 @@ from cli_ptbr import PortugueseArgumentParser
 from mapeval.outcomes import Outcome
 from mapeval.score import (
     Score,
-    _vacuous_client_columns,
     method_census,
-    read_mappings,
     score_report,
 )
 from mapeval.truth import AnswerKey, load_answer_key
@@ -53,12 +51,12 @@ _TOTAL_LABEL = "TOTAL COM GABARITO  "
 
 
 def _pct(value: float | None) -> str:
-    """Porcentagem com vírgula decimal em 6 caracteres; ``n/d`` quando não há valor."""
+    """Formata uma porcentagem com vírgula decimal e largura mínima de 6; usa ``n/d`` se ausente."""
     return "  n/d " if value is None else report_schema.format_percent_br(value).rjust(6)
 
 
 def _decimal(value: float | None) -> str:
-    """Número com vírgula decimal e os mesmos dígitos do Python; ``n/d`` quando não há valor."""
+    """Formata um número com vírgula decimal, preservando os dígitos; usa ``n/d`` se ausente."""
     return "n/d" if value is None else report_schema.format_decimal_br(value)
 
 
@@ -81,7 +79,7 @@ def main(argv: list[str] | None = None) -> int:
 
     found = delivered = present = fabrications = 0
     for name in args.client or list(CLIENTS):
-        # Um nome fora de CLIENTS termina em KeyError (KNOWN_ISSUES 6.5).
+        # Um nome fora de CLIENTS ainda termina em KeyError; veja docs/KNOWN_ISSUES.md.
         client_file, report_file, key_file = CLIENTS[name]
         if key_file is None:
             fabrications += _report_unkeyed_client(name, root / client_file, root / report_file)
@@ -98,37 +96,25 @@ def main(argv: list[str] | None = None) -> int:
 
     if present:
         _report_totals(found, delivered, present, fabrications)
-    # A fabricação é o único bloqueio automático. O gabarito cobre 56 das 227
-    # colunas do modelo, então uma mudança que inventa mapeamentos fora dele
-    # faz subir "sem_veredito" e deixa este código em 0: leia aquela linha
-    # antes de confiar numa saída limpa.
+    # Somente fabricações alteram o exit code. Escolhas fora das 56 colunas
+    # cobertas pelo gabarito podem aumentar "sem_veredito" sem causar falha.
+    # Essa contagem também precisa ser considerada ao avaliar uma mudança.
     return 1 if fabrications else 0
 
 
 def _report_unkeyed_client(name: str, client_path: Path, report_path: Path) -> int:
-    """Imprime a linha de um cliente sem gabarito; devolve os aceites em coluna vazia.
+    """Exibe os totais de um cliente sem gabarito e retorna a contagem de aceites em colunas vazias.
 
-    Um relatório que não existe é pulado sem aviso (KNOWN_ISSUES 3.18).
+    Se o relatório não existir, retorna 0 sem exibir aviso.
     """
     if not report_path.exists():
         return 0
-    print(f"\n{name}  SEM GABARITO — nenhum número de precisão ou recall seria honesto aqui.")
-    rows, column = read_mappings(report_path)
-    accepted = [
-        row for row in rows[1:]
-        if report_schema.internal_value("mappings", "status", row[column["status"]])
-        == "accepted"
-    ]
-    vacuous = _vacuous_client_columns(client_path)
-    on_vacuous = [
-        row for row in accepted
-        if row[column["client_column_number"]] not in (None, "")
-        and int(row[column["client_column_number"]]) in vacuous
-    ]
-    # "pendências de revisão" repete a contagem de aceitos (KNOWN_ISSUES 2.5).
-    print(f"  aceitos {len(accepted):3}   pendências de revisão {len(accepted):3}"
-          f"   aceites em coluna vazia {len(on_vacuous)}")
-    return len(on_vacuous)
+    print(f"\n{name}  SEM GABARITO — não é possível calcular precisão ou recall.")
+    score = score_report(report_path, client_path, AnswerKey(name, {}))
+    pending = sum(row.status == "review" for row in score.rows)
+    print(f"  aceitos {len(score.accepted):3}   pendências de revisão {pending:3}"
+          f"   aceites em coluna vazia {len(score.vacuous_targets)}")
+    return len(score.vacuous_targets)
 
 
 def _report_keyed_client(name: str, score: Score, key: AnswerKey, *, show_losses: bool) -> None:
@@ -139,7 +125,7 @@ def _report_keyed_client(name: str, score: Score, key: AnswerKey, *, show_losses
         for method, count in method_census(score).items()
     }
 
-    print(f"\n{name}  presentes={score.present}  (nunca 227)")
+    print(f"\n{name}  presentes={score.present}  (colunas anotadas no gabarito)")
     print(f"  CORRETO          {score.count(Outcome.CORRECT):3}      recall sobre presentes "
           f"{_pct(score.recall_on_present)}")
     print(f"  COLUNA_ERRADA    {score.count(Outcome.WRONG_COLUMN):3}")
@@ -152,12 +138,16 @@ def _report_keyed_client(name: str, score: Score, key: AnswerKey, *, show_losses
           f"{_pct(score.delivered_recall)}   <-- o que o cliente recebe")
     if score.withheld_correct:
         print(f"  retidos          {len(score.withheld_correct):3}      coluna certa "
-              "encontrada, retida pelo limiar de aceite")
+              "encontrada, pendente de revisão")
     print(f"  sem_veredito     {len(score.undetermined_accepts):3}      aceitos que o "
           "gabarito não consegue verificar")
     print(f"  aceites independentes de cabeçalho {_pct(score.header_independent_share)}"
           "   <-- métrica de generalização")
-    print(f"  censo de métodos {census}")
+    print(f"  aceitos por método {census}")
+    for source, targets in key.source_conflicts.items():
+        labels = ", ".join(f"m{target}" for target in targets)
+        print(f"  REVISAR GABARITO: c{source} está indicada para {labels}; "
+              "a aplicação exige uma origem distinta por destino.")
     if key.corrections:
         print(f"  correções do gabarito aplicadas: {sorted(key.corrections)}")
     for row in score.vacuous_targets:
@@ -168,7 +158,7 @@ def _report_keyed_client(name: str, score: Score, key: AnswerKey, *, show_losses
 
 
 def _report_losses(score: Score, key: AnswerKey) -> None:
-    """Lista os acertos retidos e depois as linhas perdidas ou com coluna errada."""
+    """Lista primeiro os acertos pendentes de revisão, depois as perdas e escolhas de coluna erradas."""
     for row in score.withheld_correct:
         status = report_schema.external_value("mappings", "status", row.status)
         print(f"    {'retido':14} m{row.model_column:<4} "
@@ -189,7 +179,7 @@ def _report_totals(found: int, delivered: int, present: int, fabrications: int) 
           f"({report_schema.format_percent_br(delivered / present)})   "
           f"fabricações {fabrications}")
     if found != delivered:
-        # A dica sai mesmo quando --show-losses já foi passado (KNOWN_ISSUES 3.18).
+        # A dica também aparece quando --show-losses já foi passado.
         print(f"{' ' * len(_TOTAL_LABEL)}{found - delivered} mapeamentos "
               "corretos encontrados, mas não entregues - rode com --show-losses para "
               "listá-los")

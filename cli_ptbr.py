@@ -1,15 +1,13 @@
-"""Linha de comando em português: ``ArgumentParser`` com ajuda e erros traduzidos.
+"""Fornece um ``ArgumentParser`` com ajuda e mensagens de erro em português.
 
-O ``argparse`` monta os textos fixos dele (``usage:``, títulos das seções,
-ajuda de ``-h``, mensagens de erro) chamando ``argparse._`` e
-``argparse.ngettext``. ``PortugueseArgumentParser`` troca essas duas funções
-pelas traduções daqui só enquanto um método do próprio parser roda, e as
-devolve ao sair, mesmo quando o argparse encerra com ``SystemExit``. Assim
-nenhum outro parser do processo (o do pytest, por exemplo) muda de língua.
+O argparse consulta ``argparse._`` e ``argparse.ngettext`` para gerar seus
+textos. ``PortugueseArgumentParser`` substitui essas funções durante cada
+chamada e restaura as originais ao sair, inclusive após ``SystemExit``.
+Assim, a tradução não permanece ativa para outros parsers do processo.
 
-As flags continuam em inglês. A ajuda de cada argumento e os ``metavar``
-são escritos em português por quem cria o parser; sem ``metavar`` o argparse
-mostraria o nome da flag em maiúsculas (``OUTPUT``).
+As flags permanecem em inglês. Ao criar um argumento, defina ``help`` e
+``metavar`` em português; sem ``metavar``, o argparse usa a flag em
+maiúsculas, como ``OUTPUT``.
 """
 
 from __future__ import annotations
@@ -19,7 +17,7 @@ import contextlib
 import functools
 from typing import Iterator
 
-#: Nome do tipo do Python citado no erro de valor inválido -> o que se esperava.
+#: Descrições dos tipos esperados nas mensagens de valor inválido.
 TYPE_LABELS: dict[str, str] = {
     "int": "um número inteiro",
     # Quem digita 0,9 no terminal recebe a dica do separador decimal.
@@ -28,11 +26,10 @@ TYPE_LABELS: dict[str, str] = {
 
 
 class _InvalidValueMessage(str):
-    """Mensagem de valor inválido que troca o nome do tipo do Python por ``TYPE_LABELS``.
+    """Usa os rótulos de ``TYPE_LABELS`` nas mensagens de valor inválido.
 
-    O argparse formata ``_('invalid %(type)s value: %(value)r') % args`` com
-    o ``__name__`` do tipo; uma conversão própria, sem rótulo, sai como "um
-    valor do tipo <nome>".
+    O argparse fornece o ``__name__`` do tipo ao formatar a mensagem. Tipos
+    personalizados sem rótulo aparecem como "um valor do tipo <nome>".
     """
 
     def __mod__(self, args):
@@ -98,30 +95,29 @@ PLURAL_MESSAGES: dict[tuple[str, str], tuple[str, str]] = {
     ),
 }
 
-#: Ajudas que o argparse dá às ações -h e version quando quem cria o
-#: argumento não passa ``help``.
+#: Textos padrão de help e version usados quando não há help personalizado.
 _DEFAULT_ACTION_HELPS = frozenset(
     {"show this help message and exit", "show program's version number and exit"}
 )
 
 
 def _translate(message: str) -> str:
-    """Substituto de ``gettext``: a tradução ou, sem tradução, o original."""
+    """Retorna a tradução registrada, ou a mensagem original quando não houver tradução."""
     return MESSAGES.get(message, message)
 
 
 def _translate_plural(singular: str, plural: str, count: int) -> str:
-    """Substituto de ``ngettext``, com a mesma regra de escolha do plural."""
+    """Seleciona a forma singular ou plural, usando a tradução quando disponível."""
     singular, plural = PLURAL_MESSAGES.get((singular, plural), (singular, plural))
     return singular if count == 1 else plural
 
 
 @contextlib.contextmanager
 def _portuguese_messages() -> Iterator[None]:
-    """Põe o argparse em português enquanto o bloco roda e restaura o anterior ao sair.
+    """Ativa a tradução durante o bloco e restaura as funções anteriores ao sair.
 
-    Restaurar o anterior, e não o original, permite blocos aninhados
-    (``parse_args`` chamando ``error``).
+    Restaurar o estado anterior permite chamadas aninhadas, como ``parse_args``
+    chamando ``error``, sem desativar a tradução antes da hora.
     """
     previous = (argparse._, argparse.ngettext)
     argparse._ = _translate
@@ -133,7 +129,7 @@ def _portuguese_messages() -> Iterator[None]:
 
 
 def _in_portuguese(method):
-    """Roda um método do ``ArgumentParser`` com o argparse em português."""
+    """Executa um método do parser com a tradução temporariamente ativa."""
 
     @functools.wraps(method)
     def wrapper(*args, **kwargs):
@@ -144,21 +140,14 @@ def _in_portuguese(method):
 
 
 class PortugueseArgumentParser(argparse.ArgumentParser):
-    """``ArgumentParser`` cuja ajuda e cujas mensagens de erro saem em português.
+    """Adapta ``argparse.ArgumentParser`` para exibir ajuda e erros em português.
 
-    Uso igual ao do ``argparse.ArgumentParser``. A saída fica assim::
+    Aceita os mesmos argumentos do parser padrão. Os métodos que geram mensagens
+    ativam a tradução apenas durante a chamada. Flags e nomes internos não mudam;
+    ``help`` e ``metavar`` são definidos pelo módulo que cria a CLI.
 
-        uso: invoice_mapper.py [-h] [--offline] client
-
-        argumentos posicionais:
-          client      planilha .xlsx exportada pelo cliente
-
-        opções:
-          -h, --help  mostra esta mensagem de ajuda e sai
-          --offline   usa só a comparação léxica de cabeçalhos, sem a OpenAI
-
-    e um erro sai como ``invoice_mapper.py: erro: os seguintes argumentos
-    são obrigatórios: client``, com código de saída 2.
+    Erros de argumentos mantêm o comportamento do argparse: mensagem em stderr
+    e ``SystemExit`` com exit code 2.
     """
 
     # Os métodos que montam textos do argparse. O __init__ monta os títulos
@@ -175,8 +164,8 @@ class PortugueseArgumentParser(argparse.ArgumentParser):
     error = _in_portuguese(argparse.ArgumentParser.error)
 
     def format_help(self) -> str:
-        # A ajuda padrão da ação version é montada ao criar o argumento, fora
-        # dos métodos acima; ela é traduzida aqui, em qualquer grupo.
+        # A ação version cria seu help fora dos métodos envolvidos pelo decorator.
+        # A tradução aqui também cobre argumentos adicionados a grupos próprios.
         for action in self._actions:
             if action.help in _DEFAULT_ACTION_HELPS:
                 action.help = MESSAGES[action.help]

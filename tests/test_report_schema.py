@@ -1,7 +1,7 @@
-"""Testes do esquema em português (report_schema) e da CLI em português (cli_ptbr).
+"""Testa as conversões do schema e as mensagens da CLI em português.
 
-Além das conversões, a cobertura por introspecção garante que um campo
-novo gravado pelo código sem nome em português quebre um teste.
+Os testes de introspecção verificam se os campos e valores gravados pelo
+código têm correspondência nas tabelas do schema.
 """
 
 from __future__ import annotations
@@ -168,8 +168,8 @@ def test_every_status_and_method_literal_has_a_translation() -> None:
 
 
 def test_every_queue_reason_has_a_translation() -> None:
-    # Uma linha por ramo de why_held: abaixo do limiar, só nome (confiança
-    # presa logo abaixo do limiar) e coluna proposta vazia.
+    # Uma linha por ramo de why_held: abaixo do threshold, só nome (confiança
+    # presa logo abaixo do threshold) e coluna proposta vazia.
     client = invoice_mapper.SheetTable(
         columns=[
             invoice_mapper.ColumnRef("column_001", 0, "Cheia", 1),
@@ -347,7 +347,7 @@ def test_internal_to_portuguese_and_back_is_lossless(table, frame) -> None:
         assert [rs.normalize_reviewer_status(v) for v in back["reviewer_status"]] == (
             frame["reviewer_status"].tolist()
         )
-    # Nenhuma das conversões altera o quadro recebido.
+    # Nenhuma das conversões altera o DataFrame recebido.
     assert frame.equals(original)
     assert rs.to_internal_frame(external, table).equals(back)
 
@@ -499,8 +499,8 @@ def test_conversions_work_with_repeated_column_names() -> None:
 
 
 def test_enum_values_are_converted_only_when_exact() -> None:
-    # Um valor que não é o português exato passa como está: a comparação
-    # exata a jusante decide. O parecer passa como foi digitado.
+    # Só converte valores que correspondem exatamente ao vocabulário do schema.
+    # Preserva os demais para validação posterior, inclusive o parecer do revisor.
     assert rs.internal_value("mappings", "status", "aceito") == "accepted"
     assert rs.internal_value("mappings", "status", "Aceito") == "Aceito"
     assert rs.internal_value("mappings", "status", "accepted") == "accepted"
@@ -558,10 +558,10 @@ def test_archived_reports_have_a_translation_for_every_value(report) -> None:
 
 
 def _old_english_report(path: Path) -> Path:
-    """Relatório mínimo no formato antigo, em inglês, como os de antes da tradução.
+    """Cria um relatório mínimo no formato anterior à tradução.
 
-    Aba Mappings com os cabeçalhos e os valores internos, que eram os do
-    formato antigo, e aba Run Metadata com key/value.
+    A aba Mappings usa cabeçalhos e valores internos em inglês; Run Metadata
+    usa as colunas key e value.
     """
     mapping = _internal_mappings().iloc[[0]].copy()
     mapping["client_column_number"] = 1
@@ -774,7 +774,7 @@ def test_metadata_with_old_names_or_repeated_keys_is_refused() -> None:
         )
     with pytest.raises(ValueError, match="precisa ter as colunas"):
         rs.internal_metadata(pd.DataFrame({"chave": ["a"]}))
-    # Como o apply sempre fez: repetição na coluna crua, inclusive de chaves em branco.
+    # Como o apply sempre fez: repetição na coluna original, inclusive de chaves em branco.
     for keys in (["sha256_cliente", "sha256_cliente"], [None, None]):
         with pytest.raises(ValueError, match="chaves repetidas"):
             rs.internal_metadata(pd.DataFrame({"chave": keys, "valor": ["a", "b"]}))
@@ -793,6 +793,11 @@ def test_metadata_with_old_names_or_repeated_keys_is_refused() -> None:
         ("  CORRETO ", "correct"),
         ("Corrêto", "correct"),
         ("INCORRETO", "incorrect"),
+        ("incorreto", "incorrect"),
+        ("Incorreto", "incorrect"),
+        (" INCORRETO ", "incorrect"),
+        ("Incorréto", "incorrect"),
+        (" INCORRÉTO ", "incorrect"),
         ("Inexistente", "no_mapping_exists"),
         ("", ""),
         ("   ", ""),
@@ -801,6 +806,7 @@ def test_metadata_with_old_names_or_repeated_keys_is_refused() -> None:
         # Os pareceres em inglês do formato antigo coincidem com os valores
         # internos; só a recusa explícita impede que passem calados.
         ("correct", None),
+        (" Correct ", None),
         ("incorrect", None),
         ("no_mapping_exists", None),
         # Desconhecidos: quem lê recusa mostrando o que foi digitado.
@@ -867,12 +873,19 @@ def test_step_cells_translate_in_both_directions(internal, external) -> None:
     assert rs.steps_to_external(internal) == external
     assert rs.steps_to_external(external) == external
     assert rs.steps_to_internal(external) == internal
+    for field in ("supported_by", "decided_by"):
+        assert rs.internal_value("mappings", field, external) == internal
 
 
 def test_steps_read_back_are_understood_by_mapping_steps() -> None:
-    internal = rs.steps_to_internal("lexico + catalogo + aritmetica")
+    external = "resolvedor_ia + lexico + semantico + perfil + identificador + catalogo + aritmetica"
+    expected = "resolver + lexical + semantic + profile + identifier + catalog + arithmetic"
+    internal = rs.steps_to_internal(external)
+    assert internal == expected
+    assert rs.steps_to_external(internal) == external
     assert mapping_steps.deciding_step(internal) == "arithmetic"
-    assert mapping_steps.format_steps(internal) == "lexical + catalog + arithmetic"
+    assert mapping_steps.format_steps(internal) == expected
+    assert not mapping_steps.rests_only_on_headers(internal)
 
 
 # ---------------------------------------------------------------------------
@@ -969,7 +982,7 @@ ENGLISH_CHROME = (
 
 
 def _sheet(value: str) -> int:
-    """Conversão própria, como as que os CLIs passam em ``type=``."""
+    """Converte um argumento de aba, como as funções passadas em ``type=`` nas CLIs."""
     return int(value)
 
 

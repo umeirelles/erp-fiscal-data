@@ -1,10 +1,8 @@
-"""Carrega os catálogos oficiais de códigos fiscais e pontua uma coluna contra eles.
+"""Carrega os catálogos oficiais e compara os códigos de cada coluna com eles.
 
-Os catálogos (CFOP, NCM, municípios do IBGE, CST e cClassTrib do IBS/CBS, CST
-do ICMS, do IPI e do PIS/COFINS, e CSOSN) ficam em ``reference_data/``, cada um
-com o SHA-256 registrado no ``manifest.json``. Ids de catálogo, chaves do
-manifesto e nomes de normalizador ficam em inglês: mudá-los mudaria o
-manifesto e, com ele, o hash que cada relatório registra.
+Os CSVs ficam em ``reference_data/``. O ``manifest.json`` registra o SHA-256
+de cada arquivo. IDs, chaves do manifesto e nomes dos normalizadores são
+mantidos em inglês, pois fazem parte do formato versionado dos catálogos.
 """
 
 from __future__ import annotations
@@ -20,9 +18,11 @@ from typing import Sequence
 
 import pandas as pd
 
+from target_schema import target_field
+
 #: Abaixo deste número de valores preenchidos a pontuação é atenuada (raiz quadrada).
 _FULL_WEIGHT_SAMPLE = 5.0
-#: Quantos valores fora do catálogo a análise mostra, e com quantos caracteres.
+#: Limites de quantidade e tamanho dos exemplos de códigos fora do catálogo.
 _MAX_INVALID_EXAMPLES = 3
 _INVALID_EXAMPLE_LENGTH = 80
 
@@ -35,10 +35,13 @@ def _normalized_header(value: object) -> str:
 
 
 def expected_catalogs(header: object) -> tuple[str, ...]:
-    """Devolve os catálogos de códigos que um cabeçalho do modelo base pode representar.
+    """Identifica quais catálogos se aplicam ao cabeçalho do modelo base.
 
-    Recebe o cabeçalho do modelo, nunca o do cliente.
+    O argumento deve ser o cabeçalho do modelo, não o da exportação do cliente.
     """
+    definition = target_field(header)
+    if definition is not None:
+        return definition.catalogs
     normalized = _normalized_header(header)
     tokens = set(normalized.split())
     if "cfop" in tokens:
@@ -56,7 +59,7 @@ def expected_catalogs(header: object) -> tuple[str, ...]:
         "cst" in tokens
         or ("situacao" in tokens and {"tributaria", "tributario"} & tokens)
         or "taxsituation" in tokens
-        # Não casa 'Tipo de Imposto …' do modelo (KNOWN_ISSUES 3.11).
+        # Os campos controlados 'Tipo de Imposto …' são resolvidos pelo registro acima.
         or "tipo imposto" in normalized
         or "codigo de sit tributaria" in normalized
     )
@@ -80,9 +83,10 @@ def normalize_code_value(
     width: int,
     normalizer: str,
 ) -> str | None:
-    """Normaliza o código de uma célula para a largura do catálogo, sem perder os zeros à esquerda.
+    """Ajusta o código ao tamanho esperado pelo catálogo, completando zeros à esquerda.
 
-    Devolve None quando a célula está vazia ou não tem a forma de um código.
+    Retorna ``None`` para células vazias ou valores que não podem ser
+    interpretados como um código válido para esse formato.
     """
     if value is None or pd.isna(value):
         return None
@@ -132,7 +136,7 @@ class LoadedCatalog:
 
 
 class ReferenceCatalogs:
-    """Cópias imutáveis dos catálogos e a evidência conservadora que dão sobre uma coluna."""
+    """Mantém cópias imutáveis dos catálogos e avalia as colunas com critérios conservadores."""
 
     def __init__(self, directory: Path, catalogs: dict[str, LoadedCatalog]) -> None:
         self.directory = directory
@@ -150,13 +154,12 @@ class ReferenceCatalogs:
         return cls(root, loaded)
 
     def analyze(self, series: pd.Series, catalog_name: str) -> dict[str, object]:
-        """Mede quanto os valores de uma coluna pertencem a um catálogo.
+        """Calcula a cobertura e o score de uma coluna em relação ao catálogo.
 
-        A pontuação usa a cobertura sobre os códigos distintos, não sobre as
-        linhas: quantas vezes o cliente repete um código não diz se a coluna é
-        deste domínio, e dois códigos internos do ERP muito usados não devem
-        esconder uma coluna que é claramente de CFOP. Uma coluna cujos códigos
-        válidos são todos zero pontua 0.
+        O score usa os códigos distintos para que a repetição de poucos valores
+        não domine o resultado. Assim, códigos internos do ERP muito frequentes
+        não anulam o apoio dos demais códigos oficiais. Se os únicos códigos
+        válidos forem zeros, o score será 0.
         """
         catalog = self.catalogs[catalog_name]
         spec = catalog.spec
@@ -218,7 +221,7 @@ def _fraction(part: int, whole: int) -> float:
 def _invalid_examples(
     values: list[object], codes: list[str | None], catalog_codes: frozenset[str]
 ) -> list[str]:
-    """Os primeiros valores fora do catálogo, como o cliente os escreveu (cortados)."""
+    """Retorna exemplos de valores fora do catálogo, preservando o texto original até o limite de tamanho."""
     examples: list[str] = []
     for value, code in zip(values, codes, strict=True):
         if code is None or code not in catalog_codes:
@@ -233,7 +236,7 @@ def _invalid_examples(
 def best_catalog_evidence(
     evidence: Sequence[dict[str, object]],
 ) -> dict[str, object] | None:
-    """A análise mais forte: maior pontuação, depois cobertura, depois mais códigos válidos."""
+    """Seleciona a análise por score, cobertura e quantidade de códigos válidos, nessa ordem."""
     if not evidence:
         return None
     return max(

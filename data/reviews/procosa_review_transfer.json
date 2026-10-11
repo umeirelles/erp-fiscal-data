@@ -1,0 +1,166 @@
+{
+  "original_review_report": "mapping_sap_procosa_reviewed.xlsx",
+  "original_sha256": "a31c7c0e7cee09ec85244e71d663ca7bc4c71463ba9d26f8362c1951f1745476",
+  "automatic_report_sha256": "b28eff57dfc73fd7406e3b5030dfd342cbacf4a260b668f6a44fc56961ef1aea",
+  "reviewed_fields": 26,
+  "effective_decisions_preserved": true,
+  "review_notes_preserved": true,
+  "transfers": [
+    {
+      "model_column_number": 1,
+      "original_status": "inexistente",
+      "status": "inexistente",
+      "correct_client_column": null
+    },
+    {
+      "model_column_number": 8,
+      "original_status": "inexistente",
+      "status": "inexistente",
+      "correct_client_column": null
+    },
+    {
+      "model_column_number": 12,
+      "original_status": "correto",
+      "status": "correto",
+      "correct_client_column": null
+    },
+    {
+      "model_column_number": 15,
+      "original_status": "inexistente",
+      "status": "inexistente",
+      "correct_client_column": null
+    },
+    {
+      "model_column_number": 19,
+      "original_status": "correto",
+      "status": "correto",
+      "correct_client_column": null
+    },
+    {
+      "model_column_number": 20,
+      "original_status": "correto",
+      "status": "correto",
+      "correct_client_column": null
+    },
+    {
+      "model_column_number": 22,
+      "original_status": "inexistente",
+      "status": "inexistente",
+      "correct_client_column": null
+    },
+    {
+      "model_column_number": 23,
+      "original_status": "inexistente",
+      "status": "inexistente",
+      "correct_client_column": null
+    },
+    {
+      "model_column_number": 24,
+      "original_status": "inexistente",
+      "status": "inexistente",
+      "correct_client_column": null
+    },
+    {
+      "model_column_number": 25,
+      "original_status": "inexistente",
+      "status": "inexistente",
+      "correct_client_column": null
+    },
+    {
+      "model_column_number": 26,
+      "original_status": "inexistente",
+      "status": "inexistente",
+      "correct_client_column": null
+    },
+    {
+      "model_column_number": 27,
+      "original_status": "inexistente",
+      "status": "inexistente",
+      "correct_client_column": null
+    },
+    {
+      "model_column_number": 30,
+      "original_status": "correto",
+      "status": "correto",
+      "correct_client_column": null
+    },
+    {
+      "model_column_number": 31,
+      "original_status": "correto",
+      "status": "correto",
+      "correct_client_column": null
+    },
+    {
+      "model_column_number": 36,
+      "original_status": "correto",
+      "status": "correto",
+      "correct_client_column": null
+    },
+    {
+      "model_column_number": 37,
+      "original_status": "incorreto",
+      "status": "incorreto",
+      "correct_client_column": 6
+    },
+    {
+      "model_column_number": 38,
+      "original_status": "incorreto",
+      "status": "incorreto",
+      "correct_client_column": 32
+    },
+    {
+      "model_column_number": 44,
+      "original_status": "correto",
+      "status": "correto",
+      "correct_client_column": null
+    },
+    {
+      "model_column_number": 45,
+      "original_status": "correto",
+      "status": "correto",
+      "correct_client_column": null
+    },
+    {
+      "model_column_number": 50,
+      "original_status": "correto",
+      "status": "correto",
+      "correct_client_column": null
+    },
+    {
+      "model_column_number": 61,
+      "original_status": "correto",
+      "status": "correto",
+      "correct_client_column": null
+    },
+    {
+      "model_column_number": 121,
+      "original_status": "correto",
+      "status": "correto",
+      "correct_client_column": null
+    },
+    {
+      "model_column_number": 148,
+      "original_status": "correto",
+      "status": "correto",
+      "correct_client_column": null
+    },
+    {
+      "model_column_number": 176,
+      "original_status": "correto",
+      "status": "correto",
+      "correct_client_column": null
+    },
+    {
+      "model_column_number": 178,
+      "original_status": "correto",
+      "status": "correto",
+      "correct_client_column": null
+    },
+    {
+      "model_column_number": 209,
+      "original_status": "correto",
+      "status": "correto",
+      "correct_client_column": null
+    }
+  ]
+}

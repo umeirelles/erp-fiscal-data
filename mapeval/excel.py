@@ -1,4 +1,4 @@
-"""Letras de coluna do Excel e as anotações "Coluna FY" dos gabaritos de-para."""
+"""Converte letras de coluna do Excel e interpreta as anotações dos gabaritos de-para."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ _COLUNA = re.compile(r"coluna\s*([A-Za-z]+)", re.IGNORECASE)
 
 
 def column_letter_to_index(letters: str) -> int:
-    """Devolve o índice da coluna (a partir de 1) de uma letra de coluna do Excel.
+    """Converte letras de coluna do Excel em um índice a partir de 1.
 
     >>> column_letter_to_index("A"), column_letter_to_index("Z")
     (1, 26)
@@ -25,7 +25,7 @@ def column_letter_to_index(letters: str) -> int:
 
 
 def index_to_column_letter(index: int) -> str:
-    """Inversa de :func:`column_letter_to_index`."""
+    """Converte um índice a partir de 1 nas letras correspondentes da coluna do Excel."""
     if index < 1:
         raise ValueError(f"o índice da coluna deve ser >= 1; recebido {index}")
     letters = ""
@@ -36,11 +36,10 @@ def index_to_column_letter(index: int) -> str:
 
 
 def parse_coluna_annotation(cell: object) -> int | None:
-    """Extrai o índice da coluna (a partir de 1) de uma célula da linha 1 do de-para.
+    """Extrai a coluna indicada pela primeira anotação "Coluna <letras>" da célula.
 
-    Vale a primeira menção "Coluna <letras>" da célula, com o espaço no fim
-    tolerado ("Coluna BV ", em de_para_datasul.xlsx). Devolve None quando a
-    célula não menciona nenhuma.
+    Retorna o índice a partir de 1, ou ``None`` se não houver anotação.
+    Aceita espaços adicionais, como em "Coluna BV ", presente no gabarito do datasul.
     """
     if cell is None:
         return None

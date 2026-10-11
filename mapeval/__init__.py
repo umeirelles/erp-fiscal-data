@@ -1,9 +1,9 @@
-"""Avaliação do mapeador: pontua um relatório de mapeamento contra o gabarito de-para do cliente.
+"""Avalia relatórios de mapeamento com os gabaritos de-para dos clientes.
 
-Só mede; nunca altera um mapeamento. Duas regras valem para todo número daqui:
-o recall é medido contra as colunas que o cliente de fato tem, nunca contra as
-227 do modelo, e os resultados nunca se reduzem a uma acurácia única, porque
-fabricar uma coluna é muito pior do que deixá-la vazia.
+A avaliação apenas lê os arquivos. O recall usa como denominador as colunas
+anotadas no gabarito, e os resultados distinguem acertos, perdas, escolhas
+erradas e mapeamentos aceitos para colunas vazias. Uma única taxa de acerto
+esconderia diferenças importantes entre esses resultados.
 """
 
 from mapeval.excel import column_letter_to_index, index_to_column_letter

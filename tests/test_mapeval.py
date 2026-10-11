@@ -1,8 +1,9 @@
-"""Testes do mapeval: as invariantes que tornam os números confiáveis e a linha de base."""
+"""Verifica as regras de avaliação e as métricas da baseline dos relatórios arquivados."""
 
 from __future__ import annotations
 
 import re
+import json
 from pathlib import Path
 
 import openpyxl
@@ -43,6 +44,24 @@ PORTUGUESE_NON_DECISIVE_PROOF = (
     "0,9996 - mas este cliente tem 2 blocos disjuntos de PIS que satisfazem a "
     "equação, portanto ela não distingue esta coluna"
 )
+
+
+@pytest.fixture(scope="module")
+def baseline_reports(tmp_path_factory):
+    """Reconstrói somente os inputs históricos necessários à regressão do evaluator."""
+    fixture = json.loads((ROOT / "tests/fixtures/evaluation_baseline.json").read_text())
+    directory = tmp_path_factory.mktemp("evaluation_baseline")
+    paths = {}
+    for name, rows in fixture["clients"].items():
+        book = openpyxl.Workbook()
+        book.active.title = "Mapeamentos"
+        book.active.append(fixture["headers"])
+        for row in rows:
+            book.active.append(row)
+        paths[name] = directory / f"{name}.xlsx"
+        book.save(paths[name])
+        book.close()
+    return paths
 
 
 def _accepted_row(proof: str, method: str = "data") -> Row:
@@ -117,27 +136,27 @@ def test_recall_denominator_is_the_present_set_never_227(client: str, expected: 
 
 
 @requires_workbooks
-def test_harness_reproduces_the_corrected_baseline() -> None:
+def test_harness_reproduces_the_corrected_baseline(baseline_reports) -> None:
     total = 0
     for client, (client_file, report_file, key_file) in KEYED.items():
         key = load_answer_key(ROOT / key_file, client)
-        score = score_report(ROOT / report_file, ROOT / client_file, key)
+        score = score_report(baseline_reports[client], ROOT / client_file, key)
         total += score.count(Outcome.CORRECT)
     assert total == 43
 
 
 @requires_workbooks
-def test_the_four_key_corrections_are_worth_exactly_four_columns() -> None:
+def test_the_four_key_corrections_are_worth_exactly_four_columns(baseline_reports) -> None:
     strict = corrected = 0
     for client, (client_file, report_file, key_file) in KEYED.items():
         for apply_corrections, bucket in ((False, "strict"), (True, "corrected")):
             key = load_answer_key(ROOT / key_file, client, apply_corrections=apply_corrections)
-            score = score_report(ROOT / report_file, ROOT / client_file, key)
+            score = score_report(baseline_reports[client], ROOT / client_file, key)
             if bucket == "strict":
                 strict += score.count(Outcome.CORRECT)
             else:
                 corrected += score.count(Outcome.CORRECT)
-    # A diferença é a invariante; os totais mudam quando os relatórios mudam.
+    # Esses totais pertencem à fixture histórica, independente das novas execuções.
     assert corrected - strict == 4
     assert (strict, corrected) == (39, 43)
     assert sum(len(v) for v in KEY_CORRECTIONS.values()) == 4
@@ -169,12 +188,12 @@ def test_delivered_recall_is_never_above_picking_recall() -> None:
 
 
 @requires_workbooks
-def test_the_accept_gate_withholds_eleven_correct_mappings() -> None:
+def test_the_accept_gate_withholds_eleven_correct_mappings(baseline_reports) -> None:
     # A maior perda isolada do pipeline: corretos encontrados e não entregues.
     found = delivered = 0
     for client, (client_file, report_file, key_file) in KEYED.items():
         key = load_answer_key(ROOT / key_file, client)
-        score = score_report(ROOT / report_file, ROOT / client_file, key)
+        score = score_report(baseline_reports[client], ROOT / client_file, key)
         found += score.count(Outcome.CORRECT)
         delivered += score.delivered_correct
     assert found - delivered == 11
@@ -182,18 +201,18 @@ def test_the_accept_gate_withholds_eleven_correct_mappings() -> None:
 
 
 @requires_workbooks
-def test_every_withheld_correct_mapping_sits_below_the_accept_threshold() -> None:
-    # Se uma linha retida passar de 0,90, é outra recusa, e não o limiar, que a segura.
+def test_every_withheld_correct_mapping_sits_below_the_accept_threshold(baseline_reports) -> None:
+    # Se uma linha retida passar de 0,90, é outra recusa, e não o threshold, que a segura.
     for client, (client_file, report_file, key_file) in KEYED.items():
         key = load_answer_key(ROOT / key_file, client)
-        score = score_report(ROOT / report_file, ROOT / client_file, key)
+        score = score_report(baseline_reports[client], ROOT / client_file, key)
         for row in score.withheld_correct:
             assert (row.final_confidence or 0.0) < 0.90, (
                 f"{client} m{row.model_column} retida com {row.final_confidence}"
             )
 
 
-def test_a_non_discriminating_proof_is_not_independent_evidence() -> None:
+def test_a_non_discriminating_proof_is_not_independent_evidence(baseline_reports) -> None:
     # Uma prova que dois blocos disjuntos do mesmo tributo satisfazem traz o
     # marcador "não distingue esta coluna" e não conta como evidência.
     assert _accepted_row(
@@ -355,7 +374,7 @@ def test_help_is_in_portuguese(capsys: pytest.CaptureFixture[str]) -> None:
 
 @requires_workbooks
 def test_accepts_the_key_cannot_check_are_counted_and_visible() -> None:
-    # O código de saída lê só as fabricações; um aceite fora do gabarito sai
+    # O exit code lê só as fabricações; um aceite fora do gabarito sai
     # com 0 e só aparece nesta contagem.
     for client, (client_file, report_file, key_file) in KEYED.items():
         key = load_answer_key(ROOT / key_file, client)

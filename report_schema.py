@@ -1,25 +1,21 @@
-"""Esquema em português dos relatórios de mapeamento e das planilhas mapeadas.
+"""Converte os nomes e valores internos para o formato em português dos arquivos.
 
-Fronteira entre o vocabulário interno, em inglês, e o que aparece nos
-arquivos. Em memória o código usa ``accepted``, ids de etapa como
-``semantic``, os ids de ``reference_data/`` e ``Nome (occurrence 2)``; esses
-valores viram português só aqui, na gravação, e voltam ao interno na leitura.
+O código usa valores como ``accepted``, ``semantic`` e ``Nome (occurrence 2)``.
+Este módulo os converte ao gravar relatórios e planilhas e faz a conversão
+inversa na leitura. As mensagens já chegam em português; aqui ficam os
+rótulos de ``TEXT_LABELS`` e a formatação dos números.
 
-As frases para pessoas já são escritas em português onde são montadas; daqui
-elas tiram só o vocabulário (``TEXT_LABELS``), o marcador da prova não
-decisiva e a vírgula decimal. A entrada da IA nunca passa por aqui, porque
-precisa ficar idêntica byte a byte: o prompt, o prefixo do embedding, o
-esquema ``DataMappingDecision``, o payload, o texto de
-``semantic_header_conflict`` e ``ColumnRef.name`` / ``display_name``.
+Os inputs da IA não passam por essa conversão. Prompt, payload, embedding,
+schema de ``DataMappingDecision`` e nomes de coluna enviados aos modelos
+precisam permanecer idênticos aos registrados no golden test.
 
-Só o esquema em português (versão 3) é lido. Um relatório do formato antigo,
-em inglês (versão 2), é recusado com o caminho da conversão. Um nome antigo
-num relatório em português também é recusado: lido pela metade, o relatório
-faria a verificação de hash ser pulada ou os pareceres do revisor serem
-ignorados sem aviso.
+A leitura aceita apenas a versão 3 do schema, em português. Relatórios da
+versão 2 recebem uma mensagem com instruções de conversão. Nomes antigos
+misturados ao formato atual também geram erro, pois uma leitura parcial
+poderia ignorar hashes ou pareceres do revisor.
 
-Não importa ``invoice_mapper`` nem ``apply_invoice_mapping``, para que os dois
-possam importá-lo sem ciclo.
+Este módulo não importa ``invoice_mapper`` nem ``apply_invoice_mapping``,
+evitando imports circulares.
 """
 
 from __future__ import annotations
@@ -33,7 +29,7 @@ import pandas as pd
 
 
 # ---------------------------------------------------------------------------
-# Versões do esquema
+# Versões do schema
 # ---------------------------------------------------------------------------
 
 SCHEMA_VERSION_PT = 3
@@ -47,9 +43,8 @@ MIGRATION_COMMIT = "5fe5092"
 # Abas
 # ---------------------------------------------------------------------------
 
-#: Tipo de aba -> nome. As quatro primeiras são do relatório; as duas
-#: últimas, da planilha mapeada. Mapeamentos precisa continuar sendo a
-#: primeira aba do relatório, porque o ``apply`` a lê pela posição.
+#: Nomes das abas por tipo: quatro do relatório e duas da planilha mapeada.
+#: Mapeamentos deve permanecer na primeira posição, usada pelo apply na leitura.
 SHEETS: dict[str, str] = {
     "mappings": "Mapeamentos",
     "run_metadata": "Metadados da Execução",
@@ -72,9 +67,8 @@ LEGACY_SHEETS: dict[str, str] = {
 # Cabeçalhos
 # ---------------------------------------------------------------------------
 
-#: Tabela -> {campo interno: cabeçalho}, na ordem das colunas gravadas. O
-#: campo interno é também o cabeçalho do formato antigo; é por ele que um
-#: relatório antigo é reconhecido.
+#: Cabeçalhos por tabela, na ordem de gravação. Os nomes internos também
+#: eram usados como cabeçalhos no formato antigo e permitem identificá-lo.
 COLUMNS: dict[str, dict[str, str]] = {
     # Campos de MappingResult seguidos de REVIEWER_COLUMNS.
     "mappings": {
@@ -211,8 +205,8 @@ METADATA_KEYS: dict[str, str] = {
     "embedding_model": "modelo_embedding",
     "llm_model": "modelo_ia",
     "name_threshold": "limiar_nome",
-    # Distinta de margem_nome de propósito: aqui é o limiar --name-margin, não
-    # a margem medida em cada linha.
+    # margem_minima_nome guarda --name-margin; margem_nome guarda o valor
+    # medido em cada proposta. Os dois campos precisam de nomes distintos.
     "name_margin": "margem_minima_nome",
     "final_threshold": "limiar_final",
     "candidate_count": "quantidade_candidatos",
@@ -257,9 +251,9 @@ GUARD_IDS: dict[str, str] = {
     "exclusivity": "coluna_ja_consumida",
 }
 
-#: Só nos relatórios arquivados, gravado pelo antigo preenchimento retroativo:
-#: uma etapa objetiva rodou e o relatório não diz qual. mapping_steps não o
-#: classifica.
+#: Marcador usado pelo backfill quando havia evidência objetiva, mas os
+#: dados arquivados não permitiam identificar a etapa. mapping_steps não
+#: o classifica como etapa de evidência.
 LEGACY_STEP_IDS: dict[str, str] = {
     "unrecorded": "nao_registrado",
 }
@@ -352,9 +346,9 @@ ENUMS: dict[str, dict[str, str]] = {
 # Rótulos usados dentro de frases
 # ---------------------------------------------------------------------------
 
-#: Vocabulário das frases escritas em português na origem. Os ids continuam
-#: internos (os papéis de ``header_semantic_role`` são também entrada da IA);
-#: os rótulos só aparecem em texto para pessoas.
+#: Rótulos usados nas mensagens em português. Os IDs internos permanecem
+#: em inglês porque também integram os inputs da IA, como os valores
+#: retornados por header_semantic_role.
 TEXT_LABELS: dict[str, dict[str, str]] = {
     # Papéis de header_semantic_role, citados no conflito de cabeçalho.
     "header_role": {
@@ -425,8 +419,8 @@ CATALOG_LABELS: dict[str, str] = TEXT_LABELS["catalog"]
 #: * ``steps``: ids de etapa separados por `` + ``.
 #: * ``signals``: ids de sinal separados por vírgula.
 #: * ``display``: nome de exibição de coluna do cliente.
-#: * ``text``: texto livre, já na língua certa (a prosa da IA e as notas do
-#:   revisor nunca são traduzidas).
+#: * ``text``: texto livre preservado como recebido, incluindo justificativas
+#:   da IA e observações do revisor.
 #:
 #: Campo fora desta tabela (números, hashes, cabeçalhos do modelo, amostras
 #: do cliente) passa intacto. O banner segue o tratamento de ``mappings``.
@@ -474,7 +468,7 @@ def _field_kind(table: str, field: str) -> str | None:
 
 
 def _reverse(mapping: Mapping[str, str]) -> dict[str, str]:
-    """Tabela interno -> gravado invertida, para a leitura."""
+    """Inverte o dicionário de nomes para converter os valores lidos do arquivo."""
     return {written: internal for internal, written in mapping.items()}
 
 
@@ -488,11 +482,11 @@ PROOF_NOT_DECISIVE_PT = "não distingue esta coluna"
 
 
 def proof_is_decisive(text: object) -> bool:
-    """Diz se uma prova aritmética aponta esta coluna, e não só o tributo.
+    """Verifica se a prova aritmética identifica a coluna sem ambiguidade.
 
-    Falso sem prova ou com o marcador ``PROOF_NOT_DECISIVE_PT``: uma prova
-    assim vale para qualquer um dos blocos disjuntos do cliente, e contá-la
-    como evidência faria uma escolha ao acaso passar por prova.
+    Retorna ``False`` quando não há prova ou quando o texto contém
+    ``PROOF_NOT_DECISIVE_PT``. Nesse caso, mais de um bloco do cliente satisfaz
+    a equação e ela não basta para escolher uma coluna.
     """
     if not isinstance(text, str) or not text:
         return False
@@ -500,17 +494,17 @@ def proof_is_decisive(text: object) -> bool:
 
 
 def format_decimal_br(value: float, places: int | None = None) -> str:
-    """Número com vírgula decimal, para frases (``0.9996`` -> ``"0,9996"``).
+    """Formata um número com vírgula decimal, sem separador de milhar.
 
-    Sem ``places``, os dígitos são os de ``str(value)``; com ``places``, essa
-    quantidade fixa de casas. Não há separador de milhar.
+    ``places`` define a quantidade de casas decimais. Quando omitido, mantém
+    os dígitos de ``str(value)``: ``0.9996`` vira ``"0,9996"``.
     """
     text = str(value) if places is None else f"{value:.{places}f}"
     return text.replace(".", ",")
 
 
 def format_percent_br(value: float, places: int = 1) -> str:
-    """Fração como porcentagem com vírgula decimal (``0.882`` -> ``"88,2%"``)."""
+    """Formata uma fração como porcentagem: ``0.882`` vira ``"88,2%"``."""
     return f"{value:.{places}%}".replace(".", ",")
 
 
@@ -527,8 +521,8 @@ UNNAMED_COLUMN_PT = "Coluna sem nome {n}"
 
 _OCCURRENCE_EN = re.compile(r"(?P<name>.*) \(occurrence (?P<n>[0-9]+)\)", re.DOTALL)
 _UNNAMED_EN = re.compile(r"Unnamed column (?P<n>[0-9]+)")
-# Na leitura vale o que um revisor costuma digitar: qualquer caixa, com ou
-# sem acento, inclusive o acento decomposto.
+# Aceita variações de maiúsculas e acentos na digitação, incluindo
+# caracteres Unicode decompostos.
 _OCCURRENCE_PT = re.compile(
     r"(?P<name>.*) \(ocorr(?:ê|e\u0302|e)ncia (?P<n>[0-9]+)\)",
     re.DOTALL | re.IGNORECASE,
@@ -537,12 +531,11 @@ _UNNAMED_PT = re.compile(r"coluna sem nome (?P<n>[0-9]+)", re.IGNORECASE)
 
 
 def display_name_to_external(text: object) -> object:
-    """Nome de exibição interno -> o que vai na célula.
+    """Converte os marcadores internos do nome de coluna para o formato do relatório.
 
-    ``"Valor (occurrence 2)"`` vira ``"Valor (ocorrência 2)"`` e ``"Unnamed
-    column 7"`` vira ``"Coluna sem nome 7"``. O sufixo só vale ancorado no
-    fim. Qualquer outro texto passa intacto, então aplicar duas vezes dá o
-    mesmo resultado.
+    ``Valor (occurrence 2)`` vira ``Valor (ocorrência 2)``, e ``Unnamed column 7``
+    vira ``Coluna sem nome 7``. O sufixo de ocorrência só é reconhecido no fim
+    do nome. Outros textos são preservados, e repetir a conversão não os altera.
     """
     if not isinstance(text, str):
         return text
@@ -557,10 +550,11 @@ def display_name_to_external(text: object) -> object:
 
 
 def display_name_to_internal(text: object) -> object:
-    """Nome lido de uma célula -> forma interna; qualquer outro texto passa intacto.
+    """Converte os marcadores do nome de coluna para o formato interno.
 
-    Ambiguidade conhecida: um cabeçalho de cliente que seja literalmente
-    ``"Coluna sem nome 3"`` é lido como a coluna sem nome 3.
+    Preserva os demais textos. Há uma ambiguidade conhecida: um cabeçalho
+    literal como ``Coluna sem nome 3`` é interpretado como o marcador de uma
+    coluna sem cabeçalho.
     """
     if not isinstance(text, str):
         return text
@@ -618,10 +612,10 @@ def _translate_signals(cell: object, ids: Mapping[str, str]) -> object:
 
 
 def external_value(table: str, field: str, value: object) -> object:
-    """Valor interno de uma célula -> valor gravado.
+    """Converte o valor de um campo para o formato usado no arquivo.
 
-    ``field`` é o nome interno. Valores desconhecidos, números e texto livre
-    passam intactos, então aplicar duas vezes dá o mesmo resultado.
+    ``field`` recebe o nome interno do campo. Números, texto livre e valores
+    desconhecidos são preservados. Repetir a conversão produz o mesmo resultado.
     """
     kind = _field_kind(table, field)
     if kind == "display":
@@ -636,11 +630,12 @@ def external_value(table: str, field: str, value: object) -> object:
 
 
 def internal_value(table: str, field: str, value: object) -> object:
-    """Valor lido de uma célula -> vocabulário interno.
+    """Converte o valor lido do arquivo para a representação interna.
 
-    Um enum só volta quando o valor gravado é exato. O parecer do revisor
-    passa como foi digitado, para que quem lê o valide com
-    ``normalize_reviewer_status`` citando a linha. Texto livre passa intacto.
+    Enums exigem correspondência exata com o valor em português. O parecer do
+    revisor é preservado para que o leitor o valide com
+    ``normalize_reviewer_status`` e possa indicar a linha em caso de erro.
+    Texto livre também é preservado.
     """
     kind = _field_kind(table, field)
     if kind == "display":
@@ -667,18 +662,18 @@ def _is_missing(value: object) -> bool:
 
 
 def _fold(text: str) -> str:
-    """Tira acentos e caixa, para comparar o que uma pessoa digitou."""
+    """Normaliza acentos e maiúsculas para comparar o texto digitado pelo revisor."""
     decomposed = unicodedata.normalize("NFKD", text)
     return "".join(ch for ch in decomposed if not unicodedata.combining(ch)).casefold()
 
 
 def normalize_reviewer_status(value: object) -> str | None:
-    """Parecer digitado -> valor interno, ou ``None`` se não for um parecer.
+    """Normaliza o parecer do revisor e retorna ``None`` para valores não reconhecidos.
 
-    Aceita ``correto``, ``incorreto``, ``inexistente`` e vazio, ignorando
-    espaços nas pontas, caixa e acentos; célula vazia vira ``""``. Os
-    pareceres em inglês do formato antigo (``correct`` ...) coincidem com os
-    valores internos, e só esta recusa explícita impede que passem calados.
+    Aceita ``correto``, ``incorreto`` e ``inexistente``, ignorando maiúsculas,
+    acentos e espaços nas extremidades. Uma célula vazia retorna ``""``.
+    Os pareceres legados em inglês são rejeitados explicitamente: como
+    coincidem com os valores internos, poderiam passar pela validação por engano.
     """
     if _is_missing(value):
         return ""
@@ -693,12 +688,12 @@ def normalize_reviewer_status(value: object) -> str | None:
 
 
 def sheet_name(kind: str) -> str:
-    """Nome da aba de um tipo (``"mappings"``, ``"run_metadata"`` ...)."""
+    """Retorna o nome da aba para um tipo, como ``mappings`` ou ``run_metadata``."""
     return SHEETS[kind]
 
 
 def header_label(table: str, field: str) -> str:
-    """Cabeçalho gravado de um campo interno; um campo fora da tabela volta como está."""
+    """Retorna o cabeçalho do relatório para um campo interno; preserva campos desconhecidos."""
     return COLUMNS[table].get(field, field)
 
 
@@ -722,12 +717,12 @@ def _legacy_names_error(where: str, renames: Mapping[str, str]) -> ValueError:
 
 
 def check_header(header: Iterable[object], table: str = "mappings") -> None:
-    """Confere que o cabeçalho de uma tabela está no esquema em português.
+    """Valida as colunas obrigatórias e rejeita cabeçalhos do formato antigo.
 
-    Levanta ``ValueError`` quando falta a coluna obrigatória da tabela ou há
-    um cabeçalho do formato antigo. Na aba de mapeamentos, nomes antigos sem
-    ``numero_coluna_modelo`` são um relatório inteiro no formato antigo, e o
-    erro diz como convertê-lo; fora disso, são nomes a renomear.
+    Gera ``ValueError`` quando falta a coluna obrigatória ou há um nome legado.
+    Se Mapeamentos contém nomes antigos e não tem ``numero_coluna_modelo``,
+    a mensagem orienta a conversão do relatório inteiro. Nos demais casos,
+    indica os cabeçalhos que precisam ser renomeados.
     """
     names = [str(name) for name in header if name is not None]
     columns = COLUMNS[table]
@@ -745,20 +740,20 @@ def check_header(header: Iterable[object], table: str = "mappings") -> None:
 
 
 def _sheets_named(sheet_names: Sequence[str], name: str) -> list[str]:
-    """Abas com este nome, sem distinguir caixa, acentos e espaços nas pontas."""
+    """Localiza abas pelo nome, ignorando maiúsculas, acentos e espaços nas extremidades."""
     wanted = _fold(name.strip())
     return [n for n in sheet_names if isinstance(n, str) and _fold(n.strip()) == wanted]
 
 
 def find_sheet(sheet_names: Sequence[str], kind: str) -> str | None:
-    """Nome da aba de um tipo, como está escrito na pasta de trabalho, ou ``None``.
+    """Localiza a aba pelo tipo e retorna seu nome original, ou ``None`` se não existir.
 
-    A comparação ignora caixa (como o Excel), acentos (um nome pode chegar
-    decomposto ou redigitado sem acento) e espaços nas pontas: sem isso a aba
-    de metadados não seria encontrada e a verificação de hash seria pulada em
-    silêncio. Pelo mesmo motivo, duas abas com o mesmo nome ou uma aba com o
-    nome do formato antigo levantam ``ValueError``; com ``Mappings`` e sem
-    a aba de mapeamentos em português, o erro diz como converter o relatório.
+    Ignora maiúsculas, acentos e espaços nas extremidades para reconhecer
+    nomes editados manualmente. Isso evita que uma variação de escrita esconda
+    a aba de metadados e desative a verificação de hash.
+
+    Abas ambíguas ou com nomes legados geram ``ValueError``. Se houver apenas
+    ``Mappings`` em vez de Mapeamentos, a mensagem orienta a conversão do relatório.
     """
     found = _sheets_named(sheet_names, SHEETS[kind])
     legacy = _sheets_named(sheet_names, LEGACY_SHEETS[kind]) if kind in LEGACY_SHEETS else []
@@ -774,7 +769,7 @@ def find_sheet(sheet_names: Sequence[str], kind: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Quadros (pandas) e linhas de cabeçalho (openpyxl)
+# DataFrames (pandas) e linhas de cabeçalho (openpyxl)
 # ---------------------------------------------------------------------------
 
 
@@ -787,12 +782,12 @@ def _holds_text(series: pd.Series) -> bool:
 
 
 def _convert_columns(frame: pd.DataFrame, table: str, convert) -> None:
-    """Aplica ``convert(campo, valor)``, no próprio quadro, às colunas de texto com tratamento.
+    """Aplica ``convert(campo, valor)`` às colunas de texto do próprio DataFrame.
 
-    Não usa ``Series.map``, que reinfere o dtype: ``[NaN, 6, 32]`` numa
-    coluna object voltava float64 com ``6.0``. Aqui cada célula fica como
-    ``convert`` a devolveu, numa coluna object. As colunas são percorridas
-    por posição, o que funciona também com nomes repetidos.
+    Evita ``Series.map`` porque ele infere o dtype novamente: uma coluna object
+    com ``[NaN, 6, 32]`` poderia virar float64. A atribuição usada aqui preserva
+    o resultado de ``convert`` em uma coluna object. O acesso por posição
+    também permite trabalhar com nomes de coluna repetidos.
     """
     for position, column in enumerate(frame.columns):
         if not isinstance(column, str) or _field_kind(table, column) is None:
@@ -805,9 +800,9 @@ def _convert_columns(frame: pd.DataFrame, table: str, convert) -> None:
 
 
 def to_external_frame(frame: pd.DataFrame, table: str) -> pd.DataFrame:
-    """Quadro interno -> esquema em português, para gravar. Não altera ``frame``.
+    """Converte uma cópia do DataFrame para o formato em português do relatório.
 
-    Colunas que não são da tabela ficam com o nome e os valores que têm.
+    Preserva os nomes e valores das colunas que não pertencem ao schema.
     """
     out = frame.copy()
     _convert_columns(out, table, lambda field, value: external_value(table, field, value))
@@ -818,9 +813,9 @@ def to_external_frame(frame: pd.DataFrame, table: str) -> pd.DataFrame:
 
 
 def to_internal_frame(frame: pd.DataFrame, table: str) -> pd.DataFrame:
-    """Quadro lido de um arquivo -> nomes e valores internos. Não altera ``frame``.
+    """Converte uma cópia do DataFrame lido para os nomes e valores internos.
 
-    Recusa com ``ValueError`` um cabeçalho do formato antigo (``check_header``).
+    ``check_header`` gera ``ValueError`` se encontrar cabeçalhos do formato antigo.
     """
     check_header(frame.columns, table)
     names = _reverse(COLUMNS[table])
@@ -832,10 +827,10 @@ def to_internal_frame(frame: pd.DataFrame, table: str) -> pd.DataFrame:
 
 
 def internal_header_index(header_row: Sequence[object], table: str) -> dict[str, int]:
-    """Linha de cabeçalho do openpyxl -> {nome interno: índice da coluna}.
+    """Associa cada nome interno ao índice da coluna no cabeçalho do openpyxl.
 
-    Confere o cabeçalho como ``to_internal_frame``. Cabeçalhos que não são da
-    tabela entram com o próprio nome; células vazias ficam de fora.
+    Valida o cabeçalho como ``to_internal_frame``. Mantém os nomes de campos
+    desconhecidos e ignora células vazias.
     """
     check_header(header_row, table)
     names = _reverse(COLUMNS[table])
@@ -852,10 +847,10 @@ def internal_header_index(header_row: Sequence[object], table: str) -> dict[str,
 
 
 def to_external_metadata(metadata: Mapping[str, object]) -> pd.DataFrame:
-    """Metadados com chaves internas -> quadro ``chave``/``valor`` em português.
+    """Monta um DataFrame de metadados com as colunas ``chave`` e ``valor``.
 
-    Traduz as chaves e, nas chaves que podem tê-los, os sentinelas. Os demais
-    valores passam intactos, na mesma ordem.
+    Converte as chaves e os valores especiais previstos no schema. Preserva
+    os demais valores e a ordem dos registros.
     """
     rows = []
     for key, value in metadata.items():
@@ -870,13 +865,12 @@ def _clean_text(value: object) -> str:
 
 
 def internal_metadata(frame: pd.DataFrame) -> dict[str, str]:
-    """Aba de metadados lida -> {chave interna: valor como texto}.
+    """Lê os metadados em um dicionário de chaves internas e valores de texto.
 
-    Os valores são limpos como no ``apply``: sem espaços nas pontas, célula
-    vazia como ``""``. Levanta ``ValueError`` para chave repetida na coluna
-    crua, inclusive duas chaves em branco (a regra que o ``apply`` sempre
-    aplicou), e para chave do formato antigo: igual à interna, ela valeria no
-    lugar da chave em português sem aviso.
+    Remove espaços nas extremidades e converte células vazias em ``""``, como
+    o apply. Chaves repetidas, inclusive duas chaves vazias, geram ``ValueError``.
+    Chaves do formato antigo também são rejeitadas para evitar a leitura
+    silenciosa de um relatório parcialmente convertido.
     """
     check_header(frame.columns, "run_metadata")
     title = SHEETS["run_metadata"]

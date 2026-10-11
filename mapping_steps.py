@@ -1,26 +1,21 @@
-"""As etapas nomeadas da análise de mapeamento de colunas.
+"""Registra as etapas que justificam ou bloqueiam um mapeamento.
 
-Cada mapeamento informa quais etapas o sustentaram, para que o revisor veja
-*como* uma coluna foi casada, e não só *que* foi. Há dois tipos:
+O relatório usa esse registro para mostrar ao revisor quais evidências
+apoiaram a escolha e quais regras impediram sua aceitação. Várias etapas
+podem apoiar a mesma proposta; um guard pode bloqueá-la mesmo assim.
 
-* uma **etapa de evidência** é um motivo para acreditar no mapeamento; várias
-  podem sustentar o mesmo;
-* uma **trava** é um motivo para recusá-lo e prevalece sobre qualquer
-  evidência, porque num documento fiscal uma coluna errada é pior do que uma
-  vazia.
+``transfers`` indica se a evidência também se aplica a ERPs com cabeçalhos
+desconhecidos. Relações aritméticas, catálogos oficiais e dígitos verificadores
+oferecem esse apoio. A comparação das palavras do cabeçalho depende do
+vocabulário reconhecido pelo mapeador. Essa distinção orienta a métrica de
+generalização.
 
-``transfers`` diz se a etapa continua valendo num ERP nunca visto: as que se
-apoiam na legislação, nas tabelas oficiais ou nos dígitos verificadores se
-transferem; as que leem as palavras do cabeçalho do cliente, não. A fração
-dos mapeamentos apoiados em etapas transferíveis é a métrica de
-generalização da ferramenta.
-
-Os ids (``lexical``, ``catalog``...) são internos, em inglês;
-``report_schema`` os grava em português. Uma célula lida de um relatório passa
-por ``report_schema.steps_to_internal`` antes de chegar a ``deciding_step`` ou
-``format_steps``. Uma etapa nova precisa também de um id em português em
-``report_schema.STEP_IDS`` (ou ``GUARD_IDS``); ``tests/test_report_schema.py``
-acusa se faltar.
+Os IDs internos, como ``lexical`` e ``catalog``, permanecem em inglês.
+``report_schema`` os converte na gravação e na leitura. Antes de usar
+``deciding_step`` ou ``format_steps`` com uma célula do relatório, converta-a
+com ``report_schema.steps_to_internal``. Ao incluir uma etapa, cadastre também
+seu ID no formato do relatório em ``STEP_IDS`` ou ``GUARD_IDS``. O teste em
+``tests/test_report_schema.py`` verifica essa correspondência.
 """
 
 from __future__ import annotations
@@ -30,34 +25,30 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class Step:
-    """Uma forma nomeada de a ferramenta justificar, ou recusar, o mapeamento de uma coluna."""
+    """Descreve uma evidência ou um guard usado na decisão de mapeamento."""
 
     id: str
     name: str
     summary: str
-    #: Se o raciocínio da etapa continua válido num ERP de vocabulário desconhecido.
+    #: Indica se a evidência independe do vocabulário usado pelo ERP.
     transfers: bool
-    #: Onde a lógica está, para quem lê poder ir conferir.
+    #: Referência à implementação da etapa.
     implemented_by: str
 
 
-#: Etapas de evidência, da alegação de correção mais fraca para a mais forte.
-#: A ordem tem significado: quando várias etapas sustentam um mapeamento, a
-#: última delas nesta tupla é a informada como a que o decidiu.
+#: Evidências em ordem de apresentação e desempate. O mapper registra como
+#: decisiva a evidência usada para aceitar, não toda evidência de apoio.
 EVIDENCE_STEPS: tuple[Step, ...] = (
     Step(
         id="resolver",
-        name="Adjudicação pela IA",
+        name="Escolha pelo resolver de IA",
         summary=(
-            "A IA pondera a evidência de todas as outras etapas sobre os "
-            "candidatos pré-selecionados e escolhe um, informando a própria "
-            "confiança e uma justificativa de uma frase. Só entra em ação nas "
-            "colunas que as etapas anteriores deixaram em dúvida."
+            "A IA compara as candidatas com base nas evidências reunidas pelas "
+            "outras etapas. Retorna uma escolha, sua confiança e uma justificativa "
+            "breve. É consultada quando as etapas anteriores não resolvem o mapeamento."
         ),
-        # A mais fraca e não transferível de propósito: o resolvedor é um
-        # árbitro, não uma evidência. O que se transfere é a evidência por
-        # baixo dele, e um mapeamento apoiado só no cabeçalho não passa por
-        # transferível porque foi a IA quem o escolheu.
+        # A escolha da IA, por si só, não demonstra generalização. Esse apoio
+        # vem das evidências usadas na escolha, como catálogo ou aritmética.
         transfers=False,
         implemented_by="_openai_data_decision",
     ),
@@ -78,10 +69,9 @@ EVIDENCE_STEPS: tuple[Step, ...] = (
         id="semantic",
         name="Correspondência semântica de cabeçalho",
         summary=(
-            "Compara o significado dos nomes de cabeçalho por meio de "
-            "embeddings, de modo que 'Nota Fiscal number' pode chegar a "
-            "'Nº da Nota Fiscal' sem depender de termos em comum. Exige o "
-            "modo online."
+            "Usa embeddings para comparar o significado dos cabeçalhos. Assim, "
+            "'Nota Fiscal number' pode corresponder a 'Nº da Nota Fiscal' mesmo "
+            "sem ter todas as palavras em comum. Disponível no modo online."
         ),
         transfers=False,
         implemented_by="OpenAIEmbeddingHeaderScorer",
@@ -101,10 +91,11 @@ EVIDENCE_STEPS: tuple[Step, ...] = (
         id="identifier",
         name="Validação de identificador (DV)",
         summary=(
-            "Reconhece identificadores brasileiros pelos dígitos verificadores, "
-            "e não pelo cabeçalho: CPF, CNPJ e a chave de acesso de 44 dígitos "
-            "da NF-e. Uma coluna cujos valores passam na validação é aquele "
-            "identificador, qualquer que seja o nome dela."
+            "Verifica dígitos de controle de CPF, CNPJ e chave de acesso de "
+            "44 dígitos da NF-e. Essa validação ajuda a reconhecer o conteúdo "
+            "independentemente do cabeçalho. Os tipos permitidos vêm da definição "
+            "do campo em target_fields.json; cabeçalhos fora desse registro "
+            "continuam usando o perfil do modelo como fallback."
         ),
         transfers=True,
         implemented_by="identifier_match_score, _cpf_is_valid, _cnpj_is_valid, _nfe_key_is_valid",
@@ -115,8 +106,9 @@ EVIDENCE_STEPS: tuple[Step, ...] = (
         summary=(
             "Verifica se os valores pertencem às tabelas oficiais de códigos "
             "(CFOP, NCM, código de município do IBGE, as famílias de CST, "
-            "CSOSN e os códigos do IBS/CBS), descontando domínios curtos e "
-            "sujeitos a colisão, como o CST de dois dígitos."
+            "CSOSN e os códigos do IBS/CBS). Reduz o peso de domínios curtos, "
+            "como o CST de dois dígitos, nos quais códigos de campos diferentes "
+            "podem coincidir."
         ),
         transfers=True,
         implemented_by="reference_catalog.best_catalog_evidence, catalog_evidence_is_distinctive",
@@ -125,11 +117,11 @@ EVIDENCE_STEPS: tuple[Step, ...] = (
         id="arithmetic",
         name="Aritmética fiscal",
         summary=(
-            "Prova o papel de uma coluna por uma identidade que vem da "
-            "legislação tributária, e não do vocabulário: valor = base x "
-            "alíquota num trio fiscal, e valor do item = quantidade x preço "
-            "unitário. É a evidência mais forte que a ferramenta tem, e a "
-            "mais transferível."
+            "Verifica relações entre os valores: valor do tributo = base x "
+            "alíquota e valor do item = quantidade x preço unitário. Essas "
+            "relações ajudam a identificar o papel de cada coluna sem depender "
+            "do vocabulário do ERP. Esta etapa tem a maior prioridade no registro "
+            "da evidência decisiva."
         ),
         transfers=True,
         implemented_by="tax_calculation_evidence, discover_client_tax_trios, line_calculation_role",
@@ -137,16 +129,16 @@ EVIDENCE_STEPS: tuple[Step, ...] = (
 )
 
 
-#: Travas. Uma trava que dispara recusa o mapeamento, qualquer que seja a evidência.
-#: Só ``vacuity`` e ``family_conflict`` chegam a ``vetado_por`` (KNOWN_ISSUES 2.1).
+#: Guards que impedem a aceitação de uma proposta. ``vacuity``,
+#: ``family_conflict`` e ``exclusivity`` são registrados em ``vetado_por``.
 GUARDS: tuple[Step, ...] = (
     Step(
         id="vacuity",
         name="Veto por coluna vazia",
         summary=(
-            "Recusa um mapeamento para uma coluna do cliente sem nenhuma linha "
-            "preenchida. Se fosse entregue, seria uma coluna que parece "
-            "mapeada e está em branco sem aviso: fabricação por construção."
+            "Impede a aceitação de uma coluna do cliente sem dados. Isso evita "
+            "que a saída apresente uma coluna como mapeada quando nenhuma "
+            "célula foi preenchida. A avaliação classifica esse caso como fabricação."
         ),
         transfers=True,
         implemented_by="client_column_is_vacuous",
@@ -175,11 +167,11 @@ GUARDS: tuple[Step, ...] = (
     ),
     Step(
         id="exclusivity",
-        name="Origem já consumida",
+        name="Coluna de origem já utilizada",
         summary=(
-            "Uma coluna do cliente aceita para uma coluna do modelo sai do "
-            "conjunto de candidatas, para que duas colunas do modelo não "
-            "reivindiquem a mesma origem."
+            "Remove do conjunto de candidatas cada coluna do cliente já aceita. "
+            "Isso garante que ela seja usada como origem de apenas uma coluna "
+            "do modelo."
         ),
         transfers=True,
         implemented_by="build_mapping (o conjunto available)",
@@ -190,22 +182,22 @@ STEPS_BY_ID: dict[str, Step] = {
     step.id: step for step in (*EVIDENCE_STEPS, *GUARDS)
 }
 
-#: Ordem de apresentação, com a alegação mais forte por último; ver EVIDENCE_STEPS.
+#: Prioridade das evidências, conforme a ordem definida em EVIDENCE_STEPS.
 _EVIDENCE_RANK: dict[str, int] = {
     step.id: index for index, step in enumerate(EVIDENCE_STEPS)
 }
 
-#: Etapas cujo raciocínio continua válido num ERP nunca visto.
+#: Etapas que também se aplicam a ERPs com vocabulário desconhecido.
 TRANSFERRING_STEP_IDS: frozenset[str] = frozenset(
     step.id for step in EVIDENCE_STEPS if step.transfers
 )
 
 
 def deciding_step(supporting: object) -> str:
-    """A etapa de apoio mais forte, pela ordem de EVIDENCE_STEPS; ``""`` se não houver.
+    """Retorna a etapa de maior prioridade em EVIDENCE_STEPS, ou ``""`` se não houver.
 
-    Cabeçalho e aritmética juntos dão aritmética: é a alegação que valeria num
-    cliente cujos cabeçalhos não conseguimos ler.
+    Se cabeçalho e aritmética apoiam a escolha, por exemplo, a aritmética
+    prevalece porque sua evidência independe do vocabulário do cliente.
     """
     ids = _evidence_ids(supporting)
     return max(ids, key=lambda step: _EVIDENCE_RANK[step]) if ids else ""
@@ -218,20 +210,20 @@ def format_steps(supporting: object) -> str:
 
 
 def rests_only_on_headers(supporting: object) -> bool:
-    """Se nada além do texto do cabeçalho do cliente sustenta o mapeamento.
+    """Verifica se o mapeamento depende apenas do cabeçalho do cliente.
 
-    True quer dizer que ele não sobreviveria a um ERP que usa outras palavras
-    para o mesmo conceito.
+    ``True`` indica que não há apoio das etapas marcadas como ``transfers``;
+    a escolha pode depender de palavras específicas do ERP.
     """
     ids = set(_evidence_ids(supporting))
     return bool(ids) and not (ids & TRANSFERRING_STEP_IDS)
 
 
 def _evidence_ids(supporting: object) -> list[str]:
-    """Os ids de etapa de evidência de uma célula (``"lexical + catalog"``) ou sequência.
+    """Extrai os IDs de evidência de uma célula ou sequência.
 
-    O resto é ignorado: travas, ids em português e o ``unrecorded`` e o
-    ``catalog (agrees)`` dos relatórios arquivados.
+    Aceita textos como ``"lexical + catalog"``. Ignora guards, IDs em português
+    e os marcadores ``unrecorded`` e ``catalog (agrees)`` dos relatórios arquivados.
     """
     if supporting is None:
         return []

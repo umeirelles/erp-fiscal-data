@@ -1,17 +1,18 @@
-"""Mapeador de colunas: liga as colunas da exportação do cliente às colunas do model.xlsx.
+"""Associa as colunas da planilha do cliente às colunas de ``model.xlsx``.
 
-O algoritmo está em ``map_columns``: uma primeira passagem aceita pelo
-cabeçalho, e uma segunda pesa os valores das linhas (aritmética fiscal,
-catálogos oficiais, amostras, dígitos verificadores e, online, o resolvedor de
-IA). docs/ARCHITECTURE.md descreve cada regra.
+``map_columns`` organiza o trabalho em duas passagens. A primeira compara os
+cabeçalhos. A segunda analisa os valores usando relações aritméticas,
+catálogos oficiais, amostras e dígitos verificadores. No modo online, também
+consulta o resolver de IA. As regras estão em docs/ARCHITECTURE.md.
 
-Em memória os valores de máquina ficam no vocabulário interno, em inglês
-(situação ``accepted``, etapa ``semantic``); as frases para pessoas são
-escritas aqui em português, e ``report_schema`` traduz o resto na gravação. O
-que vai para a OpenAI (prompt, prefixo do embedding, ``DataMappingDecision``,
-payload, texto de ``semantic_header_conflict``, ``ColumnRef.name`` e
-``display_name``) fica em inglês, byte a byte; ``tests/test_model_input_golden.py``
-garante isso.
+O código usa valores internos em inglês, como ``accepted`` e ``semantic``.
+``report_schema`` faz a conversão para o formato em português dos arquivos.
+As mensagens destinadas ao usuário são escritas em português neste módulo.
+
+Os inputs da OpenAI permanecem em inglês: prompt, prefixo do embedding,
+``DataMappingDecision``, payload, ``semantic_header_conflict``, ``ColumnRef.name``
+e ``display_name``. O golden test em ``tests/test_model_input_golden.py``
+verifica que esses inputs não mudaram.
 """
 
 from __future__ import annotations
@@ -21,7 +22,6 @@ import json
 import os
 import re
 import sys
-import unicodedata
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
@@ -35,13 +35,15 @@ from pydantic import BaseModel, Field
 
 import report_schema
 from cli_ptbr import PortugueseArgumentParser
+from spreadsheet import ColumnRef, SheetTable, normalize_header, _header_text
+from target_schema import target_field
 from mapping_steps import deciding_step, format_steps
 from reference_catalog import ReferenceCatalogs, best_catalog_evidence, expected_catalogs
 
 
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large"
 DEFAULT_LLM_MODEL = "gpt-4o-mini"
-#: Versão do formato do relatório; a 3 é o esquema em português.
+#: Versão do formato do relatório; a 3 é o schema em português.
 MAPPING_SCHEMA_VERSION = 3
 PROMPT_VERSION = "2026-08-04.2"
 #: Colunas que o revisor preenche na aba de mapeamentos (nomes internos).
@@ -49,49 +51,49 @@ REVIEWER_COLUMNS = ["reviewer_status", "correct_client_column", "reviewer_note"]
 
 
 # ---------------------------------------------------------------------------
-# Limiares e pesos
+# Thresholds e pesos
 #
-# Os que a linha de comando expõe ficam em MapperConfig; todos os outros
-# ficam no bloco abaixo dela. Mudar um valor muda decisões: meça com o mapeval
-# antes (docs/EVALUATION.md). docs/ARCHITECTURE.md, seção "Constantes", diz
-# onde cada um atua.
+# MapperConfig reúne os parâmetros expostos pela CLI. As demais constantes
+# ficam logo abaixo. Alterações nesses valores podem mudar os mapeamentos;
+# compare os resultados com o mapeval (docs/EVALUATION.md). A seção
+# "Constantes" de docs/ARCHITECTURE.md explica o uso de cada parâmetro.
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class MapperConfig:
-    """Limiares e tamanhos da execução, os mesmos das opções da linha de comando."""
+    """Configura os thresholds e os tamanhos de amostra disponíveis na CLI."""
 
     name_threshold: float = 0.90  # --name-threshold: aceite pelo cabeçalho
     name_margin_threshold: float = 0.05  # --name-margin: vantagem sobre a segunda opção
-    final_threshold: float = 0.90  # --final-threshold: o limiar de aceite
+    final_threshold: float = 0.90  # --final-threshold: o threshold de aceite
     candidate_count: int = 10  # --candidates: tamanho de cada lista de candidatos
     sample_size: int = 8  # --sample-size: valores de amostra por perfil
 
     @property
     def near_name_threshold(self) -> float:
-        """Nome quase decisivo: limiar de nome menos uma margem (0,85 com os padrões)."""
+        """Retorna o threshold de cabeçalho menos uma margem: 0,85 na configuração padrão."""
         return self.name_threshold - self.name_margin_threshold
 
     @property
     def weak_name_threshold(self) -> float:
-        """Nome fraco, mas plausível: limiar de nome menos duas margens (0,80)."""
+        """Retorna o threshold de cabeçalho menos duas margens: 0,80 na configuração padrão."""
         return self.name_threshold - 2 * self.name_margin_threshold
 
     @property
     def weak_final_threshold(self) -> float:
-        """Limiar de aceite menos duas margens (0,80)."""
+        """Retorna o threshold final menos duas margens: 0,80 na configuração padrão."""
         return self.final_threshold - 2 * self.name_margin_threshold
 
     @property
     def clamp_ceiling(self) -> float:
-        """Teto da confiança sem evidência decisiva, logo abaixo do limiar (0,8999)."""
+        """Limita a confiança a um valor abaixo do threshold quando falta evidência decisiva."""
         return self.final_threshold - CEILING_GAP
 
 
 # Cabeçalhos
 IDENTICAL_HEADER_SCORE = 1.0  # texto normalizado idêntico
-SEMANTIC_EQUIVALENCE_SCORE = 0.98  # assinaturas iguais: passa do limiar de nome, abaixo do idêntico
+SEMANTIC_EQUIVALENCE_SCORE = 0.98  # assinaturas iguais: passa do threshold de nome, abaixo do idêntico
 LEXICAL_SEQUENCE_WEIGHT = 0.7  # avaliador léxico: 0,7 x SequenceMatcher + 0,3 x Jaccard
 LEXICAL_JACCARD_WEIGHT = 0.3
 _MIN_ROLE_PREFIX = 3  # abaixo deste tamanho, uma palavra é ruído, não truncamento
@@ -104,7 +106,7 @@ PROFILE_LENGTH_WEIGHT = 0.05
 PROFILE_DIGIT_COUNT_WEIGHT = 0.10
 PROFILE_DIGIT_COUNT_OVERLAP_WEIGHT = 0.55
 PROFILE_TYPE_WEIGHT = 0.15
-GENERIC_PROFILE_CAP = 0.84  # semelhança de formato sozinha nunca alcança o limiar de aceite
+GENERIC_PROFILE_CAP = 0.84  # semelhança de formato sozinha nunca alcança o threshold de aceite
 
 # Amostras distintivas e identificadores
 DISTINCTIVE_MIN_DIGITS = 6  # um valor só de dígitos precisa de 6 para não coincidir por acaso
@@ -129,8 +131,8 @@ DEGENERATE_DISCOUNT = 0.75  # ...e pontuação descontada
 CONTRADICTION_MIN_ROWS = 20  # contradição forte: >= 20 linhas, cobertura >= 0,80, aderência <= 0,20
 CONTRADICTION_MIN_COVERAGE = 0.80
 CONTRADICTION_MAX_FIT = 0.20
-TRIO_MIN_FIT = 0.97  # trio descoberto: a identidade é exata, não uma correlação...
-TRIO_MIN_ROWS = 30  # ...e um encaixe em poucas linhas não prova nada
+TRIO_MIN_FIT = 0.97  # aderência mínima à equação para registrar um trio
+TRIO_MIN_ROWS = 30  # quantidade mínima de linhas para sustentar a relação
 DEMOTION_MIN_RELATIONSHIP = 0.90  # auditoria dos trios aceitos na primeira passagem
 DEMOTION_MIN_IMPROVEMENT = 0.50
 
@@ -138,9 +140,9 @@ DEMOTION_MIN_IMPROVEMENT = 0.50
 CATALOG_MIN_VALUES = 5
 CATALOG_MIN_FORMAT_FRACTION = 0.90
 UNIQUE_DOMAIN_SPECIFICITY = 1.0  # CFOP, NCM e município do IBGE
-#: Piso de distintividade só dos domínios de especificidade 1,0, em que um
-#: código válido quase nunca coincide por acaso. Os catálogos pequenos (CST,
-#: CSOSN) casam com qualquer coluna de inteiros pequenos e não têm piso.
+#: Score mínimo para catálogos com especificidade 1,0. Tabelas pequenas,
+#: como CST e CSOSN, podem coincidir com códigos internos do ERP; elas
+#: não recebem esse tratamento.
 DISTINCTIVE_CATALOG_FLOOR = 0.50
 DISTINCTIVE_CATALOG_MIN_CODES = 5  # códigos válidos distintos exigidos com esse piso
 AUDIT_MIN_SPECIFICITY = 0.90  # auditoria: um aceite com menos de 10% de códigos válidos é reaberto
@@ -165,7 +167,7 @@ OBJECTIVE_WEIGHT = 0.60
 OBJECTIVE_WEAK_NAME_FLOOR = 0.80
 CEILING_NAME_WEIGHT = 0.70  # sem evidência decisiva: 0,7 x nome + 0,3 x dados, com teto
 CEILING_DATA_WEIGHT = 0.30
-CEILING_GAP = 0.0001  # o teto é o limiar de aceite menos isto
+CEILING_GAP = 0.0001  # o teto é o threshold de aceite menos isto
 
 # Fila de Revisão
 _CLAMPED_BAND = 0.0002  # confianças tão próximas são o mesmo teto; a margem desempata
@@ -174,7 +176,7 @@ FLOAT_TOLERANCE = 1e-9
 
 
 # ---------------------------------------------------------------------------
-# Frases para pessoas, escritas em português na origem
+# Mensagens exibidas nos relatórios
 #
 # A justificativa escrita pela IA (DataMappingDecision.reason) passa intacta,
 # em inglês, porque o prompt continua em inglês. Números entram com vírgula
@@ -184,68 +186,75 @@ FLOAT_TOLERANCE = 1e-9
 
 #: Conflito de cabeçalho. Os lados chegam prontos: famílias em maiúsculas
 #: (``ICMS``), qualificadores e papéis pelos rótulos de ``report_schema``.
-HEADER_CONFLICT_FAMILY_PT = "conflito de família de tributo ({left} vs {right})"
-HEADER_CONFLICT_QUALIFIER_PT = "conflito de qualificador do tributo ({left} vs {right})"
-HEADER_CONFLICT_ROLE_PT = "conflito de papel semântico ({left} vs {right})"
+HEADER_CONFLICT_FAMILY_PT = "tributos diferentes ({left} vs {right})"
+HEADER_CONFLICT_QUALIFIER_PT = "tratamentos tributários diferentes ({left} vs {right})"
+HEADER_CONFLICT_ROLE_PT = "tipos de campo incompatíveis ({left} vs {right})"
 
 #: Coluna justificativa.
 REASON_NO_UNUSED = "Não restam colunas do cliente disponíveis."
+REASON_SOURCE_COMPETITION = (
+    "Mais de um campo do modelo propõe esta origem. A atribuição precisa de revisão "
+    "para preservar o uso de uma origem distinta por destino."
+)
 REASON_PASS_ONE_ACCEPTED = (
-    "Aceito pela semelhança do cabeçalho, com vantagem clara sobre a segunda melhor opção."
+    "O cabeçalho corresponde ao campo do modelo e tem vantagem suficiente sobre a "
+    "segunda opção. Mapeamento aceito."
 )
 REASON_OFFLINE = (
-    "A pontuação do cabeçalho ou a margem sobre a segunda melhor opção foi insuficiente; "
-    "a comparação de dados estava desativada."
+    "O score do cabeçalho ou a margem sobre a segunda opção não atingiu o mínimo "
+    "exigido. Como a comparação de dados está desativada, a proposta segue para revisão."
 )
 #: ``exc_type`` é o nome da classe da exceção; ``exc``, a mensagem dela.
 REASON_DATA_ERROR = "A comparação de dados falhou: {exc_type}: {exc}"
 #: ``catalog`` é o nome legível (``_catalog_label``); as coberturas chegam
 #: formatadas por ``report_schema.format_percent_br`` (``88,2%``).
 REASON_CATALOG_DECISION = (
-    "A tabela oficial versionada de {catalog} cobre {distinct_coverage} dos "
-    "{unique_formatted_count} códigos distintos usados ({coverage} das linhas) e "
-    "identifica este candidato de forma única entre as colunas disponíveis."
+    "Na versão consultada da tabela oficial de {catalog}, {distinct_coverage} dos "
+    "{unique_formatted_count} códigos distintos desta coluna são válidos "
+    "({coverage} das linhas). Entre as colunas disponíveis, apenas esta reúne "
+    "evidência suficiente para a escolha pelo catálogo."
 )
 REASON_UNIQUE_RELATIONSHIP = (
-    "Uma relação fiscal única e de alta cobertura sustenta esta coluna frente às "
-    "alternativas (por exemplo, base de cálculo vezes alíquota reproduz o valor)."
+    "Esta coluna se destaca das alternativas por confirmar uma relação fiscal em "
+    "grande parte das linhas, como base de cálculo x alíquota = valor do tributo."
 )
 REASON_OVERLAP = (
-    "Valores de amostra distintivos e diferentes de zero coincidem exatamente com este "
-    "candidato, e não com as colunas concorrentes."
+    "As amostras do modelo coincidem com valores desta coluna que são diferentes "
+    "de zero e pouco sujeitos a coincidências. Esse apoio não aparece nas "
+    "colunas concorrentes."
 )
 REASON_JOINT = (
-    "O cabeçalho e uma relação fiscal verificada linha a linha sustentam juntos esta "
-    "coluna, com vantagem clara sobre as alternativas."
+    "A comparação do cabeçalho e a relação fiscal verificada nas linhas apontam "
+    "para esta coluna, com vantagem suficiente sobre as alternativas."
 )
 REASON_NULL_FALLBACK = (
-    "O resolvedor de IA encontrou evidências favoráveis, mas não escolheu nenhuma coluna; "
-    "o candidato com o cabeçalho mais forte fica para revisão."
+    "A IA encontrou evidências favoráveis, mas não escolheu uma coluna. A candidata "
+    "com o maior score de cabeçalho foi mantida para revisão."
 )
 REASON_PRESERVE_BEST = (
-    "O candidato com o cabeçalho mais forte tem evidência fraca nas linhas; o mapeamento "
-    "por nome é mantido para revisão, em vez de ser trocado por uma coluna que só tem "
-    "formato de valores parecido."
+    "Os dados não permitem confirmar a candidata com o melhor cabeçalho. Ela foi "
+    "mantida para revisão, pois a alternativa tem apenas um formato de valores "
+    "semelhante."
 )
 REASON_UNSUPPORTED_NO_MATCH = (
-    "Nenhum candidato reuniu evidência suficiente de cabeçalho e de linhas distintivas; "
-    "a exportação do cliente pode não conter este campo do modelo."
+    "A comparação dos cabeçalhos e dos dados não encontrou uma candidata com "
+    "evidência suficiente. Este campo pode não constar na exportação do cliente."
 )
 #: ``header_conflict`` é o conflito em português (``describe_header_conflict_pt``).
 REASON_CONFLICT_REVIEW = (
-    "Os cabeçalhos apresentam {header_conflict}; esta proposta fica para revisão porque "
-    "o conteúdo das linhas traz evidência distintiva de que o cabeçalho do cliente pode "
-    "estar errado."
+    "Os cabeçalhos apresentam {header_conflict}. Os valores, porém, oferecem "
+    "evidência de correspondência e sugerem que o cabeçalho do cliente pode estar "
+    "incorreto. A proposta precisa de revisão."
 )
 REASON_CONTRADICTION = (
-    "Uma equação fiscal de alta cobertura contradiz fortemente esta proposta; ela fica "
-    "para revisão em vez de ser aceita automaticamente."
+    "A proposta não corresponde à relação fiscal verificada em grande parte das "
+    "linhas. Por isso, precisa de revisão antes de ser aceita."
 )
 #: ``client_column`` é o nome de exibição já em português
 #: (``report_schema.display_name_to_external``); sai entre aspas, por ``!r``.
 REASON_VACUITY = (
-    "{client_column!r} não tem linhas preenchidas, portanto não pode ser a origem desta "
-    "coluna, por mais que os cabeçalhos coincidam. Não aceito."
+    "{client_column!r} não tem linhas preenchidas. O mapeamento não foi aceito, "
+    "pois essa origem deixaria a coluna do modelo sem dados."
 )
 
 #: Coluna prova_aritmetica. ``tax_scope`` é a sigla do tributo em maiúsculas;
@@ -274,22 +283,20 @@ SIGNAL_DATES = "contém datas"
 SIGNAL_EMPTY = "Esta coluna não tem valores."
 SIGNAL_ALL_ZERO = "Todos os valores desta coluna são zero."
 SIGNAL_NO_SIGNAL = (
-    "Contém dados, mas nenhum sinal foi identificado. Listada apenas para que a "
-    "relação fique completa."
+    "A coluna contém dados, mas a análise não identificou sinais para priorizar "
+    "sua revisão. Ela permanece na lista de colunas sem uso."
 )
 
 #: Coluna motivo_retencao: as três razões possíveis.
-WHY_HELD_BELOW_THRESHOLD = "abaixo do limiar de aceite"
+WHY_HELD_BELOW_THRESHOLD = "confiança abaixo do threshold de aceitação"
 WHY_HELD_NAME_ONLY = (
-    "só há evidência de nome - este caminho não aceita automaticamente, por mais que "
-    "os cabeçalhos coincidam"
+    "o cabeçalho sugere uma correspondência, mas falta evidência para aceitação automática"
 )
 WHY_HELD_VACUOUS = (
-    "a coluna proposta não tem linhas preenchidas - confirmá-la entregaria uma coluna "
-    "em branco"
+    "a coluna de origem está vazia; confirmar a proposta não acrescentaria dados ao modelo"
 )
 #: Coluna divergencia_ia. ``llm_final`` chega com vírgula decimal (``0,75``).
-RESOLVER_DISAGREES = "o resolvedor de IA atribuiu confiança {llm_final}"
+RESOLVER_DISAGREES = "confiança informada pelo resolver de IA: {llm_final}"
 
 
 # ---------------------------------------------------------------------------
@@ -390,7 +397,7 @@ _ROLE_WORDS = frozenset(word for words in _ROLE_CONCEPT_WORDS.values() for word 
 
 
 def _role_prefix_index() -> dict[str, str]:
-    """Prefixo truncado -> conceito, só para os prefixos que alcançam um único conceito."""
+    """Associa cada prefixo abreviado ao conceito que ele identifica sem ambiguidade."""
     index: dict[str, list[str]] = {}
     for concept, words in _ROLE_CONCEPT_WORDS.items():
         for word in words:
@@ -406,19 +413,12 @@ def _role_prefix_index() -> dict[str, str]:
 _ROLE_PREFIXES = _role_prefix_index()
 
 
-def normalize_header(value: object) -> str:
-    text = "" if value is None else str(value).strip()
-    text = unicodedata.normalize("NFKD", text)
-    text = text.encode("ascii", "ignore").decode("ascii").lower()
-    return re.sub(r"[^a-z0-9]+", " ", text).strip()
-
-
 def semantic_header_signature(value: object) -> frozenset[str]:
-    """Os conceitos do cabeçalho: tokens sem stopwords, com sinônimos em português e inglês.
+    """Reúne os conceitos do cabeçalho após remover stopwords e normalizar sinônimos.
 
-    Dois cabeçalhos com a mesma assinatura não vazia são equivalentes; a ordem
-    das palavras não importa. O vocabulário é do domínio fiscal, nunca de-para
-    de um cliente.
+    Usa vocabulário fiscal em português e inglês, sem regras específicas de
+    cliente. Assinaturas iguais e não vazias indicam cabeçalhos equivalentes;
+    a ordem das palavras não interfere na comparação.
     """
     normalized = normalize_header(value)
     # CST é a sigla padrão de "código de situação tributária".
@@ -444,10 +444,11 @@ def semantically_equivalent_headers(left: object, right: object) -> bool:
 
 
 def underspecified_header_match(model_header: object, client_header: object) -> bool:
-    """Diz se o cabeçalho do cliente é uma única palavra genérica do cabeçalho do modelo.
+    """Verifica se o cabeçalho do cliente é genérico demais para uma escolha pelo nome.
 
-    ``Centro`` para ``Centro custo`` serve como proposta, mas não basta para o
-    aceite pelo nome; evidência distintiva nas linhas ainda pode promovê-la.
+    Isso ocorre quando ele contém apenas uma palavra da assinatura mais longa
+    do modelo, como ``Centro`` para ``Centro custo``. A proposta ainda pode ser
+    aceita se houver evidência suficiente nos dados.
     """
     model_signature = semantic_header_signature(model_header)
     client_signature = semantic_header_signature(client_header)
@@ -459,7 +460,7 @@ def underspecified_header_match(model_header: object, client_header: object) -> 
 
 
 def header_tax_families(value: object) -> frozenset[str]:
-    """Famílias de tributo citadas explicitamente num cabeçalho."""
+    """Identifica os tributos mencionados explicitamente no cabeçalho."""
     families = {
         _TAX_FAMILY_ALIASES.get(token, token)
         for token in semantic_header_signature(value)
@@ -468,9 +469,9 @@ def header_tax_families(value: object) -> frozenset[str]:
 
 
 def expand_truncated_role_words(tokens: set[str]) -> set[str]:
-    """Acrescenta a palavra de papel completa a cada token que é truncamento de um único conceito.
+    """Expande os tokens abreviados que identificam um único papel fiscal.
 
-    A expansão só acrescenta: o token original continua no conjunto.
+    Mantém o token original e acrescenta a palavra completa ao conjunto.
     """
     expanded = set(tokens)
     for token in tokens:
@@ -483,7 +484,7 @@ def expand_truncated_role_words(tokens: set[str]) -> set[str]:
 
 
 def header_semantic_role(value: object) -> str | None:
-    """O papel fiscal explícito no cabeçalho (o primeiro que casar), sem olhar os valores."""
+    """Identifica o primeiro papel fiscal reconhecido no cabeçalho, sem consultar os valores."""
     normalized = normalize_header(value)
     padded = f" {normalized} "
     raw_tokens = set(normalized.split())
@@ -582,25 +583,28 @@ def header_semantic_role(value: object) -> str | None:
 
 
 def _same_explicit_role(model_header: object, client_header: object) -> bool:
-    model_role = header_semantic_role(model_header)
+    model_role = _target_role(model_header)
     return model_role is not None and model_role == header_semantic_role(client_header)
 
 
 def _header_conflict_parts(
     left: object, right: object
 ) -> tuple[str, tuple[str, ...], tuple[str, ...]] | None:
-    """Conflito explícito entre dois cabeçalhos: ``(tipo, lado esquerdo, lado direito)`` ou ``None``.
+    """Identifica o conflito entre dois cabeçalhos, ou retorna ``None``.
 
-    ``tipo`` é ``"family"``, ``"qualifier"`` (ST ou normal) ou ``"role"``. É a
-    fonte única do texto em inglês para a IA e do texto em português para
-    pessoas, para que os dois nunca discordem.
+    Retorna ``(tipo, lado esquerdo, lado direito)``, com tipo ``family``,
+    ``qualifier`` ou ``role``. As descrições para a IA e para o usuário partem
+    dessa mesma estrutura, garantindo que representem o mesmo conflito.
     """
-    left_families = header_tax_families(left)
+    definition = target_field(left)
+    left_families = (frozenset(definition.tax_families) if definition is not None
+                     else header_tax_families(left))
     right_families = header_tax_families(right)
     if left_families and right_families and left_families.isdisjoint(right_families):
         return "family", tuple(sorted(left_families)), tuple(sorted(right_families))
 
-    left_qualifiers = set(normalize_header(left).split()) & {"st"}
+    left_qualifiers = (set(definition.tax_qualifiers) if definition is not None
+                       else set(normalize_header(left).split())) & {"st"}
     right_qualifiers = set(normalize_header(right).split()) & {"st"}
     if (
         left_families
@@ -615,7 +619,7 @@ def _header_conflict_parts(
             tuple(sorted(right_qualifiers)) or ("regular",),
         )
 
-    left_role = header_semantic_role(left)
+    left_role = _target_role(left)
     right_role = header_semantic_role(right)
     if left_role is not None and right_role is not None and left_role != right_role:
         return "role", (left_role,), (right_role,)
@@ -623,11 +627,11 @@ def _header_conflict_parts(
 
 
 def semantic_header_conflict(left: object, right: object) -> str | None:
-    """Descreve, em inglês, um conflito explícito de família, qualificador ou papel entre cabeçalhos.
+    """Descreve o conflito de tributo, qualificador ou papel entre dois cabeçalhos.
 
-    Conservador de propósito: um cabeçalho sem família ou sem papel nunca
-    conflita. O texto vai no payload da IA e fica em inglês, byte a byte; para
-    pessoas, use ``describe_header_conflict_pt``.
+    Só compara atributos reconhecidos nos dois lados; a ausência de um atributo
+    não constitui conflito. O texto integra o payload da IA e deve permanecer
+    em inglês. Para o relatório, use ``describe_header_conflict_pt``.
     """
     parts = _header_conflict_parts(left, right)
     if parts is None:
@@ -641,7 +645,7 @@ def semantic_header_conflict(left: object, right: object) -> str | None:
 
 
 def describe_header_conflict_pt(left: object, right: object) -> str | None:
-    """O mesmo conflito de ``semantic_header_conflict``, em português, para a justificativa."""
+    """Descreve em português o mesmo conflito identificado por ``semantic_header_conflict``."""
     parts = _header_conflict_parts(left, right)
     if parts is None:
         return None
@@ -667,82 +671,6 @@ def describe_header_conflict_pt(left: object, right: object) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def _header_text(value: object, index: int) -> str:
-    # Fica em inglês: o nome vai para o embedding e para o payload da IA. Nas
-    # células do relatório ele sai como "Coluna sem nome N" (report_schema).
-    if pd.isna(value) or not str(value).strip():
-        return f"Unnamed column {index + 1}"
-    return str(value).strip()
-
-
-@dataclass(frozen=True)
-class ColumnRef:
-    """Uma coluna de planilha: id estável, posição (a partir de 0), cabeçalho e ocorrência.
-
-    ``name`` e ``display_name`` ficam em inglês em memória (``Unnamed column
-    N``, ``(occurrence N)``) porque o nome é entrada da IA; a forma em
-    português só é aplicada nas células gravadas, por ``report_schema``.
-    """
-
-    id: str
-    index: int
-    name: str
-    occurrence: int
-
-    @property
-    def display_name(self) -> str:
-        suffix = f" (occurrence {self.occurrence})" if self.occurrence > 1 else ""
-        return f"{self.name}{suffix}"
-
-
-@dataclass
-class SheetTable:
-    """Uma aba lida do Excel: as colunas (``ColumnRef``) e os dados abaixo do cabeçalho."""
-
-    columns: list[ColumnRef]
-    data: pd.DataFrame
-
-    @classmethod
-    def from_excel(
-        cls,
-        path: str | Path,
-        sheet_name: str | int = 0,
-        header_row: int = 0,
-    ) -> "SheetTable":
-        # dtype=object: cada célula fica como o leitor de Excel a produziu.
-        raw = pd.read_excel(path, sheet_name=sheet_name, header=None, dtype=object)
-        if raw.empty:
-            raise ValueError(f"A planilha não tem linhas: {path}")
-        if header_row < 0 or header_row >= len(raw):
-            raise ValueError(
-                f"A linha de cabeçalho {header_row + 1} está fora das linhas da planilha: {path}"
-            )
-
-        headers = [
-            _header_text(value, i) for i, value in enumerate(raw.iloc[header_row])
-        ]
-        occurrences: dict[str, int] = {}
-        columns: list[ColumnRef] = []
-        for index, name in enumerate(headers):
-            normalized = normalize_header(name)
-            occurrences[normalized] = occurrences.get(normalized, 0) + 1
-            columns.append(
-                ColumnRef(
-                    id=f"column_{index + 1:03d}",
-                    index=index,
-                    name=name,
-                    occurrence=occurrences[normalized],
-                )
-            )
-
-        data = raw.iloc[header_row + 1 :].reset_index(drop=True)
-        data.columns = range(data.shape[1])
-        return cls(columns=columns, data=data)
-
-    def series(self, column: ColumnRef) -> pd.Series:
-        return self.data.iloc[:, column.index]
-
-
 # ---------------------------------------------------------------------------
 # Perfil dos valores de uma coluna
 # ---------------------------------------------------------------------------
@@ -757,7 +685,7 @@ def _json_value(value: object, max_length: int = 100) -> str:
 
 
 def _numeric_value(value: object) -> float:
-    """Lê um número no formato comum ou brasileiro (``1.234,56``, ``10-``, ``(10)``); NaN se não for."""
+    """Converte um valor numérico, incluindo ``1.234,56``, ``10-`` e ``(10)``; retorna NaN se inválido."""
     if pd.isna(value):
         return float("nan")
     if isinstance(value, (int, float, np.number)) and not isinstance(value, bool):
@@ -796,10 +724,11 @@ def _sample_sort_key(text: str) -> tuple[int, float | str, str]:
 
 
 def sample_values(series: pd.Series, limit: int = 8) -> list[str]:
-    """Valores representativos e estáveis, independentes da ordem das linhas da planilha.
+    """Seleciona uma amostra representativa que não depende da ordem das linhas.
 
-    Primeiro os dois mais frequentes, depois valores espalhados por igual entre
-    os distintos ordenados, para mostrar a faixa e as diferenças de formato.
+    Inclui os dois valores mais frequentes e distribui o restante da seleção
+    entre os valores distintos ordenados. Isso preserva exemplos da faixa de
+    valores e das diferenças de formato.
     """
     if limit < 1:
         return []
@@ -883,11 +812,11 @@ def _validation_fraction(texts: pd.Series, validator) -> float:
 
 
 def summarize_values(series: pd.Series, limit: int = 8) -> dict[str, object]:
-    """O perfil de uma coluna: contagens, tipo, formato, estatísticas, DVs válidos e amostras.
+    """Monta o perfil da coluna com contagens, tipos, estatísticas, DVs e amostras.
 
-    ``evidence_quality`` é ``empty``, ``all_zero`` ou ``informative``. O
-    perfil vai no payload da IA, então as chaves e a ordem delas fazem parte
-    da entrada do modelo.
+    ``evidence_quality`` indica se a coluna está vazia (``empty``), contém apenas
+    zeros (``all_zero``) ou tem dados informativos (``informative``). O perfil é
+    enviado no payload da IA; suas chaves e a ordem delas fazem parte do input.
     """
     nonempty = series[series.notna()]
     if not nonempty.empty:
@@ -974,7 +903,7 @@ _WEAK_EVIDENCE = frozenset({"empty", "all_zero"})
 def profile_similarity(
     left: dict[str, object], right: dict[str, object]
 ) -> float:
-    """Semelhança genérica do formato dos valores, de 0 a 1; 0 se um dos lados não é informativo."""
+    """Calcula a similaridade de formato entre dois perfis; retorna 0 se algum não for informativo."""
     if (
         left["evidence_quality"] != "informative"
         or right["evidence_quality"] != "informative"
@@ -1014,7 +943,7 @@ def profile_similarity(
 
 
 def _distinctive_samples(profile: dict[str, object]) -> set[str]:
-    """Amostras normalizadas que dificilmente coincidem por acaso (sem zeros nem códigos curtos)."""
+    """Seleciona amostras pouco sujeitas a coincidências, excluindo zeros e códigos curtos."""
     distinctive: set[str] = set()
     for value in profile["samples"]:
         normalized = normalize_header(value)
@@ -1037,7 +966,7 @@ def _distinctive_samples(profile: dict[str, object]) -> set[str]:
 def distinctive_sample_overlap(
     left: dict[str, object], right: dict[str, object]
 ) -> float:
-    """Amostras distintivas em comum / tamanho do menor dos dois conjuntos."""
+    """Calcula a proporção de amostras distintivas em comum em relação ao menor conjunto."""
     left_samples = _distinctive_samples(left)
     right_samples = _distinctive_samples(right)
     if not left_samples or not right_samples:
@@ -1059,9 +988,18 @@ def _overlap_evidence_score(overlap: float) -> float:
 
 
 def identifier_match_score(
-    left: dict[str, object], right: dict[str, object]
+    left: dict[str, object], right: dict[str, object],
+    *, kinds: tuple[str, ...] | None = None,
 ) -> float:
-    """Evidência de conteúdo para CPF, CNPJ e chave de acesso: os dois lados com DV válido."""
+    """Mede a fração de identificadores válidos dos tipos permitidos pelo campo.
+
+    Sem uma definição de tipos, mantém a comparação de perfis para modelos
+    alternativos. CPF, CNPJ e chave de NF-e têm comprimentos distintos, então
+    suas frações podem ser somadas quando o campo permite mais de um tipo.
+    """
+    if kinds is not None:
+        fraction = min(1.0, sum(float(right.get(f"valid_{kind}_fraction", 0.0)) for kind in kinds))
+        return round(fraction, 4) if fraction >= IDENTIFIER_MIN_VALID_FRACTION else 0.0
     scores = []
     for key in (
         "valid_cpf_fraction",
@@ -1081,7 +1019,7 @@ def identifier_match_score(
 def distinctive_profile_match(
     left: dict[str, object], right: dict[str, object]
 ) -> bool:
-    """Diz se as linhas trazem evidência mais forte que a coincidência de tipo."""
+    """Verifica se os valores oferecem evidência além da semelhança de tipo."""
     if (
         left["evidence_quality"] != "informative"
         or right["evidence_quality"] != "informative"
@@ -1105,11 +1043,11 @@ def numeric_series(series: pd.Series) -> pd.Series:
 
 
 def _identity_rows(columns: dict[str, pd.Series]) -> tuple[pd.DataFrame, int, float]:
-    """As linhas numéricas em que uma identidade a x b = c pode ser testada.
+    """Seleciona as linhas em que é possível testar a equação a x b = c.
 
-    Uma linha é elegível quando a != 0 e (b != 0 ou |c| > dois centavos). Devolve
-    as elegíveis que têm os três números, a quantidade de elegíveis e a
-    cobertura (utilizáveis / elegíveis).
+    Uma linha é elegível quando a != 0 e (b != 0 ou |c| > dois centavos).
+    Retorna as linhas elegíveis com os três valores numéricos, o total de
+    elegíveis e a cobertura: linhas utilizáveis / linhas elegíveis.
     """
     first, second, third = columns
     frame = pd.concat(
@@ -1128,7 +1066,7 @@ def _identity_rows(columns: dict[str, pd.Series]) -> tuple[pd.DataFrame, int, fl
 def _within_tolerance(
     predicted: pd.Series, actual: pd.Series, relative_tolerance: float
 ) -> tuple[pd.Series, pd.Series]:
-    """Quais linhas encaixam (erro de até dois centavos ou relativo) e o erro relativo de cada uma."""
+    """Identifica as linhas dentro da tolerância absoluta ou relativa e calcula seus erros relativos."""
     absolute_error = (predicted - actual).abs()
     scale = pd.concat([predicted.abs(), actual.abs()], axis=1).max(axis=1)
     relative_error = absolute_error / scale.clip(lower=CENTS_TOLERANCE)
@@ -1137,7 +1075,7 @@ def _within_tolerance(
 
 
 def _identity_score(fit_score: float, coverage: float, rows: int, degenerate: bool) -> float:
-    """aderência x √cobertura x min(1, √(linhas / 20)), com desconto se degenerada."""
+    """Calcula aderência × √cobertura × min(1, √(linhas / 20)), com desconto para dados degenerados."""
     sample_factor = min(1.0, float(np.sqrt(rows / FULL_CONFIDENCE_ROWS)))
     variation_factor = DEGENERATE_DISCOUNT if degenerate else 1.0
     return fit_score * float(np.sqrt(coverage)) * sample_factor * variation_factor
@@ -1150,10 +1088,10 @@ def tax_calculation_evidence(
     *,
     minimum_rows: int = MIN_RELATIONSHIP_ROWS,
 ) -> dict[str, object]:
-    """Pontua, linha a linha, valor ~= base x alíquota.
+    """Mede quanto os dados confirmam valor ~= base x alíquota, linha a linha.
 
-    A alíquota é testada em pontos percentuais (18) e como fração (0,18), e
-    fica o melhor encaixe. O dicionário vai no payload da IA.
+    Testa a alíquota como percentual (18) e como fração (0,18), mantendo o
+    resultado com melhor aderência. O dicionário retornado integra o payload da IA.
     """
     frame, eligible_count, coverage = _identity_rows(
         {"base": base, "rate": rate, "value": value}
@@ -1199,7 +1137,7 @@ def tax_calculation_evidence(
 
 
 def tax_calculation_scope(value: object) -> tuple[str, tuple[str, ...]] | None:
-    """Família de tributo e qualificadores (ST, DIF ...) de um campo de cálculo; ``None`` sem família única."""
+    """Identifica o tributo e seus qualificadores (ST, DIF etc.); retorna ``None`` se houver ambiguidade."""
     families = header_tax_families(value)
     if len(families) != 1:
         return None
@@ -1213,7 +1151,7 @@ def tax_calculation_scope(value: object) -> tuple[str, tuple[str, ...]] | None:
 
 
 def line_calculation_role(value: object) -> str | None:
-    """Papel no trio quantidade x preço unitário = valor do item, lido de forma conservadora."""
+    """Identifica pelo cabeçalho a posição na equação quantidade x preço unitário = valor do item."""
     tokens = semantic_header_signature(value)
     normalized = normalize_header(value)
     if {"quantidade", "quantity", "qtd"} & set(normalized.split()):
@@ -1236,7 +1174,7 @@ def line_calculation_evidence(
     *,
     minimum_rows: int = MIN_RELATIONSHIP_ROWS,
 ) -> dict[str, object]:
-    """Pontua, linha a linha, quantidade x preço unitário ~= valor do item."""
+    """Mede quanto os dados confirmam quantidade x preço unitário ~= valor do item."""
     frame, eligible_count, coverage = _identity_rows(
         {"quantity": quantity, "unit_price": unit_price, "line_value": line_value}
     )
@@ -1302,13 +1240,13 @@ def _relationship_is_strong_contradiction(
 def discover_client_tax_trios(
     client_table: SheetTable,
 ) -> dict[tuple[str, tuple[str, ...]], list[dict[str, object]]]:
-    """Encontra, só nas colunas do cliente, os trios base/alíquota/valor que fecham a identidade.
+    """Procura trios de base, alíquota e valor que satisfaçam a equação nos dados do cliente.
 
-    valor = base x alíquota é legislação, não uma propriedade da exportação,
-    então um trio comprovado vale para um ERP que ninguém viu. Devolve todos
-    os trios qualificados de cada escopo (a chave de ``tax_calculation_scope``),
-    o melhor primeiro; cada um traz ``alternatives``, quantos blocos disjuntos
-    o escopo tem, porque um cliente pode ter dois blocos do mesmo tributo.
+    A relação valor = base x alíquota permite comparar os dados sem depender
+    dos nomes usados pelo ERP. Retorna os trios válidos de cada escopo definido
+    por ``tax_calculation_scope``, ordenados pela qualidade da evidência.
+    ``alternatives`` informa quantos blocos sem colunas em comum foram encontrados,
+    pois o cliente pode ter mais de um bloco para o mesmo tributo.
     """
     by_scope: dict[tuple[str, tuple[str, ...]], dict[str, list[int]]] = {}
     for index, column in enumerate(client_table.columns):
@@ -1371,10 +1309,10 @@ def discover_client_tax_trios(
 
 
 def _disjoint_trio_count(trios: Sequence[dict[str, object]]) -> int:
-    """Quantos blocos sem colunas em comum estes trios representam.
+    """Conta os blocos de trios que não compartilham colunas.
 
-    Trios que compartilham uma coluna são o mesmo bloco descrito duas vezes
-    (duas colunas de alíquota com a mesma base e o mesmo valor, por exemplo).
+    Trios com uma coluna em comum são tratados como o mesmo bloco. Isso ocorre,
+    por exemplo, quando duas colunas de alíquota usam a mesma base e o mesmo valor.
     """
     blocks: list[set[int]] = []
     for trio in trios:
@@ -1390,11 +1328,11 @@ def trio_corroboration(
     model_column_name: str,
     client_index: int,
 ) -> dict[str, object] | None:
-    """O trio comprovado que põe esta coluna do cliente na posição desta coluna do modelo, se houver."""
-    role = header_semantic_role(model_column_name)
+    """Busca um trio que confirme o papel da coluna do cliente na coluna correspondente do modelo."""
+    role = _target_role(model_column_name)
     if role not in _TRIO_ROLES:
         return None
-    scope = tax_calculation_scope(model_column_name)
+    scope = _target_tax_scope(model_column_name)
     if scope is None:
         return None
     for trio in trios.get(scope, ()):
@@ -1404,11 +1342,10 @@ def trio_corroboration(
 
 
 def _trio_proof_text(trio: dict[str, object] | None) -> str | None:
-    """A frase de prova_aritmetica, ou nada.
+    """Descreve a prova aritmética, quando disponível.
 
-    A identidade confirma um escopo, não uma coluna: com dois blocos disjuntos
-    do mesmo tributo a prova vale para os dois, e a frase diz que não
-    distingue esta coluna.
+    Se houver dois blocos independentes do mesmo tributo, a equação pode valer
+    para ambos. Nesse caso, o texto informa que ela não basta para escolher a coluna.
     """
     if trio is None:
         return None
@@ -1427,11 +1364,11 @@ def _trio_proof_text(trio: dict[str, object] | None) -> str | None:
 
 
 def client_column_is_vacuous(table: SheetTable, column: ColumnRef) -> bool:
-    """Diz se uma coluna do cliente não tem nenhuma célula preenchida.
+    """Verifica se todas as células da coluna estão vazias.
 
-    Mais estreito que ``all_zero`` de propósito: zero é dado fiscal comum (uma
-    operação isenta tem base zero), mas uma coluna vazia não pode ser a origem
-    de nada, e aceitá-la entregaria uma coluna em branco que parece mapeada.
+    Uma coluna preenchida com zeros contém dados e não é considerada vazia.
+    Aceitar uma coluna sem nenhuma célula preenchida produziria uma coluna
+    marcada como mapeada, mas sem dados na saída.
     """
     series = table.series(column)
     return int(series.notna().sum()) == 0 or not any(
@@ -1454,20 +1391,22 @@ class LexicalHeaderScorer:
 
     def scores(self, model_headers: Sequence[str], client_headers: Sequence[str]) -> np.ndarray:
         matrix = np.zeros((len(model_headers), len(client_headers)), dtype=float)
+        client_features = [
+            (normalize_header(header), semantic_header_signature(header))
+            for header in client_headers
+        ]
         for i, target in enumerate(model_headers):
             left = normalize_header(target)
             left_tokens = semantic_header_signature(target)
-            for j, source in enumerate(client_headers):
-                right = normalize_header(source)
+            for j, (right, right_tokens) in enumerate(client_features):
                 if left and left == right:
                     matrix[i, j] = IDENTICAL_HEADER_SCORE
                     continue
-                right_tokens = semantic_header_signature(source)
                 union = left_tokens | right_tokens
                 jaccard = len(left_tokens & right_tokens) / len(union) if union else 0.0
                 sequence = SequenceMatcher(None, left, right).ratio()
                 matrix[i, j] = LEXICAL_SEQUENCE_WEIGHT * sequence + LEXICAL_JACCARD_WEIGHT * jaccard
-                if left and semantically_equivalent_headers(target, source):
+                if left and left_tokens and left_tokens == right_tokens:
                     matrix[i, j] = max(matrix[i, j], SEMANTIC_EQUIVALENCE_SCORE)
         return matrix
 
@@ -1513,13 +1452,19 @@ class OpenAIEmbeddingHeaderScorer:
         similarities = (model_vectors / model_norms) @ (client_vectors / client_norms).T
         similarities = np.clip(similarities, 0.0, 1.0)
 
-        # Texto idêntico vale 1,0; assinaturas iguais reforçam o embedding até
-        # 0,98, sem inventar um 1,0.
+        # Cabeçalhos idênticos recebem 1,0. Assinaturas equivalentes elevam
+        # o score até 0,98, preservando a diferença entre os dois casos.
+        client_features = [
+            (normalize_header(header), semantic_header_signature(header))
+            for header in client_headers
+        ]
         for i, target in enumerate(model_headers):
-            for j, source in enumerate(client_headers):
-                if normalize_header(target) == normalize_header(source):
+            left = normalize_header(target)
+            left_tokens = semantic_header_signature(target)
+            for j, (right, right_tokens) in enumerate(client_features):
+                if left == right:
                     similarities[i, j] = IDENTICAL_HEADER_SCORE
-                elif semantically_equivalent_headers(target, source):
+                elif left_tokens and left_tokens == right_tokens:
                     similarities[i, j] = max(
                         similarities[i, j], SEMANTIC_EQUIVALENCE_SCORE
                     )
@@ -1527,7 +1472,7 @@ class OpenAIEmbeddingHeaderScorer:
 
 
 # ---------------------------------------------------------------------------
-# Resolvedor de IA
+# Resolver de IA
 # ---------------------------------------------------------------------------
 
 
@@ -1554,11 +1499,11 @@ class DataResolver(Protocol):
 
 
 class OpenAIDataResolver:
-    """Resolvedor de IA: pede à OpenAI uma decisão estruturada (``DataMappingDecision``).
+    """Consulta a OpenAI e recebe uma decisão no formato ``DataMappingDecision``.
 
-    O prompt, o payload em JSON e o esquema de saída ficam em inglês, byte a
-    byte (ver ``tests/test_model_input_golden.py``); por isso a justificativa
-    que o modelo escreve também chega em inglês.
+    O prompt, o payload JSON e o schema de saída permanecem em inglês. O golden
+    test verifica esses inputs; a justificativa retornada pelo modelo também
+    é mantida no idioma original.
     """
 
     def __init__(self, client: OpenAI, model: str = DEFAULT_LLM_MODEL) -> None:
@@ -1573,12 +1518,17 @@ class OpenAIDataResolver:
         sample_size: int,
         relationship_evidence: dict[str, list[dict[str, object]]] | None = None,
         catalog_evidence: dict[str, list[dict[str, object]]] | None = None,
+        *,
+        target_profile: dict[str, object] | None = None,
+        candidate_profiles: dict[str, dict[str, object]] | None = None,
     ) -> DataMappingDecision:
-        target_profile = summarize_values(model_values, sample_size)
-        candidate_profiles = {
-            column.id: summarize_values(values, sample_size)
-            for column, values, _ in candidates
-        }
+        if target_profile is None:
+            target_profile = summarize_values(model_values, sample_size)
+        if candidate_profiles is None:
+            candidate_profiles = {
+                column.id: summarize_values(values, sample_size)
+                for column, values, _ in candidates
+            }
         payload = {
             "model_column": {
                 "name": model_column.name,
@@ -1697,7 +1647,7 @@ def _catalog_score(evidence: Sequence[dict[str, object]]) -> float:
 
 
 def _catalog_label(catalog: object) -> str:
-    """Nome legível de um catálogo para frases (``cfop`` -> ``CFOP``)."""
+    """Retorna o nome do catálogo usado nas mensagens, como ``CFOP`` para ``cfop``."""
     return report_schema.CATALOG_LABELS.get(str(catalog), str(catalog))
 
 
@@ -1706,11 +1656,12 @@ def catalog_evidence_is_distinctive(
     *,
     final_threshold: float,
 ) -> bool:
-    """Diz se a evidência de catálogo basta, sozinha, para decidir um mapeamento.
+    """Verifica se a evidência de catálogo pode identificar o tipo da coluna.
 
-    Os domínios únicos no país (especificidade 1,0) usam o piso
-    ``DISTINCTIVE_CATALOG_FLOOR``; os demais precisam de ``final_threshold``,
-    que com o padrão de 0,90 nenhum deles alcança.
+    Catálogos com especificidade 1,0 usam ``DISTINCTIVE_CATALOG_FLOOR`` como
+    score mínimo. Os demais precisam alcançar ``final_threshold``; com o
+    padrão de 0,90, nenhum deles atinge esse valor. A aceitação final ainda
+    depende das regras de confiança e dos guards.
     """
     if evidence is None:
         return False
@@ -1732,7 +1683,7 @@ def catalog_evidence_is_distinctive(
 
 
 def _catalog_contradicts_accept(evidence: Mapping[str, object]) -> bool:
-    """Contradição clara: catálogo específico, códigos bem formados, mas quase nenhum válido."""
+    """Detecta uma coluna de códigos bem formatados, mas quase todos ausentes do catálogo específico."""
     return (
         float(evidence["specificity"]) >= AUDIT_MIN_SPECIFICITY
         and int(evidence["nonempty_count"]) >= CATALOG_MIN_VALUES
@@ -1749,7 +1700,7 @@ def _unique_distinctive_catalog_decision(
     minimum_score: float = CATALOG_DECISION_MIN_SCORE,
     minimum_lead: float = CATALOG_DECISION_MIN_LEAD,
 ) -> DataMappingDecision | None:
-    """Decide localmente, sem a IA, quando um único candidato tem evidência de catálogo distintiva."""
+    """Escolhe a única candidata com evidência suficiente de catálogo, sem consultar a IA."""
     ranked: list[tuple[float, float, ColumnRef, dict[str, object]]] = []
     for column, _, name_score in candidates:
         best = best_catalog_evidence(catalog_evidence.get(column.index, []))
@@ -1797,10 +1748,10 @@ def _supporting_step_ids(
     arithmetic_proof: str | None = None,
     resolver_ran: bool = False,
 ) -> list[str]:
-    """As etapas que produziram um sinal positivo para a coluna escolhida, da mais fraca à mais forte.
+    """Lista as etapas que apoiam a escolha, da evidência mais fraca à mais forte.
 
-    Lidas das mesmas pontuações em que a decisão foi tomada, para que o
-    relatório não alegue evidência que o processo não usou.
+    Usa os mesmos scores da decisão para que o relatório registre apenas as
+    evidências consideradas durante o mapeamento.
     """
     steps: list[str] = []
     if resolver_ran:
@@ -1822,11 +1773,11 @@ def _supporting_step_ids(
 
 @dataclass
 class MappingResult:
-    """Uma linha da aba Mapeamentos: a decisão para uma coluna do modelo.
+    """Representa a decisão de uma coluna do modelo na aba Mapeamentos.
 
-    Os valores de máquina ficam no vocabulário interno (``status`` é
-    ``accepted``, ``review`` ou ``no_match``); ``report_schema`` os traduz na
-    gravação. A ordem dos campos é a ordem das colunas do relatório.
+    ``status`` usa os valores internos ``accepted``, ``review`` e ``no_match``;
+    ``report_schema`` os converte ao gravar o arquivo. A ordem dos campos define
+    a ordem das colunas do relatório.
     """
 
     model_column_number: int
@@ -1847,9 +1798,9 @@ class MappingResult:
     catalog_coverage: float | None = None
     catalog_distinct_coverage: float | None = None
     catalog_confidence: float | None = None
-    #: Preenchida quando um trio aritmético do próprio cliente põe esta coluna aqui.
+    #: Registra o trio aritmético do cliente que sustenta a associação desta coluna.
     arithmetic_proof: str | None = None
-    #: Etapas e trava por trás da linha (ver mapping_steps.py).
+    #: Evidências e guard registrados para a decisão (ver mapping_steps.py).
     supported_by: str = ""
     decided_by: str = ""
     vetoed_by: str = ""
@@ -1866,7 +1817,7 @@ def _mapping_row(
     name_scores: tuple[float, float, float],
     **fields,
 ) -> MappingResult:
-    """Uma linha para a coluna do modelo; as pontuações de nome (escolhida, segunda, margem) com 4 casas."""
+    """Monta o resultado de uma coluna e arredonda os scores de cabeçalho e a margem para quatro casas."""
     name_confidence, runner_up_confidence, name_margin = name_scores
     return MappingResult(
         model_column_number=model_column.index + 1,
@@ -1887,7 +1838,7 @@ def _mapping_row(
 
 @dataclass
 class _MappingRun:
-    """O estado de uma execução de ``map_columns``, compartilhado pelas etapas."""
+    """Reúne os dados e o estado compartilhados pelas etapas de ``map_columns``."""
 
     model_table: SheetTable
     client_table: SheetTable
@@ -1906,6 +1857,7 @@ class _MappingRun:
     #: Decisões já tomadas, por índice da coluna do modelo.
     results: dict[int, MappingResult]
     catalog_cache: dict[tuple[str, int], dict[str, object]]
+    target_profiles: dict[int, dict[str, object]]
 
 
 def map_columns(
@@ -1916,32 +1868,68 @@ def map_columns(
     config: MapperConfig = MapperConfig(),
     reference_catalogs: ReferenceCatalogs | None = None,
 ) -> list[MappingResult]:
-    """Mapeia cada coluna do modelo para uma coluna do cliente, em duas passagens.
+    """Associa cada coluna do modelo a uma coluna do cliente em duas passagens.
 
-    Devolve um ``MappingResult`` por coluna do modelo, na ordem do modelo. Sem
-    ``data_resolver`` (modo offline), a segunda passagem só propõe o melhor
-    cabeçalho para revisão.
+    Retorna um ``MappingResult`` por coluna, na ordem do modelo. Sem
+    ``data_resolver``, a segunda passagem encaminha a melhor candidata pelo
+    cabeçalho para revisão, quando houver uma coluna disponível.
     """
-    if not client_table.columns:
-        raise ValueError("A planilha do cliente não tem colunas")
     run = _start_run(
         model_table, client_table, header_scorer, config, reference_catalogs,
         online=data_resolver is not None,
     )
 
-    # 1. Aceita pelo cabeçalho os nomes claros; o resto fica para a segunda passagem.
+    return _map_run(run, data_resolver)
+
+
+def _map_run(run: _MappingRun, data_resolver: DataResolver | None) -> list[MappingResult]:
+    """Executa as decisões usando os perfis e as evidências preparados para esta execução."""
+    # 1. Aceita as correspondências claras de cabeçalho.
     second_pass_targets = _first_pass(run)
-    # 2. Reabre os aceites que o catálogo ou a aritmética contradizem.
+    # 2. Confere as escolhas com os catálogos e as relações aritméticas.
     _audit_accepted_catalog_matches(run, second_pass_targets)
     _demote_inconsistent_tax_header_matches(run, second_pass_targets)
-    # 3. Decide cada coluna restante pelas linhas, da esquerda para a direita: um
-    #    aceite consome a coluna do cliente e vira âncora para a aritmética das seguintes.
-    for target_index in sorted(second_pass_targets):
-        result = _second_pass(run, target_index, data_resolver)
-        run.results[target_index] = result
-        if result.status == "accepted":
-            run.available.remove(result.client_column_number - 1)
-    return [run.results[index] for index in range(len(model_table.columns))]
+    # Todas as propostas veem as mesmas origens e âncoras da primeira passagem.
+    proposals = {index: _second_pass(run, index, data_resolver)
+                 for index in sorted(second_pass_targets)}
+    _resolve_competing_claims(proposals, run.config)
+    run.results.update(proposals)
+    if data_resolver is not None:
+        _propagate_confirmed_relationships(run, proposals)
+    return [run.results[index] for index in range(len(run.model_table.columns))]
+
+
+def _propagate_confirmed_relationships(
+    run: _MappingRun, proposals: dict[int, MappingResult],
+) -> None:
+    """Reavalia a aritmética após novos aceites, em rodadas sem chamadas à API.
+
+    Cada rodada usa as mesmas referências para todos os alvos. Só continua
+    quando confirma ao menos um destino, portanto termina em no máximo N
+    rodadas. Aceites anteriores não são substituídos por decisões posteriores.
+    """
+    while any(result.status == "accepted" for result in proposals.values()):
+        run.available.difference_update(
+            result.client_column_number - 1 for result in proposals.values()
+            if result.status == "accepted" and result.client_column_number is not None
+        )
+        pending = [index for index, result in run.results.items() if result.status != "accepted"]
+        proposals = {}
+        for index in pending:
+            name = run.model_table.columns[index].name
+            if _target_role(name) not in _TRIO_ROLES and line_calculation_role(name) is None:
+                continue
+            pool = _candidate_pool(run, index, online=True)
+            choice = _relationship_choice(pool, run.config)
+            if choice is None:
+                continue
+            proposal = _judge_proposal(
+                run, pool, choice, {"llm_data_confidence": None, "llm_final_confidence": None}
+            )
+            if proposal.status == "accepted":
+                proposals[index] = proposal
+        _resolve_competing_claims(proposals, run.config)
+        run.results.update(proposals)
 
 
 def _start_run(
@@ -1953,7 +1941,9 @@ def _start_run(
     *,
     online: bool,
 ) -> _MappingRun:
-    """Pontua os cabeçalhos e prepara o que a execução inteira consulta."""
+    """Calcula os scores dos cabeçalhos e prepara os dados usados ao longo da execução."""
+    if not client_table.columns:
+        raise ValueError("A planilha do cliente não tem colunas")
     similarities = header_scorer.scores(
         [column.name for column in model_table.columns],
         [column.name for column in client_table.columns],
@@ -1986,13 +1976,15 @@ def _start_run(
         available=set(range(len(client_table.columns))),
         results={},
         catalog_cache={},
+        target_profiles={},
     )
 
 
 def _evidence_attribution(
-    run: _MappingRun, model_column: ColumnRef, client_index: int, **scores
+    run: _MappingRun, model_column: ColumnRef, client_index: int, *,
+    decided_by: str, **scores
 ) -> dict[str, str | None]:
-    """A prova aritmética e as etapas (apoiado_por, decidido_por) de uma linha que propõe uma coluna."""
+    """Reúne a prova aritmética e as etapas que apoiaram e decidiram a proposta."""
     proof = _trio_proof_text(
         trio_corroboration(run.client_tax_trios, model_column.name, client_index)
     )
@@ -2000,7 +1992,7 @@ def _evidence_attribution(
     return {
         "arithmetic_proof": proof,
         "supported_by": format_steps(steps),
-        "decided_by": deciding_step(steps),
+        "decided_by": decided_by,
     }
 
 
@@ -2008,10 +2000,10 @@ def _evidence_attribution(
 
 
 def _first_pass(run: _MappingRun) -> list[int]:
-    """Aceita só pelo cabeçalho; devolve as colunas do modelo que ficam para a segunda passagem.
+    """Aceita as correspondências claras de cabeçalho e separa as demais para a segunda passagem.
 
-    Percorre o modelo da esquerda para a direita: um aceite consome a coluna do
-    cliente, e a margem das colunas seguintes é medida só contra o que sobrou.
+    Calcula as propostas antes de reservar origens. A ordem do modelo não
+    decide qual campo recebe uma coluna disputada.
     """
     config = run.config
     client_table = run.client_table
@@ -2046,11 +2038,45 @@ def _first_pass(run: _MappingRun) -> list[int]:
             data_confidence=None, final_confidence=round(name_confidence, 4),
             method="name", status="accepted", reason=REASON_PASS_ONE_ACCEPTED,
             **_evidence_attribution(
-                run, model_column, client_column.index, name_confidence=name_confidence
+                run, model_column, client_column.index, decided_by=run.header_step,
+                name_confidence=name_confidence
             ),
         )
-        run.available.remove(client_index)
+    demoted = _resolve_competing_claims(run.results, config)
+    for index in demoted:
+        del run.results[index]
+    second_pass_targets.extend(demoted)
+    for result in run.results.values():
+        if result.status == "accepted":
+            run.available.remove(result.client_column_number - 1)
     return second_pass_targets
+
+
+def _resolve_competing_claims(
+    results: dict[int, MappingResult], config: MapperConfig,
+) -> list[int]:
+    """Compara propostas aceitas para a mesma origem; empates ficam para revisão."""
+    claims: dict[int, list[tuple[int, MappingResult]]] = {}
+    for index, result in results.items():
+        if result.status == "accepted" and result.client_column_number is not None:
+            claims.setdefault(result.client_column_number - 1, []).append((index, result))
+    demoted = []
+    for source, candidates in claims.items():
+        if len(candidates) < 2:
+            continue
+        candidates.sort(key=lambda item: item[1].final_confidence, reverse=True)
+        lead = candidates[0][1].final_confidence - candidates[1][1].final_confidence
+        if lead + FLOAT_TOLERANCE < config.name_margin_threshold or lead == 0:
+            withheld = candidates
+        else:
+            withheld = candidates[1:]
+        for index, result in withheld:
+            result.status = "review"
+            result.decided_by = ""
+            result.vetoed_by = "exclusivity"
+            result.reason = REASON_SOURCE_COMPETITION
+            demoted.append(index)
+    return demoted
 
 
 def _accepted_source_index(result: MappingResult) -> int | None:
@@ -2060,7 +2086,7 @@ def _accepted_source_index(result: MappingResult) -> int | None:
 
 
 def _reopen(run: _MappingRun, target_index: int, second_pass_targets: list[int]) -> None:
-    """Desfaz um aceite: a coluna do cliente volta ao conjunto e a do modelo vai para a segunda passagem."""
+    """Reabre a decisão para a segunda passagem e libera a coluna do cliente para outras propostas."""
     source_index = _accepted_source_index(run.results[target_index])
     if source_index is None:
         return
@@ -2071,7 +2097,7 @@ def _reopen(run: _MappingRun, target_index: int, second_pass_targets: list[int])
 
 
 def _audit_accepted_catalog_matches(run: _MappingRun, second_pass_targets: list[int]) -> None:
-    """Anota a evidência de catálogo nos aceites e reabre os que o catálogo contradiz claramente."""
+    """Registra a evidência de catálogo e reabre as decisões que ela contradiz."""
     if run.reference_catalogs is None:
         return
     for target_index, result in list(run.results.items()):
@@ -2096,11 +2122,11 @@ def _audit_accepted_catalog_matches(run: _MappingRun, second_pass_targets: list[
 def _demote_inconsistent_tax_header_matches(
     run: _MappingRun, second_pass_targets: list[int]
 ) -> None:
-    """Reabre uma posição de cada trio fiscal aceito pelo nome cuja aritmética não fecha."""
+    """Reabre uma posição de cada trio aceito pelo cabeçalho quando os valores não confirmam a equação."""
     scopes = {
         scope
         for column in run.model_table.columns
-        if (scope := tax_calculation_scope(column.name)) is not None
+        if (scope := _target_tax_scope(column.name)) is not None
     }
     for scope in sorted(scopes):
         target_index = _inconsistent_trio_position(run, scope)
@@ -2111,11 +2137,12 @@ def _demote_inconsistent_tax_header_matches(
 def _inconsistent_trio_position(
     run: _MappingRun, scope: tuple[str, tuple[str, ...]]
 ) -> int | None:
-    """A posição a reabrir num trio aceito cuja identidade não fecha, ou ``None``.
+    """Escolhe qual posição reabrir em um trio cuja equação não foi confirmada.
 
-    Se alguma coluna informativa disponível fecha a identidade numa posição, é
-    reaberta a posição com a melhor troca, desde que ela melhore bastante; sem
-    alternativa, uma contradição forte reabre a âncora de nome mais fraco.
+    Procura uma substituição entre as colunas disponíveis e reabre a posição
+    com a maior melhora, se ela atingir o mínimo exigido. Sem alternativa,
+    uma contradição forte reabre a escolha com menor score de cabeçalho.
+    Retorna ``None`` quando nenhum desses critérios é atendido.
     """
     model_table, results = run.model_table, run.results
     anchors = _accepted_tax_anchors(model_table, results, scope)
@@ -2130,11 +2157,11 @@ def _inconsistent_trio_position(
         return None
 
     role_targets = {
-        header_semantic_role(model_table.columns[index].name): index
+        _target_role(model_table.columns[index].name): index
         for index, result in results.items()
         if result.status == "accepted"
-        and tax_calculation_scope(model_table.columns[index].name) == scope
-        and header_semantic_role(model_table.columns[index].name) in _TRIO_ROLES
+        and _target_tax_scope(model_table.columns[index].name) == scope
+        and _target_role(model_table.columns[index].name) in _TRIO_ROLES
     }
     alternatives = _trio_swap_alternatives(run, anchors, role_targets)
     if alternatives:
@@ -2143,8 +2170,8 @@ def _inconsistent_trio_position(
             return None
         return target_index
     if _relationship_is_strong_contradiction([current]):
-        # A âncora mais fraca vai para a segunda passagem, onde a contradição
-        # impede o aceite silencioso.
+        # Reabre a decisão com menor apoio do cabeçalho. A segunda passagem
+        # considera a contradição aritmética antes de aceitar a proposta.
         return min(
             role_targets.values(),
             key=lambda index: (
@@ -2159,7 +2186,7 @@ def _inconsistent_trio_position(
 def _trio_swap_alternatives(
     run: _MappingRun, anchors: dict[str, int], role_targets: dict[str, int]
 ) -> list[tuple[float, float, str, int, int]]:
-    """Trocas que fecham a identidade: (melhora, nome, papel, coluna do modelo, coluna do cliente)."""
+    """Lista as trocas possíveis como (melhora, score de nome, papel, coluna do modelo, coluna do cliente)."""
     alternatives: list[tuple[float, float, str, int, int]] = []
     for role, target_index in role_targets.items():
         current_source = anchors[role]
@@ -2202,14 +2229,14 @@ def _accepted_tax_anchors(
     *,
     exclude_target: int | None = None,
 ) -> dict[str, int]:
-    """Papel do trio -> coluna do cliente já aceita nesse papel, neste escopo de tributo."""
+    """Associa cada papel do trio à coluna do cliente já aceita para o tributo e escopo informados."""
     anchors: dict[str, int] = {}
     for target_index, result in results.items():
         if target_index == exclude_target:
             continue
         model_column = model_table.columns[target_index]
-        role = header_semantic_role(model_column.name)
-        if role not in _TRIO_ROLES or tax_calculation_scope(model_column.name) != scope:
+        role = _target_role(model_column.name)
+        if role not in _TRIO_ROLES or _target_tax_scope(model_column.name) != scope:
             continue
         source_index = _accepted_source_index(result)
         if source_index is not None:
@@ -2223,7 +2250,7 @@ def _accepted_line_anchors(
     *,
     exclude_target: int | None = None,
 ) -> dict[str, int]:
-    """Papel do trio quantidade x preço -> coluna do cliente já aceita nesse papel."""
+    """Associa cada papel de quantidade x preço à coluna do cliente já aceita."""
     anchors: dict[str, int] = {}
     for target_index, result in results.items():
         if target_index == exclude_target:
@@ -2240,15 +2267,15 @@ def _accepted_line_anchors(
 def _candidate_relationship_evidence(
     run: _MappingRun, target_index: int, candidate_indices: set[int]
 ) -> dict[int, list[dict[str, object]]]:
-    """Testa cada candidato na posição aberta de uma identidade cujas outras posições já foram aceitas."""
+    """Testa cada candidata na posição restante de uma equação cujas outras colunas já foram aceitas."""
     evidence: dict[int, list[dict[str, object]]] = {
         index: [] for index in candidate_indices
     }
     model_name = run.model_table.columns[target_index].name
     values = run.numeric_client_series
 
-    tax_role = header_semantic_role(model_name)
-    tax_scope = tax_calculation_scope(model_name)
+    tax_role = _target_role(model_name)
+    tax_scope = _target_tax_scope(model_name)
     if tax_role in _TRIO_ROLES and tax_scope is not None:
         anchors = _accepted_tax_anchors(
             run.model_table, run.results, tax_scope, exclude_target=target_index
@@ -2293,8 +2320,18 @@ def _candidate_relationship_evidence(
     return {index: rules for index, rules in evidence.items() if rules}
 
 
+def _target_role(header: str) -> str | None:
+    definition = target_field(header)
+    return definition.role if definition is not None else header_semantic_role(header)
+
+
+def _target_tax_scope(header: str) -> tuple[str, tuple[str, ...]] | None:
+    definition = target_field(header)
+    return definition.tax_scope if definition is not None else tax_calculation_scope(header)
+
+
 def _expected_catalog_names(run: _MappingRun, target_index: int) -> list[str]:
-    """Os catálogos carregados que o cabeçalho desta coluna do modelo indica."""
+    """Lista os catálogos carregados que se aplicam ao cabeçalho do modelo."""
     return [
         name
         for name in expected_catalogs(run.model_table.columns[target_index].name)
@@ -2305,7 +2342,7 @@ def _expected_catalog_names(run: _MappingRun, target_index: int) -> list[str]:
 def _catalog_analyses(
     run: _MappingRun, catalog_names: Sequence[str], client_index: int
 ) -> list[dict[str, object]]:
-    """A análise de uma coluna do cliente contra cada catálogo, com cache por (catálogo, coluna)."""
+    """Compara uma coluna com cada catálogo e mantém o resultado em cache por (catálogo, coluna)."""
     analyses = []
     for name in catalog_names:
         key = name, client_index
@@ -2343,7 +2380,7 @@ def _rank_available(
     available: set[int],
     limit: int,
 ) -> list[tuple[int, float]]:
-    """As ``limit`` colunas disponíveis com a maior pontuação de nome: (índice, pontuação)."""
+    """Retorna até ``limit`` colunas disponíveis, ordenadas pelo score de cabeçalho: (índice, score)."""
     ranked = sorted(
         ((index, float(similarities[target_index, index])) for index in available),
         key=_by_score_then_index,
@@ -2371,10 +2408,11 @@ def _rank_header_compatible(
     client_columns: Sequence[ColumnRef],
     limit: int,
 ) -> list[tuple[int, float]]:
-    """Os melhores pelo nome, sem os cabeçalhos em conflito (a menos que todos conflitem).
+    """Ordena as candidatas pelo cabeçalho e exclui conflitos, salvo se todas conflitarem.
 
-    Um cabeçalho em conflito não conta como segunda opção para o aceite pelo
-    nome; ele ainda pode voltar na segunda passagem, pelas linhas.
+    Na primeira passagem, uma candidata incompatível não reduz a margem da
+    escolha. Ela ainda pode participar da segunda passagem se os dados
+    oferecerem evidência para revisão.
     """
     ranked = _rank_available(target_index, similarities, available, len(available))
     compatible = _without_header_conflicts(ranked, model_column, client_columns)
@@ -2382,7 +2420,7 @@ def _rank_header_compatible(
 
 
 def _top_positive(scored, limit: int) -> list[int]:
-    """Os índices das ``limit`` maiores pontuações, só as positivas."""
+    """Retorna os índices dos maiores scores positivos, até o limite informado."""
     ranked = sorted(scored, key=_by_score_then_index)
     return [index for index, score in ranked[:limit] if score > 0.0]
 
@@ -2397,9 +2435,9 @@ def _rank_name_and_profile_candidates(
     relationship_evidence: dict[int, list[dict[str, object]]] | None = None,
     catalog_evidence: dict[int, list[dict[str, object]]] | None = None,
 ) -> list[tuple[int, float]]:
-    """Une os melhores candidatos por cabeçalho, formato das linhas, relação fiscal e catálogo.
+    """Combina as melhores candidatas por cabeçalho, perfil, relação fiscal e catálogo.
 
-    Devolve (índice, pontuação de nome), do melhor para o pior nome.
+    Retorna pares de índice e score de cabeçalho, em ordem decrescente de score.
     """
     relationship_evidence = relationship_evidence or {}
     catalog_evidence = catalog_evidence or {}
@@ -2440,7 +2478,7 @@ def _name_score_context(
     ranked: Sequence[tuple[int, float]],
     chosen_index: int | None = None,
 ) -> tuple[float, float, float]:
-    """Pontuação da escolhida (a primeira, sem ``chosen_index``), a da melhor alternativa e a diferença."""
+    """Retorna o score da candidata escolhida, o da melhor alternativa e a margem entre eles."""
     if not ranked:
         return 0.0, 0.0, 0.0
     if chosen_index is None:
@@ -2455,11 +2493,11 @@ def _name_score_context(
 
 @dataclass
 class _CandidatePool:
-    """Os candidatos de uma coluna do modelo na segunda passagem e a evidência de cada um."""
+    """Reúne as candidatas e suas evidências para a segunda passagem de uma coluna do modelo."""
 
     model_column: ColumnRef
     target_profile: dict[str, object]
-    #: (índice da coluna do cliente, pontuação de nome), do melhor para o pior nome.
+    #: Pares (índice da coluna do cliente, score de cabeçalho), em ordem decrescente.
     ranked: list[tuple[int, float]]
     #: Os mesmos, sem os cabeçalhos em conflito com o do modelo.
     compatible: list[tuple[int, float]]
@@ -2468,7 +2506,7 @@ class _CandidatePool:
     relationships: dict[int, list[dict[str, object]]]
     catalogs: dict[int, list[dict[str, object]]]
     client_profiles: dict[int, dict[str, object]]
-    #: O melhor cabeçalho (sem conflito, quando há algum) e (nome, segunda, margem) dele.
+    #: Melhor candidata compatível, quando disponível, e seus scores de cabeçalho.
     best_column: ColumnRef | None
     best_name: tuple[float, float, float]
 
@@ -2480,14 +2518,17 @@ class _CandidatePool:
 
 
 def _candidate_pool(run: _MappingRun, target_index: int, *, online: bool) -> _CandidatePool:
-    """Monta o conjunto de candidatos: offline, os melhores pelo nome; online, a união de quatro listas."""
+    """Monta as candidatas pelo cabeçalho no modo offline e por quatro critérios no modo online."""
     model_column = run.model_table.columns[target_index]
-    target_profile = summarize_values(run.model_table.series(model_column), run.config.sample_size)
+    if target_index not in run.target_profiles:
+        run.target_profiles[target_index] = summarize_values(
+            run.model_table.series(model_column), run.config.sample_size
+        )
+    target_profile = run.target_profiles[target_index]
     relationships = (
         _candidate_relationship_evidence(run, target_index, run.available) if online else {}
     )
-    # Calculada também offline, onde não é usada (docs/KNOWN_ISSUES.md, 2.15).
-    catalogs = _candidate_catalog_evidence(run, target_index, run.available)
+    catalogs = _candidate_catalog_evidence(run, target_index, run.available) if online else {}
     if online:
         ranked = _rank_name_and_profile_candidates(
             target_index,
@@ -2512,7 +2553,7 @@ def _candidate_pool(run: _MappingRun, target_index: int, *, online: bool) -> _Ca
         ranked=ranked,
         compatible=compatible,
         columns=columns,
-        name_scores={column.index: score for column, (_, score) in zip(columns, ranked)},
+        name_scores=dict(ranked),
         relationships=relationships,
         catalogs=catalogs,
         client_profiles=run.client_profiles,
@@ -2526,7 +2567,7 @@ def _candidate_pool(run: _MappingRun, target_index: int, *, online: bool) -> _Ca
 
 @dataclass
 class _Choice:
-    """A coluna proposta até aqui, a decisão que a sustenta e o ramo que a produziu (``method``)."""
+    """Registra a coluna proposta, a decisão que a sustenta e o método que a selecionou."""
 
     column: ColumnRef | None
     decision: DataMappingDecision
@@ -2536,7 +2577,7 @@ class _Choice:
 def _second_pass(
     run: _MappingRun, target_index: int, data_resolver: DataResolver | None
 ) -> MappingResult:
-    """Decide uma coluna do modelo pelas linhas: candidatos, escolha, substituições locais e regra de aceite."""
+    """Avalia as candidatas pelos dados, aplica os ajustes locais e decide se a proposta pode ser aceita."""
     pool = _candidate_pool(run, target_index, online=data_resolver is not None)
     model_column = pool.model_column
     if not pool.ranked:
@@ -2559,8 +2600,10 @@ def _second_pass(
     catalog_decision = _unique_distinctive_catalog_decision(
         candidates=candidates, catalog_evidence=pool.catalogs
     )
+    local_choice = _relationship_choice(pool, run.config)
+    local_decision = catalog_decision or (local_choice.decision if local_choice else None)
     try:
-        decision = catalog_decision or _ask_resolver(run, data_resolver, pool, candidates)
+        decision = local_decision or _ask_resolver(run, data_resolver, pool, candidates)
     except Exception as exc:  # Uma falha da API não interrompe o relatório.
         return _mapping_row(
             model_column, pool.best_column, pool.best_name,
@@ -2569,8 +2612,8 @@ def _second_pass(
             reason=REASON_DATA_ERROR.format(exc_type=type(exc).__name__, exc=exc),
         )
 
-    # As confianças da IA só são gravadas, para auditoria; nunca entram na regra de aceite.
-    resolver_ran = catalog_decision is None
+    # Registra a confiança da decisão para auditoria; a confiança de aceitação será recalculada.
+    resolver_ran = local_decision is None
     llm_confidences = {
         "llm_data_confidence": round(decision.data_confidence, 4) if resolver_ran else None,
         "llm_final_confidence": round(decision.final_confidence, 4) if resolver_ran else None,
@@ -2579,7 +2622,7 @@ def _second_pass(
     choice = _Choice(
         column=column_by_id.get(decision.client_column_id or ""),
         decision=decision,
-        method="data" if resolver_ran else "catalog",
+        method="catalog" if catalog_decision is not None else "data",
     )
     choice = _apply_local_overrides(choice, pool, run.config)
     if choice.column is None or choice.decision.final_confidence == 0.0:
@@ -2598,7 +2641,7 @@ def _ask_resolver(
     pool: _CandidatePool,
     candidates: list[tuple[ColumnRef, pd.Series, float]],
 ) -> DataMappingDecision:
-    """Pede ao resolvedor de IA um candidato (ou nenhum), com a evidência de relação e de catálogo de cada um."""
+    """Envia as candidatas e suas evidências à IA, que pode escolher uma delas ou nenhuma."""
     client_columns = run.client_table.columns
     candidate_indices = {column.index for column, _, _ in candidates}
 
@@ -2609,6 +2652,13 @@ def _ask_resolver(
             if index in candidate_indices
         }
 
+    prepared = {}
+    if isinstance(data_resolver, OpenAIDataResolver):
+        prepared = {
+            "target_profile": pool.target_profile,
+            "candidate_profiles": {column.id: pool.client_profiles[column.index]
+                                   for column in pool.columns},
+        }
     return data_resolver.resolve(
         model_column=pool.model_column,
         model_values=run.model_table.series(pool.model_column),
@@ -2616,13 +2666,15 @@ def _ask_resolver(
         sample_size=run.config.sample_size,
         relationship_evidence=by_column_id(pool.relationships),
         catalog_evidence=by_column_id(pool.catalogs),
+        **prepared,
     )
 
 
 def _apply_local_overrides(choice: _Choice, pool: _CandidatePool, config: MapperConfig) -> _Choice:
-    """As substituições locais, em ordem, sobre a escolha do catálogo ou da IA.
+    """Aplica, em ordem, as regras locais de ajuste à escolha do catálogo ou da IA.
 
-    Cada uma devolve uma nova escolha quando se aplica e ``None`` quando não.
+    Cada regra retorna uma nova escolha quando se aplica, ou ``None`` para
+    manter a escolha atual.
     """
     unique_relationship = _unique_relationship_override(choice, pool, config)
     if unique_relationship is not None:
@@ -2634,10 +2686,19 @@ def _apply_local_overrides(choice: _Choice, pool: _CandidatePool, config: Mapper
     return _preserve_best_name_override(choice, pool, config) or choice
 
 
+def _relationship_choice(pool: _CandidatePool, config: MapperConfig) -> _Choice | None:
+    """Procura uma escolha aritmética decisiva antes de qualquer consulta externa."""
+    return _unique_relationship_override(
+        _Choice(None, DataMappingDecision(client_column_id=None, data_confidence=0.0,
+                                         final_confidence=0.0, reason=""), "data"),
+        pool, config,
+    )
+
+
 def _unique_relationship_override(
     choice: _Choice, pool: _CandidatePool, config: MapperConfig
 ) -> _Choice | None:
-    """1. Uma relação fiscal forte e com vantagem clara entre os candidatos sem conflito escolhe a coluna."""
+    """Prioriza a candidata sem conflito cuja relação fiscal tem vantagem clara sobre as demais."""
     ranked = sorted(
         (
             (pool.relationship_score(column.index), pool.name_scores[column.index], column)
@@ -2681,7 +2742,7 @@ def _unique_relationship_override(
 
 
 def _distinctive_overlap_override(choice: _Choice, pool: _CandidatePool) -> _Choice | None:
-    """2. O candidato que compartilha mais amostras distintivas com o modelo, se ganhar com folga."""
+    """Escolhe a candidata com vantagem clara na quantidade de amostras distintivas em comum."""
     target_profile = pool.target_profile
     ranked = sorted(
         (
@@ -2739,10 +2800,10 @@ def _distinctive_overlap_override(choice: _Choice, pool: _CandidatePool) -> _Cho
 def _joint_name_and_relationship_override(
     choice: _Choice, pool: _CandidatePool, config: MapperConfig
 ) -> _Choice | None:
-    """3. Nome e relação fiscal juntos sobem a confiança da escolha, sem trocar a coluna.
+    """Reforça a confiança quando o cabeçalho e a relação fiscal apoiam a mesma escolha.
 
-    Uma equação também convence quando mais de uma coluna se encaixa nela por
-    acaso; aí o cabeçalho desempata, com vantagem clara na pontuação combinada.
+    Mais de uma coluna pode satisfazer a equação. O cabeçalho ajuda a desempatar
+    quando a combinação dos scores tem vantagem clara. A coluna escolhida não muda.
     """
     chosen = choice.column
     if chosen is None:
@@ -2784,7 +2845,7 @@ def _joint_name_and_relationship_override(
 def _null_fallback_override(
     choice: _Choice, pool: _CandidatePool, config: MapperConfig
 ) -> _Choice | None:
-    """4. Sem escolha, o melhor cabeçalho fica se a IA viu dados favoráveis ou se o papel é o mesmo."""
+    """Mantém a melhor candidata pelo cabeçalho se a IA não escolheu e há dados favoráveis ou papel compatível."""
     if choice.column is not None:
         return None
     best = pool.best_column
@@ -2815,7 +2876,7 @@ def _null_fallback_override(
 def _preserve_best_name_override(
     choice: _Choice, pool: _CandidatePool, config: MapperConfig
 ) -> _Choice | None:
-    """5. Com linhas vazias ou zeradas, um nome claro não é trocado por uma coluna de formato parecido."""
+    """Preserva a escolha pelo cabeçalho quando dados vazios ou zerados tornam a comparação de formato fraca."""
     best = pool.best_column
     best_name, _, best_margin = pool.best_name
     rows_are_weak = (
@@ -2852,7 +2913,7 @@ def _preserve_best_name_override(
 
 @dataclass
 class _LocalEvidence:
-    """A evidência da coluna escolhida, recalculada localmente; a opinião da IA não entra."""
+    """Reúne as evidências calculadas pelo código, sem usar a confiança informada pela IA."""
 
     name_confidence: float
     runner_up_confidence: float
@@ -2899,7 +2960,11 @@ def _local_evidence(pool: _CandidatePool, chosen: ColumnRef, config: MapperConfi
         if distinctive_sample_overlap_count(target_profile, selected_profile) >= MIN_SHARED_SAMPLES
         else 0.0
     )
-    identifier_score = identifier_match_score(target_profile, selected_profile)
+    definition = target_field(model_name)
+    identifier_score = identifier_match_score(
+        target_profile, selected_profile,
+        kinds=definition.identifier_kinds if definition is not None else None,
+    )
     objective_data_score = max(
         relationship_score, catalog_objective_score, overlap_score, identifier_score
     )
@@ -2924,8 +2989,8 @@ def _local_evidence(pool: _CandidatePool, chosen: ColumnRef, config: MapperConfi
         relationship_contradiction=_relationship_is_strong_contradiction(relationship_rules),
         catalog=catalog,
         catalog_score=catalog_score,
-        # As regras leem a cobertura sobre os códigos distintos, da qual a
-        # pontuação do catálogo sai.
+        # Usa a cobertura dos códigos distintos, que também serve de base
+        # para o score do catálogo.
         catalog_distinct_coverage=(
             float(catalog.get("distinct_coverage", catalog["coverage"]))
             if catalog is not None
@@ -2956,7 +3021,7 @@ def _local_final_confidence(
     same_explicit_role: bool,
     config: MapperConfig,
 ) -> float:
-    """A confiança final local: o nome decisivo, a evidência objetiva decisiva, ou o teto."""
+    """Calcula a confiança final a partir do cabeçalho e das evidências, aplicando o teto quando necessário."""
     if name_is_decisive:
         return round(name_confidence, 4)
     if objective_data_score >= config.final_threshold:
@@ -2973,8 +3038,8 @@ def _local_final_confidence(
             ),
             4,
         )
-    # Sem evidência decisiva a regra de aceite não aceita; o teto (0,8999)
-    # impede que o número sugira o contrário.
+    # Sem evidência suficiente, a proposta não pode ser aceita. O teto
+    # de 0,8999 mantém a confiança abaixo do threshold padrão.
     return round(
         min(
             config.clamp_ceiling,
@@ -2987,10 +3052,20 @@ def _local_final_confidence(
     )
 
 
+def _acceptance_step(local: _LocalEvidence, header_step: str) -> str:
+    """Nomeia a evidência usada no ramo que calculou a confiança de aceite."""
+    if local.name_is_decisive:
+        return header_step
+    scores = {"arithmetic": local.relationship_score, "catalog": local.catalog_objective_score,
+              "profile": local.overlap_score, "identifier": local.identifier_score}
+    return deciding_step([step for step, score in scores.items()
+                          if score > 0 and score == local.objective_data_score])
+
+
 def _accept_gate(
     local: _LocalEvidence, config: MapperConfig, chosen_is_vacuous: bool
 ) -> tuple[bool, bool]:
-    """A regra de aceite da segunda passagem: devolve (aceito, recusado só por a coluna estar vazia)."""
+    """Verifica a aceitação e retorna (aceito, bloqueado apenas por coluna vazia)."""
     passes_otherwise = (
         local.final_confidence >= config.final_threshold
         and (local.name_is_decisive or local.objective_data_score >= config.final_threshold)
@@ -3006,7 +3081,7 @@ def _judge_proposal(
     choice: _Choice,
     llm_confidences: dict[str, float | None],
 ) -> MappingResult:
-    """Aceita, deixa em revisão ou recusa a coluna escolhida, pela evidência local."""
+    """Usa as evidências locais para aceitar a proposta, encaminhá-la à revisão ou recusá-la."""
     config = run.config
     model_column = pool.model_column
     chosen = choice.column
@@ -3026,6 +3101,7 @@ def _judge_proposal(
         catalog_score=local.catalog_score,
         catalog_coverage=local.catalog_distinct_coverage,
         same_explicit_role=local.same_explicit_role,
+        identifier_score=local.identifier_score,
         config=config,
     ):
         return _mapping_row(
@@ -3047,6 +3123,7 @@ def _judge_proposal(
             run,
             model_column,
             chosen.index,
+            decided_by=_acceptance_step(local, run.header_step) if accepted else "",
             name_confidence=local.name_confidence,
             relationship_score=local.relationship_score,
             catalog_score=local.catalog_objective_score,
@@ -3059,7 +3136,7 @@ def _judge_proposal(
             else "family_conflict" if local.header_conflict is not None
             else ""
         ),
-        # catalog_distinct_coverage fica vazia aqui (docs/KNOWN_ISSUES.md, 2.11).
+        # A cobertura distinta ainda não é exportada neste caminho; veja docs/KNOWN_ISSUES.md.
         catalog_name=str(catalog["catalog"]) if catalog is not None else None,
         catalog_coverage=round(float(catalog["coverage"]), 4) if catalog is not None else None,
         catalog_confidence=round(local.catalog_score, 4) if catalog is not None else None,
@@ -3074,16 +3151,16 @@ def _proposal_reason(
     chosen: ColumnRef,
     vetoed_by_vacuity: bool,
 ) -> str:
-    """A justificativa de uma proposta: a da decisão, salvo quando uma trava a reteve."""
+    """Retorna a justificativa da decisão ou o motivo do bloqueio, quando uma regra impediu a aceitação."""
     if local.header_conflict is not None:
-        # O conflito em inglês decide; a frase mostra o mesmo conflito em português.
+        # A verificação usa o valor interno em inglês; o relatório exibe sua descrição em português.
         return REASON_CONFLICT_REVIEW.format(
             header_conflict=describe_header_conflict_pt(model_column.name, chosen.name)
         )
     if local.relationship_contradiction:
         return REASON_CONTRADICTION
     if vetoed_by_vacuity:
-        # Todo o resto da proposta pode parecer forte; o revisor precisa saber o motivo real.
+        # Explicita o bloqueio para que o revisor entenda por que um score alto não bastou.
         return REASON_VACUITY.format(
             client_column=report_schema.display_name_to_external(chosen.display_name)
         )
@@ -3102,12 +3179,13 @@ def _review_proposal_is_supported(
     catalog_score: float,
     catalog_coverage: float,
     same_explicit_role: bool,
+    identifier_score: float,
     config: MapperConfig,
 ) -> bool:
-    """Diz se uma proposta não aceita fica em revisão; se não, a linha vira sem correspondência.
+    """Verifica se há evidência suficiente para manter uma proposta em revisão.
 
-    Recusa as escolhas forçadas e mantém os candidatos plausíveis. Com conflito
-    de cabeçalho, só evidência distintiva nas linhas mantém a proposta.
+    Sem esse apoio, o resultado será ``sem_correspondencia``. Quando há
+    conflito de cabeçalho, a proposta precisa de evidência distintiva nos dados.
     """
     near_name_threshold = max(0.0, config.near_name_threshold)
     weak_name_threshold = max(0.0, config.weak_name_threshold)
@@ -3115,7 +3193,10 @@ def _review_proposal_is_supported(
         target_profile["evidence_quality"] == "informative"
         and selected_profile["evidence_quality"] == "informative"
     )
-    distinctive_rows = distinctive_profile_match(target_profile, selected_profile)
+    distinctive_rows = (
+        distinctive_sample_overlap_count(target_profile, selected_profile) >= MIN_SHARED_SAMPLES
+        or identifier_score >= DISTINCTIVE_IDENTIFIER_SCORE
+    )
     relationship_is_strong = relationship_score >= config.final_threshold
     distinctive_catalog = (
         catalog_score >= config.final_threshold
@@ -3159,12 +3240,11 @@ def _review_proposal_is_supported(
 
 @dataclass
 class UnmatchedColumn:
-    """Uma coluna do cliente cujos dados não chegam ao modelo base (aba Colunas do Cliente sem Uso).
+    """Descreve uma coluna do cliente que não foi usada em um mapeamento aceito.
 
-    Sem uso quer dizer não consumida por um aceite, que é o que decide se o
-    dado chega ao cliente; uma coluna só citada por uma proposta em revisão
-    também conta. ``signals`` guarda ids internos separados por vírgula;
-    ``signal_detail`` já é escrito em português.
+    Inclui colunas citadas apenas em propostas pendentes de revisão. ``signals``
+    contém IDs internos separados por vírgula; ``signal_detail`` contém a
+    explicação em português exibida na aba Colunas do Cliente sem Uso.
     """
 
     client_column_number: int
@@ -3187,11 +3267,11 @@ def _unmatched_signals(
     reference_catalogs: ReferenceCatalogs | None,
     trio_slots: dict[int, str],
 ) -> tuple[list[str], str]:
-    """Por que uma coluna que sobrou pode importar, só por evidência independente do cabeçalho.
+    """Identifica sinais nos dados que ajudam a priorizar uma coluna ainda sem uso.
 
-    Os sinais (trio aritmético, catálogo oficial, dígito verificador, datas)
-    são propriedades do dado fiscal, não do vocabulário de um cliente, e nada
-    é filtrado por palavra. Devolve os ids dos sinais e o detalhe em português.
+    Considera trios aritméticos, catálogos, dígitos verificadores e datas, sem
+    filtrar pelas palavras do cabeçalho. Retorna os IDs dos sinais e suas
+    descrições em português.
     """
     signals: list[str] = []
     details: list[str] = []
@@ -3261,11 +3341,11 @@ def summarize_unmatched_columns(
     client_tax_trios: dict[tuple[str, tuple[str, ...]], list[dict[str, object]]],
     sample_size: int,
 ) -> list[UnmatchedColumn]:
-    """Todas as colunas do cliente não consumidas, a lista prioritária primeiro.
+    """Lista todas as colunas sem uso, colocando as prioritárias primeiro.
 
-    Nada é omitido, só rebaixado. Uma lista longa é o normal: o modelo base é
-    um superconjunto e o cliente fornece só parte dele. Offline quase tudo
-    entra na lista prioritária, porque toda proposta vira revisão.
+    Colunas sem sinais relevantes continuam na lista, com prioridade menor.
+    No modo offline, as propostas da segunda passagem ficam em revisão, o que
+    pode aumentar a quantidade de colunas na lista prioritária.
     """
     consumed: set[int] = set()
     referenced: set[int] = set()
@@ -3325,12 +3405,11 @@ def summarize_unmatched_columns(
 
 @dataclass
 class AdjudicationRow:
-    """Uma coluna do modelo com uma proposta real que o limiar de aceite não entregou (aba Fila de Revisão).
+    """Representa uma proposta pendente na aba Fila de Revisão.
 
-    O espelho de ``UnmatchedColumn``, visto pelo lado do modelo. É só um
-    índice ordenado: o revisor decide nas colunas do revisor da aba
-    Mapeamentos, que o apply já respeita. ``why_held`` e ``resolver_disagrees``
-    já são escritos em português.
+    A fila organiza a consulta por coluna do modelo. O parecer deve ser
+    preenchido na aba Mapeamentos, que o apply usa ao gerar a saída.
+    ``why_held`` e ``resolver_disagrees`` já contêm texto em português.
     """
 
     rank: int
@@ -3355,7 +3434,7 @@ def summarize_adjudication_queue(
     final_threshold: float,
     sample_size: int,
 ) -> list[AdjudicationRow]:
-    """Ordena as propostas não entregues pela proximidade de cada uma do aceite."""
+    """Ordena as propostas em revisão pela proximidade dos critérios de aceitação."""
     rows: list[AdjudicationRow] = []
     for result in results:
         if result.status == "accepted" or result.client_column_number is None:
@@ -3377,7 +3456,7 @@ def summarize_adjudication_queue(
             if llm_final is not None and float(llm_final) < final - RESOLVER_DISAGREEMENT_GAP
             else ""
         )
-        # No teto (0,8999) a confiança diz qual ramo a linha seguiu, não a força dela.
+        # Scores limitados a 0,8999 não permitem comparar a força das propostas entre si.
         clamped = abs(final - (final_threshold - CEILING_GAP)) < FLOAT_TOLERANCE
         rows.append(
             AdjudicationRow(
@@ -3426,7 +3505,7 @@ def summarize_adjudication_queue(
 
 
 def file_sha256(path: str | Path) -> str:
-    """SHA-256 do arquivo, lido em blocos de 1 MiB."""
+    """Calcula o SHA-256 do arquivo lendo blocos de 1 MiB."""
     digest = hashlib.sha256()
     with Path(path).open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
@@ -3439,7 +3518,7 @@ def _external_rows(
     row_type: type,
     table: str,
 ) -> pd.DataFrame:
-    """Linhas de uma aba auxiliar no esquema em português; uma lista vazia vira uma linha em branco com os cabeçalhos."""
+    """Converte as linhas auxiliares para o relatório; se a lista estiver vazia, preserva os cabeçalhos."""
     frame = pd.DataFrame(
         [asdict(row) for row in rows]
         or [{field: "" for field in row_type.__annotations__}]
@@ -3454,11 +3533,11 @@ def write_results(
     unmatched: Sequence[UnmatchedColumn] | None = None,
     queue: Sequence[AdjudicationRow] | None = None,
 ) -> None:
-    """Grava o relatório de mapeamento no esquema em português (``.xlsx`` ou ``.csv``).
+    """Grava o relatório em XLSX ou CSV, usando o schema em português.
 
-    A tradução de abas, cabeçalhos, valores e chaves acontece aqui, por
-    ``report_schema``; as frases já chegam em português. O ``.csv`` leva só a
-    aba Mapeamentos.
+    ``report_schema`` converte os nomes e valores estruturados. As mensagens
+    já chegam no idioma em que devem ser gravadas. O CSV contém apenas
+    a tabela Mapeamentos.
     """
     output = Path(output_path)
     frame = pd.DataFrame([asdict(result) for result in results])
@@ -3474,9 +3553,9 @@ def write_results(
                 report_schema.to_external_metadata(metadata).to_excel(
                     writer, sheet_name=report_schema.sheet_name("run_metadata"), index=False
                 )
-            # As abas auxiliares vão por último: o apply lê a aba de índice 0.
-            # Saem mesmo vazias, porque uma lista vazia afirma algo (nada ficou
-            # de fora) que uma aba ausente não afirma.
+            # Mantém Mapeamentos na posição 0, usada pelo apply. As abas auxiliares
+            # são gravadas mesmo sem registros, indicando que a análise foi
+            # feita e não encontrou itens para listar.
             if unmatched is not None:
                 _external_rows(unmatched, UnmatchedColumn, "unmatched").to_excel(
                     writer, sheet_name=report_schema.sheet_name("unmatched"), index=False
@@ -3485,26 +3564,33 @@ def write_results(
                 _external_rows(queue, AdjudicationRow, "queue").to_excel(
                     writer, sheet_name=report_schema.sheet_name("queue"), index=False
                 )
+            # Mantém os scores numéricos; o Excel os apresenta como porcentagem.
+            for sheet in writer.sheets.values():
+                for header in sheet[1]:
+                    if str(header.value).startswith("confianca_"):
+                        for row in sheet.iter_rows(min_row=2, min_col=header.column,
+                                                   max_col=header.column):
+                            row[0].number_format = "0.00%"
     else:
         raise ValueError("A saída deve terminar em .xlsx ou .csv")
 
 
 # ---------------------------------------------------------------------------
-# Linha de comando
+# CLI
 # ---------------------------------------------------------------------------
 
 
 def _sheet_argument(value: str) -> str | int:
-    """Aba indicada na linha de comando: só dígitos é índice (a partir de 0), senão é nome."""
+    """Interpreta dígitos como índice de aba a partir de zero e os demais valores como nome."""
     return int(value) if value.isdigit() else value
 
 
 def build_parser() -> PortugueseArgumentParser:
-    """Linha de comando em português. As flags continuam em inglês."""
+    """Configura os argumentos e a ajuda da CLI."""
     parser = PortugueseArgumentParser(
         description=(
-            "Mapeia as colunas da planilha do cliente para as colunas do model.xlsx "
-            "em duas passagens e grava o relatório de mapeamento."
+            "Identifica as colunas do cliente correspondentes aos campos de model.xlsx "
+            "e gera um relatório para revisão e aplicação do mapeamento."
         )
     )
     parser.add_argument(
@@ -3520,7 +3606,7 @@ def build_parser() -> PortugueseArgumentParser:
         "--output",
         metavar="ARQUIVO",
         help=(
-            "relatório de mapeamento a gravar, .xlsx ou .csv "
+            "caminho do relatório de saída, em .xlsx ou .csv "
             "(padrão: mapping_<nome do arquivo do cliente>.xlsx)"
         ),
     )
@@ -3556,7 +3642,7 @@ def build_parser() -> PortugueseArgumentParser:
         default=MapperConfig.name_threshold,
         metavar="VALOR",
         help=(
-            "pontuação mínima do cabeçalho para o aceite na primeira passagem, "
+            "score mínimo do cabeçalho para aceitação na primeira passagem, "
             "de 0 a 1 (padrão: %(default)s)"
         ),
     )
@@ -3566,8 +3652,8 @@ def build_parser() -> PortugueseArgumentParser:
         default=MapperConfig.name_margin_threshold,
         metavar="VALOR",
         help=(
-            "vantagem mínima sobre o segundo melhor candidato de cabeçalho para o "
-            "aceite na primeira passagem, de 0 a 1 (padrão: %(default)s)"
+            "margem mínima entre os scores das duas melhores candidatas pelo "
+            "cabeçalho, de 0 a 1 (padrão: %(default)s)"
         ),
     )
     parser.add_argument(
@@ -3575,7 +3661,7 @@ def build_parser() -> PortugueseArgumentParser:
         type=float,
         default=MapperConfig.final_threshold,
         metavar="VALOR",
-        help="limiar de aceite da confiança final, de 0 a 1 (padrão: %(default)s)",
+        help="threshold da confiança final para aceitação, de 0 a 1 (padrão: %(default)s)",
     )
     parser.add_argument(
         "--candidates",
@@ -3612,7 +3698,7 @@ def build_parser() -> PortugueseArgumentParser:
         default=os.getenv("OPENAI_MODEL", DEFAULT_LLM_MODEL),
         metavar="MODELO",
         help=(
-            "modelo de linguagem da OpenAI usado como resolvedor de IA "
+            "modelo de linguagem da OpenAI usado pelo resolver "
             "(padrão: %(default)s; a variável OPENAI_MODEL, se definida, substitui o "
             "padrão)"
         ),
@@ -3635,15 +3721,15 @@ def build_parser() -> PortugueseArgumentParser:
         "--offline",
         action="store_true",
         help=(
-            "usa só a comparação léxica dos nomes e dispensa a OpenAI (embeddings e "
-            "comparação de dados)"
+            "compara os cabeçalhos pelo texto, sem chamadas à OpenAI; "
+            "as propostas da segunda passagem seguem para revisão"
         ),
     )
     return parser
 
 
 def _error_message(exc: ValueError | OSError) -> str:
-    """Mensagem em português para um erro de leitura ou gravação na linha de comando."""
+    """Formata a mensagem de erro de leitura ou gravação exibida pela CLI."""
     if isinstance(exc, FileNotFoundError):
         return f"Arquivo não encontrado: {exc.filename}"
     if isinstance(exc, PermissionError):
@@ -3655,7 +3741,7 @@ def _error_message(exc: ValueError | OSError) -> str:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Ponto de entrada da linha de comando; devolve 0 em caso de sucesso.
+    """Ponto de entrada da CLI; devolve 0 em caso de sucesso.
 
     Erros de valor e de arquivo saem com uma mensagem em português e código 1,
     sem traceback.
@@ -3719,11 +3805,10 @@ def _run(args) -> int:
         )
         data_resolver = OpenAIDataResolver(openai_client, model=args.llm_model)
 
-    results = map_columns(
+    run = _start_run(
         model_table=model_table,
         client_table=client_table,
         header_scorer=header_scorer,
-        data_resolver=data_resolver,
         config=MapperConfig(
             name_threshold=args.name_threshold,
             name_margin_threshold=args.name_margin,
@@ -3732,7 +3817,9 @@ def _run(args) -> int:
             sample_size=args.sample_size,
         ),
         reference_catalogs=reference_catalogs,
+        online=data_resolver is not None,
     )
+    results = _map_run(run, data_resolver)
     manifest_path = Path(args.reference_data) / "manifest.json"
     # Chaves e sentinelas internos (offline, disabled); write_results os grava em português.
     metadata = {
@@ -3760,8 +3847,8 @@ def _run(args) -> int:
             else "disabled"
         ),
     }
-    # A dica da coluna do modelo mais próxima usa o avaliador léxico: é só uma
-    # conveniência, e recalcular embeddings para ela custaria dinheiro.
+    # A sugestão da coluna mais próxima usa comparação textual para evitar
+    # novas chamadas à API de embeddings apenas para esse dado auxiliar.
     unmatched = summarize_unmatched_columns(
         model_table=model_table,
         client_table=client_table,
@@ -3771,7 +3858,7 @@ def _run(args) -> int:
             [column.name for column in client_table.columns],
         ),
         reference_catalogs=reference_catalogs,
-        client_tax_trios=discover_client_tax_trios(client_table),
+        client_tax_trios=run.client_tax_trios,
         sample_size=args.sample_size,
     )
     queue = summarize_adjudication_queue(
