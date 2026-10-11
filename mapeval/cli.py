@@ -10,7 +10,7 @@ from cli_ptbr import PortugueseArgumentParser
 from mapeval.outcomes import Outcome
 from mapeval.score import (
     Score,
-    method_census,
+    decision_census,
     score_report,
 )
 from mapeval.truth import AnswerKey, load_answer_key
@@ -121,8 +121,8 @@ def _report_keyed_client(name: str, score: Score, key: AnswerKey, *, show_losses
     fabricated = score.count(Outcome.FABRICATED)
     # Os métodos saem como estão gravados no relatório em português.
     census = {
-        report_schema.external_value("mappings", "method", method): count
-        for method, count in method_census(score).items()
+        report_schema.external_value("mappings", "decided_by", method): count
+        for method, count in decision_census(score).items()
     }
 
     print(f"\n{name}  presentes={score.present}  (colunas anotadas no gabarito)")
@@ -141,9 +141,9 @@ def _report_keyed_client(name: str, score: Score, key: AnswerKey, *, show_losses
               "encontrada, pendente de revisão")
     print(f"  sem_veredito     {len(score.undetermined_accepts):3}      aceitos que o "
           "gabarito não consegue verificar")
-    print(f"  aceites independentes de cabeçalho {_pct(score.header_independent_share)}"
-          "   <-- métrica de generalização")
-    print(f"  aceitos por método {census}")
+    print(f"  aceites decididos por evidência objetiva {_pct(score.objective_decision_share)}"
+          "   (entre os aceites com método automático registrado)")
+    print(f"  aceitos por método vencedor {census}")
     for source, targets in key.source_conflicts.items():
         labels = ", ".join(f"m{target}" for target in targets)
         print(f"  REVISAR GABARITO: c{source} está indicada para {labels}; "

@@ -20,7 +20,7 @@ Esta página mantém os pontos ainda abertos no código atual. Diagnósticos res
 - **A prévia pode parecer uma entrega.** Com `--include-review`, a cobertura chama de `entregue` uma coluna copiada mesmo que sua proposta ainda esteja pendente. A exclusividade é exigida apenas para confirmações. A lista sem uso continua indicando as origens sem confirmação; trate essa saída como conferência.
 - **O registro de vetos é parcial.** `vetado_por` registra coluna vazia, conflito semântico e disputa de origem. Cabeçalho genérico, contradição aritmética e reabertura por auditoria não têm um histórico completo nesse campo.
 - **A cobertura distinta não é exportada em todos os caminhos.** `_judge_proposal` ainda deixa `catalog_distinct_coverage` em branco, embora use essa informação no cálculo local. A cobertura total não substitui a cobertura de códigos distintos.
-- **As métricas de independência diferem.** `Row.header_independent` usa prova decisiva ou método de catálogo. `mapping_steps.transfers` também identifica outras evidências transferíveis. Nenhuma dessas métricas é uma contagem direta do método vencedor.
+- **Relatórios antigos podem não registrar o vencedor.** A avaliação não tenta reconstruí-lo pela justificativa ou pelo método genérico. Casos sem `decidido_por` ficam como `nao_registrado`; correções humanas também não herdam o vencedor da proposta anterior.
 - **Texto livre pode estar em inglês.** O prompt da IA está em inglês e o resolver pode escrever a justificativa nessa língua. Observações humanas são preservadas; mensagens de exceptions também podem vir das bibliotecas em inglês. Alterar o idioma pedido à IA muda o prompt e requer validação própria.
 
 ## Leitura e validação

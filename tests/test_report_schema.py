@@ -889,20 +889,8 @@ def test_steps_read_back_are_understood_by_mapping_steps() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Prova aritmética e números
+# Formatação de números
 # ---------------------------------------------------------------------------
-
-
-def test_a_proof_is_decisive_unless_empty_or_marked() -> None:
-    portuguese = "valor = base x alíquota se confirma para PIS em 70 linhas, com aderência 0,9857"
-    assert rs.proof_is_decisive(portuguese)
-    assert not rs.proof_is_decisive(
-        portuguese + f" - mas este cliente tem 2 blocos disjuntos de PIS; ela {rs.PROOF_NOT_DECISIVE_PT}"
-    )
-    assert not rs.proof_is_decisive("")
-    assert not rs.proof_is_decisive(None)
-    assert not rs.proof_is_decisive(math.nan)
-    assert rs.PROOF_NOT_DECISIVE_PT == "não distingue esta coluna"
 
 
 @pytest.mark.parametrize(

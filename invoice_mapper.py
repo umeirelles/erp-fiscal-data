@@ -35,7 +35,7 @@ from pydantic import BaseModel, Field
 
 import report_schema
 from cli_ptbr import PortugueseArgumentParser
-from spreadsheet import ColumnRef, SheetTable, normalize_header, _header_text
+from spreadsheet import ColumnRef, SheetTable, normalize_header, _header_text, sheet_argument as _sheet_argument
 from target_schema import target_field
 from mapping_steps import deciding_step, format_steps
 from reference_catalog import ReferenceCatalogs, best_catalog_evidence, expected_catalogs
@@ -264,10 +264,9 @@ PROOF_TEXT = (
     "com aderência {fit_score}"
 )
 #: Complemento da prova quando o cliente tem mais de um bloco do mesmo tributo.
-#: Termina com o marcador que ``report_schema.proof_is_decisive`` procura.
 PROOF_NOT_DECISIVE_SUFFIX = (
     " - mas este cliente tem {alternatives} blocos disjuntos de {tax_scope} que "
-    "satisfazem a equação, portanto ela " + report_schema.PROOF_NOT_DECISIVE_PT
+    "satisfazem a equação, portanto ela não distingue esta coluna"
 )
 
 #: Coluna detalhe_sinais, unidas por "; ". ``slot``, ``catalog`` e ``kind``
@@ -436,11 +435,6 @@ def semantic_header_signature(value: object) -> frozenset[str]:
     if "cst" in tokens:
         tokens = ["pis" if token == "pi" else token for token in tokens]
     return frozenset(tokens)
-
-
-def semantically_equivalent_headers(left: object, right: object) -> bool:
-    left_signature = semantic_header_signature(left)
-    return bool(left_signature) and left_signature == semantic_header_signature(right)
 
 
 def underspecified_header_match(model_header: object, client_header: object) -> bool:
@@ -1014,20 +1008,6 @@ def identifier_match_score(
         ):
             scores.append(min(left_score, right_score))
     return round(max(scores, default=0.0), 4)
-
-
-def distinctive_profile_match(
-    left: dict[str, object], right: dict[str, object]
-) -> bool:
-    """Verifica se os valores oferecem evidência além da semelhança de tipo."""
-    if (
-        left["evidence_quality"] != "informative"
-        or right["evidence_quality"] != "informative"
-    ):
-        return False
-    if distinctive_sample_overlap_count(left, right) >= MIN_SHARED_SAMPLES:
-        return True
-    return identifier_match_score(left, right) >= DISTINCTIVE_IDENTIFIER_SCORE
 
 
 # ---------------------------------------------------------------------------
@@ -1615,25 +1595,8 @@ class OpenAIDataResolver:
         )
         if response.output_parsed is None:
             raise RuntimeError("A OpenAI não retornou uma decisão de mapeamento interpretável")
-        decision = response.output_parsed
-        selected = next(
-            (
-                (name_confidence, candidate_profiles[column.id])
-                for column, _, name_confidence in candidates
-                if column.id == decision.client_column_id
-            ),
-            None,
-        )
-        if selected is not None:
-            # Sem evidência nas linhas, a confiança devolvida não cai abaixo do nome.
-            name_confidence, selected_profile = selected
-            weak_data = (
-                target_profile["evidence_quality"] in _WEAK_EVIDENCE
-                or selected_profile["evidence_quality"] in _WEAK_EVIDENCE
-            )
-            if weak_data and decision.final_confidence < name_confidence:
-                decision = decision.model_copy(update={"final_confidence": name_confidence})
-        return decision
+        # Mantém a resposta original para auditoria. O mapper calcula o score local.
+        return response.output_parsed
 
 
 # ---------------------------------------------------------------------------
@@ -1745,7 +1708,7 @@ def _supporting_step_ids(
     catalog_score: float = 0.0,
     overlap_score: float = 0.0,
     identifier_score: float = 0.0,
-    arithmetic_proof: str | None = None,
+    arithmetic_decisive: bool = False,
     resolver_ran: bool = False,
 ) -> list[str]:
     """Lista as etapas que apoiam a escolha, da evidência mais fraca à mais forte.
@@ -1766,7 +1729,7 @@ def _supporting_step_ids(
         steps.append("catalog")
     # Uma prova que não distingue a coluna confirma o escopo do tributo, não
     # este mapeamento.
-    if relationship_score > 0.0 or report_schema.proof_is_decisive(arithmetic_proof):
+    if relationship_score > 0.0 or arithmetic_decisive:
         steps.append("arithmetic")
     return steps
 
@@ -1985,10 +1948,13 @@ def _evidence_attribution(
     decided_by: str, **scores
 ) -> dict[str, str | None]:
     """Reúne a prova aritmética e as etapas que apoiaram e decidiram a proposta."""
-    proof = _trio_proof_text(
-        trio_corroboration(run.client_tax_trios, model_column.name, client_index)
+    trio = trio_corroboration(run.client_tax_trios, model_column.name, client_index)
+    proof = _trio_proof_text(trio)
+    steps = _supporting_step_ids(
+        header_step=run.header_step,
+        arithmetic_decisive=trio is not None and int(trio.get("alternatives", 1)) <= 1,
+        **scores,
     )
-    steps = _supporting_step_ids(header_step=run.header_step, arithmetic_proof=proof, **scores)
     return {
         "arithmetic_proof": proof,
         "supported_by": format_steps(steps),
@@ -2625,7 +2591,7 @@ def _second_pass(
         method="catalog" if catalog_decision is not None else "data",
     )
     choice = _apply_local_overrides(choice, pool, run.config)
-    if choice.column is None or choice.decision.final_confidence == 0.0:
+    if choice.column is None:
         return _mapping_row(
             model_column, None, pool.best_name,
             data_confidence=round(choice.decision.data_confidence, 4), final_confidence=0.0,
@@ -2800,7 +2766,7 @@ def _distinctive_overlap_override(choice: _Choice, pool: _CandidatePool) -> _Cho
 def _joint_name_and_relationship_override(
     choice: _Choice, pool: _CandidatePool, config: MapperConfig
 ) -> _Choice | None:
-    """Reforça a confiança quando o cabeçalho e a relação fiscal apoiam a mesma escolha.
+    """Explica a concordância quando o cabeçalho e a relação fiscal apoiam a mesma escolha.
 
     Mais de uma coluna pode satisfazer a equação. O cabeçalho ajuda a desempatar
     quando a combinação dos scores tem vantagem clara. A coluna escolhida não muda.
@@ -2833,8 +2799,6 @@ def _joint_name_and_relationship_override(
         column=chosen,
         decision=decision.model_copy(
             update={
-                "data_confidence": max(decision.data_confidence, relationship),
-                "final_confidence": max(decision.final_confidence, round(joint_score, 4)),
                 "reason": REASON_JOINT,
             }
         ),
@@ -3340,6 +3304,7 @@ def summarize_unmatched_columns(
     reference_catalogs: ReferenceCatalogs | None,
     client_tax_trios: dict[tuple[str, tuple[str, ...]], list[dict[str, object]]],
     sample_size: int,
+    client_profiles: dict[int, dict[str, object]] | None = None,
 ) -> list[UnmatchedColumn]:
     """Lista todas as colunas sem uso, colocando as prioritárias primeiro.
 
@@ -3368,7 +3333,9 @@ def summarize_unmatched_columns(
         if index in consumed:
             continue
         values = client_table.series(column)
-        profile = summarize_values(values, sample_size)
+        profile = (client_profiles or {}).get(index)
+        if profile is None:
+            profile = summarize_values(values, sample_size)
         signals, detail = _unmatched_signals(
             column=column,
             profile=profile,
@@ -3433,6 +3400,7 @@ def summarize_adjudication_queue(
     results: Sequence[MappingResult],
     final_threshold: float,
     sample_size: int,
+    client_profiles: dict[int, dict[str, object]] | None = None,
 ) -> list[AdjudicationRow]:
     """Ordena as propostas em revisão pela proximidade dos critérios de aceitação."""
     rows: list[AdjudicationRow] = []
@@ -3443,7 +3411,9 @@ def summarize_adjudication_queue(
         if index < 0 or index >= len(client_table.columns):
             continue
         column = client_table.columns[index]
-        profile = summarize_values(client_table.series(column), sample_size)
+        profile = (client_profiles or {}).get(index)
+        if profile is None:
+            profile = summarize_values(client_table.series(column), sample_size)
         final = float(result.final_confidence or 0.0)
         if final <= 0.0:
             continue
@@ -3578,11 +3548,6 @@ def write_results(
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
-
-
-def _sheet_argument(value: str) -> str | int:
-    """Interpreta dígitos como índice de aba a partir de zero e os demais valores como nome."""
-    return int(value) if value.isdigit() else value
 
 
 def build_parser() -> PortugueseArgumentParser:
@@ -3860,12 +3825,14 @@ def _run(args) -> int:
         reference_catalogs=reference_catalogs,
         client_tax_trios=run.client_tax_trios,
         sample_size=args.sample_size,
+        client_profiles=run.client_profiles,
     )
     queue = summarize_adjudication_queue(
         client_table=client_table,
         results=results,
         final_threshold=args.final_threshold,
         sample_size=args.sample_size,
+        client_profiles=run.client_profiles,
     )
     write_results(
         results, output_path, metadata=metadata, unmatched=unmatched, queue=queue

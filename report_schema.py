@@ -476,23 +476,6 @@ def _reverse(mapping: Mapping[str, str]) -> dict[str, str]:
 # Prova aritmética e números dentro de frases
 # ---------------------------------------------------------------------------
 
-#: Trecho que a prova traz quando o cliente tem mais de um bloco do mesmo
-#: tributo e a equação não aponta uma coluna só.
-PROOF_NOT_DECISIVE_PT = "não distingue esta coluna"
-
-
-def proof_is_decisive(text: object) -> bool:
-    """Verifica se a prova aritmética identifica a coluna sem ambiguidade.
-
-    Retorna ``False`` quando não há prova ou quando o texto contém
-    ``PROOF_NOT_DECISIVE_PT``. Nesse caso, mais de um bloco do cliente satisfaz
-    a equação e ela não basta para escolher uma coluna.
-    """
-    if not isinstance(text, str) or not text:
-        return False
-    return PROOF_NOT_DECISIVE_PT not in text
-
-
 def format_decimal_br(value: float, places: int | None = None) -> str:
     """Formata um número com vírgula decimal, sem separador de milhar.
 

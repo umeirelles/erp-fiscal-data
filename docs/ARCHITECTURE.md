@@ -10,7 +10,7 @@ O fluxo principal é **exportação do cliente → relatório de mapeamento → 
 | [`target_schema.py`](../target_schema.py) e [`target_fields.json`](../target_fields.json) | Identidade e semântica dos 227 campos controlados. |
 | [`invoice_mapper.py`](../invoice_mapper.py) | Scorers, perfis, evidências, decisões e gravação do relatório. |
 | [`reference_catalog.py`](../reference_catalog.py) | Carregamento, checksum, normalização e análise dos catálogos. |
-| [`mapping_steps.py`](../mapping_steps.py) | IDs e descrições das evidências e dos guards. |
+| [`mapping_steps.py`](../mapping_steps.py) | IDs, prioridade de desempate e alcance das evidências. |
 | [`mapping_review.py`](../mapping_review.py) | Combinação da proposta automática com o parecer humano. |
 | [`apply_invoice_mapping.py`](../apply_invoice_mapping.py) | Validação do relatório e geração da planilha mapeada. |
 | [`report_schema.py`](../report_schema.py) | Conversão entre identificadores internos em inglês e o schema dos arquivos em português. |
@@ -34,7 +34,7 @@ As definições controladas têm precedência sobre a inferência. Por exemplo, 
 
 ### Preparação
 
-`_start_run` calcula a matriz de scores dos cabeçalhos, descobre trios fiscais do cliente e prepara séries numéricas. No modo online, prepara também os perfis das origens. Os perfis dos alvos e as análises de catálogo são reaproveitados durante a execução. O resolver OpenAI recebe os perfis já calculados.
+`_start_run` calcula a matriz de scores dos cabeçalhos, descobre trios fiscais do cliente e prepara séries numéricas. No modo online, prepara também os perfis das origens. Os perfis dos alvos e as análises de catálogo são reaproveitados durante a execução. O resolver OpenAI, a lista de colunas sem uso e a fila de revisão recebem os perfis já calculados. Chamadas isoladas às funções de relatório continuam podendo preparar seus próprios perfis.
 
 O scorer online usa embeddings; `LexicalHeaderScorer` compara texto no modo offline. A assinatura semântica expande abreviações e sinônimos e ajuda a reconhecer papéis e famílias de tributo. Essa interpretação pode bloquear pares incompatíveis, como base versus alíquota ou ICMS versus ICMS-ST.
 
@@ -81,15 +81,15 @@ No modo offline, a segunda passagem encaminha a melhor candidata de cabeçalho p
 
 Os trios descobertos somente nos dados do cliente também alimentam `prova_aritmetica`. Essa prova serve de apoio e auditoria; não substitui a relação ancorada usada no score de aceite. Dois blocos disjuntos do mesmo tributo podem satisfazer a mesma equação sem distinguir uma coluna.
 
-`_local_final_confidence` usa o score do cabeçalho quando ele é decisivo. Com evidência objetiva suficiente, combina 40% do nome e 60% da melhor evidência, com os pisos definidos no código. Sem apoio suficiente, aplica o teto padrão de 0,8999. A confiança declarada pelo LLM fica em campos separados e não decide a aceitação.
+`_local_final_confidence` usa o score do cabeçalho quando ele é decisivo. Com evidência objetiva suficiente, combina 40% do nome e 60% da melhor evidência, com os pisos definidos no código. Sem apoio suficiente, aplica o teto padrão de 0,8999. A confiança declarada pelo LLM fica em campos separados, preservada antes de qualquer regra local. Zero não é um veto implícito: uma candidata selecionada passa pelos mesmos critérios locais de aceite. Uma resposta sem candidata continua sujeita aos fallbacks existentes; a alteração não transforma ausência de proposta em aceite.
 
 `_accept_gate` exige confiança final suficiente, nome ou evidência objetiva decisivos, ausência de conflito semântico e de contradição aritmética, e dados na origem. `sem_correspondencia` significa falta de proposta sustentada, não uma prova de que o campo inexiste.
 
 ### Atribuição do método
 
-`_evidence_attribution` reúne apoio e prova. A primeira passagem atribui o aceite ao cabeçalho; `_acceptance_step` identifica o ramo usado no cálculo da segunda passagem. A prioridade de `mapping_steps` só desempata evidências objetivas de mesmo score.
+`_evidence_attribution` reúne apoio e prova. A primeira passagem atribui o aceite ao cabeçalho; `_acceptance_step` identifica o ramo usado no cálculo da segunda passagem. A prioridade de `mapping_steps` só desempata evidências objetivas de mesmo score. A explicação da concordância entre cabeçalho e aritmética não calcula outra confiança; o score final vem de `_local_final_confidence`.
 
-`decidido_por` fica vazio nas linhas não aceitas. `apoiado_por` pode incluir o resolver e uma prova de auditoria sem que essas etapas sejam decisivas. `metodo` identifica o caminho do pipeline. `vetado_por` registra alguns bloqueios, mas ainda não é um histórico completo de todas as recusas.
+`decidido_por` fica vazio nas linhas não aceitas. `apoiado_por` pode incluir o resolver e uma prova de auditoria sem que essas etapas sejam decisivas. `metodo` identifica o caminho do pipeline. O apoio aritmético usa os scores e a quantidade de blocos alternativos em memória; a redação de `prova_aritmetica` não é interpretada como regra. `vetado_por` registra alguns bloqueios, mas ainda não é um histórico completo de todas as recusas.
 
 ## Revisão compartilhada
 
@@ -103,7 +103,7 @@ O apply confere números e nomes dos campos, identidade das origens e hashes das
 
 `_banner_rows` registra a origem efetivamente escolhida e os metadados da proposta. Os demais scores continuam históricos: uma correção humana não recalcula a confiança automática. `_write_coverage_sheet` descreve a entrega e `_write_unused_sheet` lista as origens sem confirmação após a revisão. Veja o layout em [Dados e formatos](DATA.md).
 
-O evaluator exige `numero_coluna_modelo` inteiro, positivo, sem repetição, cobrindo 1 a N. Ele pontua pelo ID, não pela posição da linha, e resolve o parecer antes de comparar com o gabarito. Métricas e limites estão em [Avaliação](EVALUATION.md).
+O evaluator exige `numero_coluna_modelo` inteiro, positivo, sem repetição, cobrindo 1 a N. Ele pontua pelo ID, não pela posição da linha, e resolve o parecer antes de comparar com o gabarito. A contagem de vencedores usa `decidido_por`. Uma correção humana não herda o método da proposta substituída. Métricas e limites estão em [Avaliação](EVALUATION.md).
 
 ## Alterar o projeto
 

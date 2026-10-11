@@ -23,8 +23,11 @@ from openpyxl.utils import get_column_letter
 
 import report_schema
 from cli_ptbr import PortugueseArgumentParser
-from spreadsheet import ColumnRef, SheetTable, positive_column_number
-from mapping_review import effective_status, normalize_review, resolve_mapping, _column_from_number
+from spreadsheet import ColumnRef, SheetTable, positive_column_number, sheet_argument as _sheet_argument
+from mapping_review import (
+    effective_status, normalize_review, resolve_mapping, _column_from_number,
+    _clean_text, _column_label, _display_name,
+)
 from invoice_mapper import (
     _error_message,
     describe_header_conflict_pt,
@@ -142,29 +145,9 @@ MODEL_COLUMN_WIDTH = 18
 LAST_FIXED_WIDTH_EXCEL_COLUMN = 30
 
 
-def _sheet_argument(value: str) -> str | int:
-    """Interpreta dígitos como índice de aba e os demais valores como nome."""
-    return int(value) if value.isdigit() else value
-
-
-def _clean_text(value: object) -> str:
-    """Remove espaços nas extremidades do texto; retorna ``""`` para células vazias."""
-    return "" if pd.isna(value) else str(value).strip()
-
-
 def _blank_if_missing(value: object) -> object:
     """Substitui valores ausentes por ``""`` e preserva os demais."""
     return "" if pd.isna(value) else value
-
-
-def _column_label(field: str) -> str:
-    """Retorna o cabeçalho usado para o campo na aba Mapeamentos."""
-    return report_schema.header_label("mappings", field)
-
-
-def _display_name(text: object) -> object:
-    """Converte o nome de exibição para o relatório, incluindo o sufixo ``(ocorrência N)``."""
-    return report_schema.display_name_to_external(text)
 
 
 # ---------------------------------------------------------------------------

@@ -10,6 +10,11 @@ import unicodedata
 import pandas as pd
 
 
+def sheet_argument(value: str) -> str | int:
+    """Interpreta dígitos como índice de aba a partir de zero; preserva nomes."""
+    return int(value) if value.isdigit() else value
+
+
 def normalize_header(value: object) -> str:
     text = "" if value is None else str(value).strip()
     text = unicodedata.normalize("NFKD", text)

@@ -17,14 +17,10 @@ import openpyxl
 
 import report_schema
 from mapping_review import normalize_review, resolve_mapping
+from mapping_steps import TRANSFERRING_STEP_IDS
 from spreadsheet import SheetTable, positive_column_number
 from mapeval.outcomes import Outcome, classify
 from mapeval.truth import AnswerKey
-
-#: Métodos cuja aceitação não depende de ler o cabeçalho do cliente (valores
-#: internos; ``catalog`` é ``catalogo`` no relatório).
-HEADER_INDEPENDENT_METHODS = frozenset({"catalog"})
-
 
 @dataclass
 class Row:
@@ -40,18 +36,17 @@ class Row:
     #: Relação aritmética nos dados do cliente que sustenta a escolha da coluna.
     arithmetic_proof: str | None = None
 
-    @property
-    def header_independent(self) -> bool:
-        """Verifica se a escolha tem apoio de uma prova aritmética decisiva ou de um catálogo.
+    #: Evidência que decidiu o aceite automático; ausente em relatórios antigos ou correções humanas.
+    decided_by: str | None = None
 
-        Quando dois blocos do mesmo tributo satisfazem a equação, ela não identifica
-        qual deles usar. ``proof_is_decisive`` reconhece o marcador desse caso e
-        desconsidera a prova no cálculo da métrica.
-        """
-        return (
-            report_schema.proof_is_decisive(self.arithmetic_proof)
-            or self.method in HEADER_INDEPENDENT_METHODS
-        )
+    @property
+    def objective_decision(self) -> bool | None:
+        """Informa se o método vencedor usa dados; None significa método não registrado."""
+        if self.decided_by in TRANSFERRING_STEP_IDS:
+            return True
+        if self.decided_by in {"lexical", "semantic"}:
+            return False
+        return None
 
 
 @dataclass
@@ -126,12 +121,10 @@ class Score:
         return [r for r in self.accepted if r.outcome is Outcome.UNDETERMINED]
 
     @property
-    def header_independent_share(self) -> float | None:
-        """Fração dos aceites que não dependem só do cabeçalho: a métrica de generalização."""
-        accepts = self.accepted
-        if not accepts:
-            return None
-        return sum(1 for r in accepts if r.header_independent) / len(accepts)
+    def objective_decision_share(self) -> float | None:
+        """Proporção de evidência objetiva entre aceites com método automático conhecido."""
+        known = [r.objective_decision for r in self.accepted if r.objective_decision is not None]
+        return sum(known) / len(known) if known else None
 
     @property
     def correct_pairs(self) -> set[tuple[int, int]]:
@@ -170,10 +163,6 @@ def _client_structure(client_path: str | Path) -> tuple[SheetTable, frozenset[in
     return SheetTable.from_headers(header), frozenset(
         i + 1 for i, count in enumerate(populated) if count == 0
     )
-
-
-def _vacuous_client_columns(client_path: str | Path) -> frozenset[int]:
-    return _client_structure(Path(client_path))[1]
 
 
 def read_mappings(report_path: str | Path) -> tuple[list[tuple], dict[str, int]]:
@@ -264,6 +253,10 @@ def _score_row(
         method=method,
         final_confidence=float(confidence) if isinstance(confidence, (int, float)) else None,
         arithmetic_proof=None if proof in (None, "") else str(proof),
+        decided_by=(
+            str(record.get("decided_by") or "")
+            if record["reviewer_status"] != "incorrect" else None
+        ),
         outcome=classify(
             chosen_client_column=chosen,
             expected_client_column=key.present.get(position),
@@ -273,6 +266,7 @@ def _score_row(
     )
 
 
-def method_census(score: Score) -> Counter[str]:
-    """Conta os mapeamentos aceitos por método, usando os nomes internos."""
-    return Counter(r.method for r in score.accepted)
+def decision_census(score: Score) -> Counter[str]:
+    """Conta o método vencedor; não atribui a uma correção humana o método da proposta antiga."""
+    return Counter(r.decided_by if r.objective_decision is not None else "unrecorded"
+                   for r in score.accepted)

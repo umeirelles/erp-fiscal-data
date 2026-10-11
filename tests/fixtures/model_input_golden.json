@@ -408,7 +408,7 @@
     "decided_by": "",
     "final_confidence": 0.8999,
     "llm_data_confidence": 0.9,
-    "llm_final_confidence": 1.0,
+    "llm_final_confidence": 0.92,
     "method": "data",
     "model_column": "Observacao",
     "model_column_number": 6,

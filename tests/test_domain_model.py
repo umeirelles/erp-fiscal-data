@@ -332,3 +332,115 @@ def test_unused_sources_follow_review_and_keep_pending_and_empty_columns(tmp_pat
         1: "never_referenced", 3: "proposed_not_accepted", 4: "never_referenced"}
     assert list(unused.rows_with_value) == [1, 1, 0]
     assert report.read_bytes() == original_report
+
+
+@pytest.mark.parametrize("confidence", [0.0, 0.01, 0.99])
+def test_local_identifier_evidence_does_not_depend_on_resolver_confidence(confidence):
+    model = table(["Nº ID fiscal 1"], [["model A"], ["model B"], ["model C"]])
+    client = table(["Source X"], [["52998224725"], ["11144477735"], ["52998224725"]])
+    raw = mapper.DataMappingDecision(client_column_id="column_001", data_confidence=confidence,
+                                     final_confidence=confidence, reason="Controlled API response")
+    api = SimpleNamespace(responses=SimpleNamespace(parse=lambda **kwargs: SimpleNamespace(output_parsed=raw)))
+    result = mapper.map_columns(model, client, Scores({"Nº ID fiscal 1": [.8]}),
+                                mapper.OpenAIDataResolver(api))[0]
+    assert (result.status, result.client_column_number, result.decided_by) == ("accepted", 1, "identifier")
+    assert result.final_confidence == .92
+    assert result.llm_final_confidence == confidence
+    assert result.llm_data_confidence == confidence
+
+
+def test_weak_rows_preserve_raw_resolver_confidence_in_the_audit():
+    raw = mapper.DataMappingDecision(client_column_id="column_001", data_confidence=.1,
+                                     final_confidence=.1, reason="Weak data")
+    api = SimpleNamespace(responses=SimpleNamespace(parse=lambda **kwargs: SimpleNamespace(output_parsed=raw)))
+    result = mapper.map_columns(table(["Target A"], [[0], [0], [0]]),
+                                table(["Source X"], [[0], [0], [0]]),
+                                Scores({"Target A": [.88]}), mapper.OpenAIDataResolver(api))[0]
+    assert result.llm_final_confidence == .1
+    assert result.llm_data_confidence == .1
+    assert result.final_confidence == .88
+    assert result.status == "review"
+
+
+def test_report_generation_reuses_prepared_client_profiles():
+    from dataclasses import asdict
+    model = table(["Target A", "Target B"], [["model A", "model B"]])
+    client = table(["Source X", "Source Y"], [["source X", "source Y"]])
+    class Resolver:
+        def resolve(self, **kwargs):
+            return mapper.DataMappingDecision(client_column_id="column_001", data_confidence=.5,
+                                               final_confidence=.5, reason="Proposal")
+    run = mapper._start_run(model, client, Scores({"Target A": [.86, .7], "Target B": [.86, .7]}),
+                            mapper.MapperConfig(), None, online=True)
+    results = mapper._map_run(run, Resolver())
+    def reports(profiles=None):
+        unused = mapper.summarize_unmatched_columns(
+            model_table=model, client_table=client, results=run.results, similarities=run.similarities,
+            reference_catalogs=None, client_tax_trios=run.client_tax_trios, sample_size=8,
+            client_profiles=profiles,
+        )
+        queue = mapper.summarize_adjudication_queue(client_table=client, results=results,
+                    final_threshold=.9, sample_size=8, client_profiles=profiles)
+        return [asdict(row) for row in unused], [asdict(row) for row in queue]
+    expected = reports()
+    with patch.object(mapper, "summarize_values", side_effect=AssertionError("Profile recomputed")):
+        assert reports(run.client_profiles) == expected
+
+
+@pytest.mark.parametrize("alternatives, expected", [(1, "lexical + arithmetic"), (2, "lexical")])
+def test_arithmetic_support_is_independent_of_explanation_wording(alternatives, expected):
+    run = SimpleNamespace(client_tax_trios={}, header_step="lexical")
+    column = mapper.ColumnRef("target_001", 0, "Valor PIS", 1)
+    with patch.object(mapper, "trio_corroboration", return_value={"alternatives": alternatives}), \
+         patch.object(mapper, "_trio_proof_text", return_value="Uma explicação reescrita livremente"):
+        evidence = mapper._evidence_attribution(run, column, 0, decided_by="lexical", name_confidence=.95)
+    assert evidence["supported_by"] == expected
+    assert evidence["arithmetic_proof"] == "Uma explicação reescrita livremente"
+
+
+@pytest.mark.parametrize("confidence", [0.0, .99])
+def test_joint_arithmetic_acceptance_uses_local_evidence(confidence):
+    rows = [[100+10*i, 1.65, (100+10*i)*.0165, (100+10*i)*.0165] for i in range(40)]
+    model = table(["Base PIS", "Aliquota PIS", "Valor PIS"], [row[:3] for row in rows])
+    client = table(["PIS base", "PIS rate", "Candidate A", "Candidate B"], rows)
+    class Resolver:
+        def resolve(self, **kwargs):
+            return mapper.DataMappingDecision(client_column_id="column_003", data_confidence=confidence,
+                                               final_confidence=confidence, reason="Selected candidate")
+    result = mapper.map_columns(model, client, Scores({"Base PIS": [.99,.1,.1,.1],
+        "Aliquota PIS": [.1,.99,.1,.1], "Valor PIS": [.1,.1,.89,.7]}), Resolver())[2]
+    assert (result.status, result.client_column_number, result.final_confidence) == ("accepted", 3, .956)
+    assert result.decided_by == "arithmetic"
+
+
+@pytest.mark.parametrize("column_id", [None, "unknown_column"])
+def test_zero_confidence_fix_does_not_invent_a_selected_column(column_id):
+    class Resolver:
+        def resolve(self, **kwargs):
+            return mapper.DataMappingDecision(client_column_id=column_id, data_confidence=0,
+                                               final_confidence=0, reason="No selection")
+    result = mapper.map_columns(table(["Nº ID fiscal 1"], [["model"]]),
+        table(["Source X"], [["52998224725"]]), Scores({"Nº ID fiscal 1": [.8]}), Resolver())[0]
+    assert result.status == "no_match"
+    assert result.client_column_number is None
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_zero_confidence_candidates_still_participate_in_source_competition(reverse):
+    headers = ["Target A", "Target B"][::(-1 if reverse else 1)] + ["Anchor"]
+    model = table(headers, [["model A", "model B", "anchor"]])
+    client = table(["Source X", "Source Y"], [["source X", "source Y"]])
+    class Resolver:
+        def resolve(self, **kwargs):
+            confidence = 0 if kwargs["model_column"].name == "Target A" else .5
+            return mapper.DataMappingDecision(client_column_id="column_001", data_confidence=confidence,
+                                               final_confidence=confidence, reason="Proposal")
+    results = mapper.map_columns(model, client, Scores({
+        "Target A": [.9009, .89], "Target B": [.92, .89], "Anchor": [.2, .99],
+    }), Resolver())
+    by_name = {r.model_column: r for r in results}
+    assert by_name["Anchor"].status == "accepted"
+    for name in ["Target A", "Target B"]:
+        assert by_name[name].status == "review"
+        assert by_name[name].vetoed_by == "exclusivity"
+        assert by_name[name].decided_by == ""

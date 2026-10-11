@@ -72,7 +72,7 @@ O mapper sobrescreve o arquivo indicado e começa com os pareceres em branco. Pr
 - `metodo` indica o caminho do pipeline, como `nome`, `dados` ou `catalogo`.
 - `confianca_final` é um score, não uma probabilidade calibrada. A formatação mostra duas casas decimais: 0,8999 aparece como **89,99%**.
 
-O threshold padrão de aceite é 90%. O código combina cabeçalhos, amostras, identificadores, catálogos e relações aritméticas; a confiança declarada pela IA fica apenas para auditoria. Disputas sem vantagem suficiente seguem para revisão. Novas confirmações podem ajudar a resolver a aritmética de outros campos, em rodadas locais sem chamadas adicionais à API.
+O threshold padrão de aceite é 90%. O código combina cabeçalhos, amostras, identificadores, catálogos e relações aritméticas. A confiança declarada pela IA fica preservada, sem ajustes, nos campos de auditoria. Quando a IA indica uma candidata com confiança zero, o mapper ainda avalia essa candidata pelas regras locais; zero não é um veto por si só. Disputas sem vantagem suficiente seguem para revisão. Novas confirmações podem ajudar a resolver a aritmética de outros campos, em rodadas locais sem chamadas adicionais à API.
 
 O modelo e [`target_fields.json`](target_fields.json) definem os campos controlados. A coluna 35 é `CFOP_descrição`; a 195 é `item/material_descrição`. Não há aliases para os nomes antigos. Uma revisão humana não cria um novo score automático para a origem corrigida.
 
@@ -90,6 +90,8 @@ Esses números pertencem à execução online de **2026-10-11**. Os relatórios 
 A validação registrou 771 chamadas bem-sucedidas ao resolver, 1.436.882 células copiadas conferidas e 6.072.278 células sem origem verificadas como vazias, sem divergências. Os registros estão em [`data/validation/`](data/validation/).
 
 Datasul e Oracle entregam corretamente 32 das 56 associações dos gabaritos. Procosa e Terumo não têm gabarito de colunas; integridade da cópia não comprova a precisão de cada associação.
+
+A simplificação posterior foi validada nos quatro clientes com as mesmas respostas gravadas da API. A limpeza preservou os resultados. As correções de confiança acrescentaram propostas para revisão e fizeram um aceite do Terumo voltar à revisão por disputa de origem: são 63 aceites nessa nova execução. Os arquivos da tabela acima foram preservados. Veja a [comparação da simplificação](docs/EVALUATION.md#validação-da-simplificação).
 
 ## Testar e avaliar
 

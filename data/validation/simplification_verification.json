@@ -1,0 +1,618 @@
+{
+  "date": "2026-10-11",
+  "baseline_commit": "fc181edb3d3ea1a16f8a5ebe3d81b5f55ad9ed7e",
+  "python": "3.13.1",
+  "tests": {
+    "passed": 384,
+    "failed": 0
+  },
+  "application_python": {
+    "files": 17,
+    "lines_before": 7516,
+    "lines_after": 7298,
+    "net_lines_removed": 218
+  },
+  "method": "Fresh four-client run on baseline code, followed by cleanup and fixed-code replay of identical recorded embeddings and parsed resolver responses. Request hashes and complete consumption of every recording checked in both replays. Report comparisons exclude generation timestamps only.",
+  "api_capture": {
+    "embedding_calls": 8,
+    "resolver_calls": 771,
+    "failed_calls": 0,
+    "changed_requests_during_replay": 0
+  },
+  "preserved_files": {
+    "unchanged_count": 32,
+    "sha256": {
+      "data/model.xlsx": "06fb96acfe882d518bfe01f9c34e27394f815004d1228f8fb58736b74a5a36e0",
+      "data/clients/datasul_maio.xlsx": "af2f39d86e872aadbd99e3441910c89096688b3a514cdd0cab122b8f67452726",
+      "data/clients/sap_terumo.XLSX": "83032594dd678ca3c17e5cec85b0942440b4e50d8cfddf77449c0861f618e11f",
+      "data/clients/oracle.xlsx": "a69e8af6455fc81903970fd953fac563e06e28c85efcb887bb2724b58a509011",
+      "data/clients/sap_procosa.XLSX": "5ed6317ec43e7df2b0e667df70e3b4cc17c3c53f9cb08a75cd79e46f0e881953",
+      "data/keys/de_para_procosa.xlsx": "bdbea155d23afb1fb36508f62961686c86656c9e16777a097a288c288608562b",
+      "data/keys/de_para_oracle.xlsx": "7e508fa214875f0298e6fe57523bd61677428de8b56728be64011156eed6fa73",
+      "data/keys/de_para_datasul.xlsx": "fce589ff25b7d0e0c27f6fbd4171891386ddb2c5a49de4ed136eea75c7da7a62",
+      "data/mapped/sap_procosa_mapped.xlsx": "3e649673fd12b10242ed069060dfe0a227539ec60ea9a7b96918c1570578f347",
+      "data/mapped/sap_terumo_mapped.xlsx": "6aaab1ee3c83f2b8d065a6d9c5841ec667925843d44f3ce67a851601ba1f2a39",
+      "data/mapped/datasul_mapped.xlsx": "c07e0e4a481f6ff0f2b1b1dd5f2134ec42fc0dc11d0ca5ea70e017445a937f78",
+      "data/mapped/oracle_mapped.xlsx": "552672b658d97e513a148d2f5797b379487fee1fde096da44c9ef75ccda88a56",
+      "data/validation/workbook_verification.json": "e7b0c2f29a6802e73fad4bc1434b0231611ac57ac501f89a2cea8aa7d3edd376",
+      "data/validation/automatic_mapping_verification.json": "c692eba06e341e411c2d27f7c374d13a93d3f79f350032078b3c123e7bdbad4f",
+      "data/reports/mapping_sap_procosa_full.xlsx": "19ca0fe9261032595f067129fcbc8cd5cf33a0cf86117a492e9fd7283501f053",
+      "data/reports/mapping_oracle_full.xlsx": "7c322c14e25db4fe5a9d3c71574f80c638918a85d60f11b7e0f3a340683cf053",
+      "data/reports/mapping_sap_terumo_full.xlsx": "6c26a9fd6390cbd6214cd579bae9b8911aa751c5bcb562534f8ac4d7b6e83984",
+      "data/reports/mapping_datasul_full.xlsx": "f0f5ed71575d0e8fc1f588a88dec19f43d994ea68c0dd73451184746e4a4c342",
+      "data/reviews/mapping_sap_procosa_reviewed.xlsx": "a31c7c0e7cee09ec85244e71d663ca7bc4c71463ba9d26f8362c1951f1745476",
+      "data/reviews/procosa_review_transfer.json": "85347043111410013b560e1c93f90c0147b26ecdde39c78bbfac34e612657b9a",
+      "reference_data/cst_icms_taxation.csv": "6849d4a19c2c92a7448ee40f8057348e2dbdfaf98698b400e012f18a195940dc",
+      "reference_data/csosn.csv": "110fcf03769d299dc99711815f25c1609c006f79876bc6b9054a2ac44b46b732",
+      "reference_data/cfop.csv": "0f4d12fa162f916da319d2afe71262f14a6f3c361713443298ffa0e412272b81",
+      "reference_data/cst_ipi.csv": "8e545128de343dab3c76598d59e87b05d9f6eb58cea9d6e8e211fdf5f4feeec2",
+      "reference_data/ibs_cbs_classification.csv": "b6f44d4dcec2a8dd784484ef7115e9da51272693d459f4c325e4b28a0bba78c7",
+      "reference_data/ibge_municipality.csv": "ef9fb2c76fd59dc4ae8dd5eedb03028a508b731da6d117de75492eaace37cda7",
+      "reference_data/cst_icms.csv": "e2618652a798445d77ebbb1e196bb3769323cbeb6ddb348a5f6eac1d6b06719c",
+      "reference_data/manifest.json": "c4e2106d5da8d59bb0b3ba304cd6c68500a22be3972e6bce81c122fc29a677f1",
+      "reference_data/cst_pis_cofins.csv": "2cc57211e471a1320944f91618f0881a494aa45d610d0fdef18c1986fea3eb5d",
+      "reference_data/ncm.csv": "93c370b24af04823f5aeb7ca4309c5d1513d846afaf320119adb00080c3021fd",
+      "reference_data/ibs_cbs_cst.csv": "4330c8bb49fbc729b250212b1ff06183ebe6ef643abce5716e4262a26ab1edbf",
+      "tests/fixtures/evaluation_baseline.json": "d7d092b10ef990c2fdfc49b04d2237f3c3f94ec2983dd85e249b589b4ca06d2a"
+    }
+  },
+  "golden_fixture_changes": [
+    {
+      "path": "/end_to_end/decisions/5/llm_final_confidence",
+      "before": 1.0,
+      "after": 0.92
+    }
+  ],
+  "clients": {
+    "datasul": {
+      "report_comparison": {
+        "cleanup_changed_cells_excluding_timestamp": 0,
+        "raw_llm_confidence_corrected_targets": [
+          67,
+          102,
+          118,
+          126,
+          140,
+          177,
+          222
+        ],
+        "decision_changes": [
+          {
+            "target": 36,
+            "cause": "selected_candidate_no_longer_rejected_by_llm_confidence_zero",
+            "changed_fields": [
+              "numero_coluna_cliente",
+              "coluna_cliente",
+              "confianca_dados",
+              "confianca_final",
+              "situacao",
+              "apoiado_por"
+            ],
+            "status_before": "sem_correspondencia",
+            "status_after": "revisao",
+            "source_before": null,
+            "source_after": 327
+          },
+          {
+            "target": 76,
+            "cause": "selected_candidate_no_longer_rejected_by_llm_confidence_zero",
+            "changed_fields": [
+              "numero_coluna_cliente",
+              "coluna_cliente",
+              "confianca_dados",
+              "confianca_final",
+              "situacao",
+              "nome_catalogo",
+              "cobertura_catalogo",
+              "confianca_catalogo",
+              "apoiado_por"
+            ],
+            "status_before": "sem_correspondencia",
+            "status_after": "revisao",
+            "source_before": null,
+            "source_after": 9
+          },
+          {
+            "target": 211,
+            "cause": "selected_candidate_no_longer_rejected_by_llm_confidence_zero",
+            "changed_fields": [
+              "confianca_dados",
+              "justificativa"
+            ],
+            "status_before": "sem_correspondencia",
+            "status_after": "sem_correspondencia",
+            "source_before": null,
+            "source_after": null
+          }
+        ],
+        "accepted_before": 19,
+        "accepted_after": 19,
+        "accepted_pairs_removed": [],
+        "accepted_pairs_added": [],
+        "new_review_targets": [
+          36,
+          76
+        ],
+        "unused_sources_before": 329,
+        "unused_sources_after": 329,
+        "capture": {
+          "client": "datasul",
+          "mode": "record",
+          "seconds": 348.12,
+          "embedding": 2,
+          "resolver": 210
+        },
+        "cleanup_replay": {
+          "client": "datasul",
+          "mode": "cleanup",
+          "seconds": 32.9,
+          "embedding": 2,
+          "resolver": 210
+        },
+        "fixed_replay": {
+          "client": "datasul",
+          "mode": "fixed",
+          "seconds": 33.42,
+          "embedding": 2,
+          "resolver": 210
+        }
+      },
+      "workbook_checks": {
+        "published": {
+          "rows": 6804,
+          "confirmed": 19,
+          "unused": 329,
+          "copied_cells": 129276,
+          "blank_cells": 1415232,
+          "existing_cells_compared": 1559802,
+          "mismatches": 0,
+          "delivered_correct": 17,
+          "answer_key_size": 30,
+          "fabrications": 0
+        },
+        "fixed": {
+          "rows": 6804,
+          "confirmed": 19,
+          "unused": 329,
+          "copied_cells": 129276,
+          "blank_cells": 1415232,
+          "existing_cells_compared": 0,
+          "mismatches": 0,
+          "delivered_correct": 17,
+          "answer_key_size": 30,
+          "fabrications": 0
+        }
+      }
+    },
+    "oracle": {
+      "report_comparison": {
+        "cleanup_changed_cells_excluding_timestamp": 0,
+        "raw_llm_confidence_corrected_targets": [
+          79,
+          168,
+          203
+        ],
+        "decision_changes": [
+          {
+            "target": 44,
+            "cause": "selected_candidate_no_longer_rejected_by_llm_confidence_zero",
+            "changed_fields": [
+              "numero_coluna_cliente",
+              "coluna_cliente",
+              "confianca_dados",
+              "confianca_final",
+              "situacao",
+              "apoiado_por"
+            ],
+            "status_before": "sem_correspondencia",
+            "status_after": "revisao",
+            "source_before": null,
+            "source_after": 21
+          },
+          {
+            "target": 45,
+            "cause": "selected_candidate_no_longer_rejected_by_llm_confidence_zero",
+            "changed_fields": [
+              "numero_coluna_cliente",
+              "coluna_cliente",
+              "confianca_dados",
+              "confianca_final",
+              "situacao",
+              "apoiado_por"
+            ],
+            "status_before": "sem_correspondencia",
+            "status_after": "revisao",
+            "source_before": null,
+            "source_after": 21
+          },
+          {
+            "target": 58,
+            "cause": "selected_candidate_no_longer_rejected_by_llm_confidence_zero",
+            "changed_fields": [
+              "confianca_nome",
+              "confianca_nome_segunda_melhor",
+              "margem_nome",
+              "confianca_dados",
+              "justificativa"
+            ],
+            "status_before": "sem_correspondencia",
+            "status_after": "sem_correspondencia",
+            "source_before": null,
+            "source_after": null
+          },
+          {
+            "target": 76,
+            "cause": "selected_candidate_no_longer_rejected_by_llm_confidence_zero",
+            "changed_fields": [
+              "confianca_dados",
+              "justificativa"
+            ],
+            "status_before": "sem_correspondencia",
+            "status_after": "sem_correspondencia",
+            "source_before": null,
+            "source_after": null
+          },
+          {
+            "target": 201,
+            "cause": "selected_candidate_no_longer_rejected_by_llm_confidence_zero",
+            "changed_fields": [
+              "confianca_dados",
+              "justificativa"
+            ],
+            "status_before": "sem_correspondencia",
+            "status_after": "sem_correspondencia",
+            "source_before": null,
+            "source_after": null
+          },
+          {
+            "target": 204,
+            "cause": "selected_candidate_no_longer_rejected_by_llm_confidence_zero",
+            "changed_fields": [
+              "numero_coluna_cliente",
+              "coluna_cliente",
+              "confianca_dados",
+              "confianca_final",
+              "situacao",
+              "nome_catalogo",
+              "cobertura_catalogo",
+              "confianca_catalogo",
+              "apoiado_por"
+            ],
+            "status_before": "sem_correspondencia",
+            "status_after": "revisao",
+            "source_before": null,
+            "source_after": 8
+          },
+          {
+            "target": 208,
+            "cause": "selected_candidate_no_longer_rejected_by_llm_confidence_zero",
+            "changed_fields": [
+              "numero_coluna_cliente",
+              "coluna_cliente",
+              "confianca_dados",
+              "confianca_final",
+              "situacao",
+              "apoiado_por"
+            ],
+            "status_before": "sem_correspondencia",
+            "status_after": "revisao",
+            "source_before": null,
+            "source_after": 8
+          }
+        ],
+        "accepted_before": 18,
+        "accepted_after": 18,
+        "accepted_pairs_removed": [],
+        "accepted_pairs_added": [],
+        "new_review_targets": [
+          44,
+          45,
+          204,
+          208
+        ],
+        "unused_sources_before": 30,
+        "unused_sources_after": 30,
+        "capture": {
+          "client": "oracle",
+          "mode": "record",
+          "seconds": 302.31,
+          "embedding": 2,
+          "resolver": 208
+        },
+        "cleanup_replay": {
+          "client": "oracle",
+          "mode": "cleanup",
+          "seconds": 10.67,
+          "embedding": 2,
+          "resolver": 208
+        },
+        "fixed_replay": {
+          "client": "oracle",
+          "mode": "fixed",
+          "seconds": 11.22,
+          "embedding": 2,
+          "resolver": 208
+        }
+      },
+      "workbook_checks": {
+        "published": {
+          "rows": 7340,
+          "confirmed": 18,
+          "unused": 30,
+          "copied_cells": 132120,
+          "blank_cells": 1534060,
+          "existing_cells_compared": 1680515,
+          "mismatches": 0,
+          "delivered_correct": 15,
+          "answer_key_size": 26,
+          "fabrications": 0
+        },
+        "fixed": {
+          "rows": 7340,
+          "confirmed": 18,
+          "unused": 30,
+          "copied_cells": 132120,
+          "blank_cells": 1534060,
+          "existing_cells_compared": 0,
+          "mismatches": 0,
+          "delivered_correct": 15,
+          "answer_key_size": 26,
+          "fabrications": 0
+        }
+      }
+    },
+    "sap_procosa": {
+      "report_comparison": {
+        "cleanup_changed_cells_excluding_timestamp": 0,
+        "raw_llm_confidence_corrected_targets": [
+          19,
+          78,
+          82,
+          118,
+          121,
+          158,
+          188,
+          205,
+          209
+        ],
+        "decision_changes": [
+          {
+            "target": 38,
+            "cause": "selected_candidate_no_longer_rejected_by_llm_confidence_zero",
+            "changed_fields": [
+              "confianca_nome",
+              "confianca_nome_segunda_melhor",
+              "margem_nome",
+              "confianca_dados",
+              "justificativa"
+            ],
+            "status_before": "sem_correspondencia",
+            "status_after": "sem_correspondencia",
+            "source_before": null,
+            "source_after": null
+          },
+          {
+            "target": 219,
+            "cause": "selected_candidate_no_longer_rejected_by_llm_confidence_zero",
+            "changed_fields": [
+              "confianca_nome",
+              "confianca_nome_segunda_melhor",
+              "margem_nome",
+              "confianca_dados",
+              "justificativa"
+            ],
+            "status_before": "sem_correspondencia",
+            "status_after": "sem_correspondencia",
+            "source_before": null,
+            "source_after": null
+          }
+        ],
+        "accepted_before": 45,
+        "accepted_after": 45,
+        "accepted_pairs_removed": [],
+        "accepted_pairs_added": [],
+        "new_review_targets": [],
+        "unused_sources_before": 73,
+        "unused_sources_after": 73,
+        "capture": {
+          "client": "sap_procosa",
+          "mode": "record",
+          "seconds": 326.69,
+          "embedding": 2,
+          "resolver": 185
+        },
+        "cleanup_replay": {
+          "client": "sap_procosa",
+          "mode": "cleanup",
+          "seconds": 69.75,
+          "embedding": 2,
+          "resolver": 185
+        },
+        "fixed_replay": {
+          "client": "sap_procosa",
+          "mode": "fixed",
+          "seconds": 66.46,
+          "embedding": 2,
+          "resolver": 185
+        }
+      },
+      "workbook_checks": {
+        "published": {
+          "rows": 18209,
+          "confirmed": 62,
+          "unused": 56,
+          "copied_cells": 1128958,
+          "blank_cells": 3004485,
+          "existing_cells_compared": 4158777,
+          "mismatches": 0,
+          "delivered_correct": null,
+          "answer_key_size": null,
+          "fabrications": 0
+        },
+        "fixed": {
+          "rows": 18209,
+          "confirmed": 45,
+          "unused": 73,
+          "copied_cells": 819405,
+          "blank_cells": 3314038,
+          "existing_cells_compared": 0,
+          "mismatches": 0,
+          "delivered_correct": null,
+          "answer_key_size": null,
+          "fabrications": 0
+        }
+      }
+    },
+    "sap_terumo": {
+      "report_comparison": {
+        "cleanup_changed_cells_excluding_timestamp": 0,
+        "raw_llm_confidence_corrected_targets": [
+          114,
+          147,
+          158,
+          168,
+          204
+        ],
+        "decision_changes": [
+          {
+            "target": 76,
+            "cause": "selected_candidate_no_longer_rejected_by_llm_confidence_zero",
+            "changed_fields": [
+              "numero_coluna_cliente",
+              "coluna_cliente",
+              "confianca_dados",
+              "confianca_final",
+              "situacao",
+              "justificativa",
+              "nome_catalogo",
+              "cobertura_catalogo",
+              "confianca_catalogo",
+              "apoiado_por",
+              "vetado_por"
+            ],
+            "status_before": "sem_correspondencia",
+            "status_after": "revisao",
+            "source_before": null,
+            "source_after": 104
+          },
+          {
+            "target": 154,
+            "cause": "competition_with_newly_considered_zero_confidence_selection",
+            "changed_fields": [
+              "situacao",
+              "justificativa",
+              "decidido_por",
+              "vetado_por"
+            ],
+            "status_before": "aceito",
+            "status_after": "revisao",
+            "source_before": 104,
+            "source_after": 104
+          },
+          {
+            "target": 210,
+            "cause": "selected_candidate_no_longer_rejected_by_llm_confidence_zero",
+            "changed_fields": [
+              "numero_coluna_cliente",
+              "coluna_cliente",
+              "confianca_dados",
+              "confianca_final",
+              "situacao",
+              "apoiado_por"
+            ],
+            "status_before": "sem_correspondencia",
+            "status_after": "revisao",
+            "source_before": null,
+            "source_after": 21
+          }
+        ],
+        "accepted_before": 64,
+        "accepted_after": 63,
+        "accepted_pairs_removed": [
+          [
+            154,
+            104
+          ]
+        ],
+        "accepted_pairs_added": [],
+        "new_review_targets": [
+          76,
+          154,
+          210
+        ],
+        "unused_sources_before": 301,
+        "unused_sources_after": 302,
+        "capture": {
+          "client": "sap_terumo",
+          "mode": "record",
+          "seconds": 252.81,
+          "embedding": 2,
+          "resolver": 168
+        },
+        "cleanup_replay": {
+          "client": "sap_terumo",
+          "mode": "cleanup",
+          "seconds": 6.72,
+          "embedding": 2,
+          "resolver": 168
+        },
+        "fixed_replay": {
+          "client": "sap_terumo",
+          "mode": "fixed",
+          "seconds": 7.2,
+          "embedding": 2,
+          "resolver": 168
+        }
+      },
+      "workbook_checks": {
+        "published": {
+          "rows": 727,
+          "confirmed": 64,
+          "unused": 301,
+          "copied_cells": 46528,
+          "blank_cells": 118501,
+          "existing_cells_compared": 174106,
+          "mismatches": 0,
+          "delivered_correct": null,
+          "answer_key_size": null,
+          "fabrications": 0
+        },
+        "fixed": {
+          "rows": 727,
+          "confirmed": 63,
+          "unused": 302,
+          "copied_cells": 45801,
+          "blank_cells": 119228,
+          "existing_cells_compared": 0,
+          "mismatches": 0,
+          "delivered_correct": null,
+          "answer_key_size": null,
+          "fabrications": 0
+        }
+      }
+    }
+  },
+  "totals": {
+    "published": {
+      "copied_cells": 1436882,
+      "blank_cells": 6072278,
+      "existing_cells_compared": 7573200,
+      "mismatches": 0,
+      "fabrications": 0
+    },
+    "fixed": {
+      "copied_cells": 1126602,
+      "blank_cells": 6382558,
+      "existing_cells_compared": 0,
+      "mismatches": 0,
+      "fabrications": 0
+    }
+  },
+  "limitations": [
+    "Published reports, reviewed decisions and deliverables were preserved; fixed replay outputs remain in scratch/simplification-validation/.",
+    "Procosa and Terumo have no column answer key. Cell integrity does not establish mapping accuracy.",
+    "Terumo target 154 / source 104 moved from accepted to review because newly considered target 76 competes for that source under the existing one-to-one rule.",
+    "Replay validates these fixed inputs and API responses; it does not demonstrate generalization or identical responses in future online runs.",
+    "Raw API recordings and temporary scripts are local ignored audit files; only this summary is tracked."
+  ]
+}

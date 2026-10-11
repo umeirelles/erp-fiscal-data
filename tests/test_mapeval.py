@@ -17,7 +17,7 @@ from mapeval.excel import (
     parse_coluna_annotation,
 )
 from mapeval.outcomes import Outcome, classify
-from mapeval.score import Row, read_mappings, score_report
+from mapeval.score import Row, Score, decision_census, read_mappings, score_report
 from mapeval.truth import KEY_CORRECTIONS, AnswerKey, load_answer_key
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -38,7 +38,7 @@ requires_workbooks = pytest.mark.skipif(
     reason="planilhas dos clientes ausentes",
 )
 
-#: Prova não decisiva, com o marcador PROOF_NOT_DECISIVE_PT.
+#: Exemplo de explicação; sua redação não determina a métrica.
 PORTUGUESE_NON_DECISIVE_PROOF = (
     "valor = base x alíquota se confirma para PIS em 5501 linhas, com aderência "
     "0,9996 - mas este cliente tem 2 blocos disjuntos de PIS que satisfazem a "
@@ -62,12 +62,6 @@ def baseline_reports(tmp_path_factory):
         book.save(paths[name])
         book.close()
     return paths
-
-
-def _accepted_row(proof: str, method: str = "data") -> Row:
-    return Row(model_column=213, model_name="Aliquota PIS", client_column=96,
-               status="accepted", method=method, final_confidence=0.98,
-               outcome=Outcome.CORRECT, arithmetic_proof=proof)
 
 
 @pytest.mark.parametrize(
@@ -212,18 +206,6 @@ def test_every_withheld_correct_mapping_sits_below_the_accept_threshold(baseline
             )
 
 
-def test_a_non_discriminating_proof_is_not_independent_evidence(baseline_reports) -> None:
-    # Uma prova que dois blocos disjuntos do mesmo tributo satisfazem traz o
-    # marcador "não distingue esta coluna" e não conta como evidência.
-    assert _accepted_row(
-        "valor = base x alíquota se confirma para PIS em 500 linhas, com aderência 0,99"
-    ).header_independent
-    assert report_schema.PROOF_NOT_DECISIVE_PT in PORTUGUESE_NON_DECISIVE_PROOF
-    assert not _accepted_row(PORTUGUESE_NON_DECISIVE_PROOF).header_independent
-    # Um aceite por catálogo continua independente, com ou sem prova decisiva.
-    assert _accepted_row(PORTUGUESE_NON_DECISIVE_PROOF, method="catalog").header_independent
-
-
 def _synthetic_client(path: Path) -> Path:
     """Exportação mínima: c1 e c3 com dados, c2 sem nenhuma linha preenchida."""
     book = openpyxl.Workbook()
@@ -239,16 +221,16 @@ def _synthetic_client(path: Path) -> Path:
 _SYNTHETIC_ROWS = [
     {"model_column_number": 1, "model_column": "Base PIS", "client_column_number": 1,
      "client_column": "Base PIS", "final_confidence": 0.95, "method": "name",
-     "status": "accepted", "arithmetic_proof": None},
+     "status": "accepted", "arithmetic_proof": None, "decided_by": "semantic"},
     {"model_column_number": 2, "model_column": "CFOP", "client_column_number": 3,
      "client_column": "CFOP", "final_confidence": 0.93, "method": "catalog",
-     "status": "accepted", "arithmetic_proof": None},
+     "status": "accepted", "arithmetic_proof": None, "decided_by": "catalog"},
     {"model_column_number": 3, "model_column": "Isentas PIS", "client_column_number": 2,
      "client_column": "Coluna vazia", "final_confidence": 0.5, "method": "data",
-     "status": "review", "arithmetic_proof": None},
+     "status": "review", "arithmetic_proof": None, "decided_by": ""},
     {"model_column_number": 4, "model_column": "Base COFINS", "client_column_number": None,
      "client_column": None, "final_confidence": 0.2, "method": "data",
-     "status": "no_match", "arithmetic_proof": None},
+     "status": "no_match", "arithmetic_proof": None, "decided_by": ""},
 ]
 
 
@@ -281,8 +263,8 @@ def test_a_report_scores_without_the_client_workbooks(tmp_path: Path) -> None:
     ]
     assert portuguese.delivered_correct == 2
     assert portuguese.correct_pairs == {(1, 1), (2, 3)}
-    # m1 tem só prova não decisiva; m2 é aceite por catálogo.
-    assert portuguese.header_independent_share == 0.5
+    # m1 foi decidido pelo cabeçalho; m2, pelo catálogo.
+    assert portuguese.objective_decision_share == 0.5
     # m3 propõe a coluna vazia, mas está em revisão: não é fabricação.
     assert [(r.model_column, r.client_column) for r in portuguese.vacuous_proposals] == [(3, 2)]
     assert portuguese.vacuous_targets == []
@@ -316,17 +298,15 @@ def test_a_report_without_the_mappings_sheet_is_refused(tmp_path: Path) -> None:
 
 
 @requires_workbooks
-def test_the_marker_keeps_datasul_non_decisive_proofs_out_of_the_metric() -> None:
+def test_datasul_counts_recorded_winners_even_when_the_audit_proof_is_ambiguous():
     client_file, report_file, key_file = KEYED["datasul"]
-    score = score_report(
-        ROOT / report_file, ROOT / client_file, load_answer_key(ROOT / key_file, "datasul")
-    )
-    marked = [
-        r for r in score.accepted
-        if r.arithmetic_proof and report_schema.PROOF_NOT_DECISIVE_PT in r.arithmetic_proof
-    ]
-    assert marked
-    assert all(r.method == "catalog" or not r.header_independent for r in marked)
+    score = score_report(ROOT / report_file, ROOT / client_file,
+                         load_answer_key(ROOT / key_file, "datasul"))
+    rows = {r.model_column: r for r in score.accepted}
+    assert rows[59].decided_by == "identifier"
+    assert rows[184].decided_by == "arithmetic"
+    assert rows[59].objective_decision is True
+    assert rows[184].objective_decision is True
 
 
 @requires_workbooks
@@ -334,7 +314,7 @@ def test_cli_prints_portuguese_figures(capsys: pytest.CaptureFixture[str]) -> No
     assert cli.main(["--root", str(ROOT), "--client", "oracle", "--show-losses"]) == 0
     text = capsys.readouterr().out
     assert "TOTAL COM GABARITO  encontrados" in text
-    assert "aceites independentes de cabeçalho" in text
+    assert "aceites decididos por evidência objetiva" in text
     # Porcentagens e confianças com vírgula decimal, nunca com ponto.
     assert re.search(r"\d,\d%", text)
     assert not re.search(r"\d\.\d+%|final=\d\.\d", text)
@@ -385,3 +365,38 @@ def test_accepts_the_key_cannot_check_are_counted_and_visible() -> None:
         )
         good = sum(1 for r in score.accepted if r.outcome is Outcome.CORRECT)
         assert good + len(score.undetermined_accepts) <= len(score.accepted)
+
+
+@pytest.mark.parametrize("winner, expected", [("arithmetic", True), ("identifier", True),
+    ("profile", True), ("catalog", True), ("lexical", False), ("semantic", False), (None, None)])
+def test_objective_decision_uses_the_winner_and_never_the_explanation(winner, expected):
+    for proof in ["ela não distingue esta coluna", "ela não permite escolher esta coluna", ""]:
+        row = Row(1, "Target", 1, "accepted", "data", .95, Outcome.CORRECT,
+                  arithmetic_proof=proof, decided_by=winner)
+        assert row.objective_decision is expected
+
+
+def test_missing_historical_winners_remain_unknown_in_metrics():
+    score = Score("synthetic", rows=[
+        Row(1, "Unknown", 1, "accepted", "catalog", .99, Outcome.CORRECT),
+        Row(2, "Known", 2, "accepted", "data", .92, Outcome.CORRECT, decided_by="identifier"),
+    ])
+    assert score.objective_decision_share == 1.0
+    assert decision_census(score) == {"unrecorded": 1, "identifier": 1}
+    score.rows = score.rows[:1]
+    assert score.objective_decision_share is None
+
+
+def test_a_human_correction_does_not_inherit_the_old_winning_method(tmp_path):
+    path = _synthetic_report(tmp_path / "mapping.xlsx", "")
+    book = openpyxl.load_workbook(path)
+    sheet = book.active
+    col = sheet.max_column + 1
+    sheet.cell(1, col, "parecer_revisor")
+    sheet.cell(1, col + 1, "coluna_cliente_correta")
+    sheet.cell(2, col, "incorreto")
+    sheet.cell(2, col + 1, 2)
+    book.save(path)
+    score = score_report(path, _synthetic_client(tmp_path / "client.xlsx"), AnswerKey("synthetic", {}))
+    assert score.rows[0].decided_by is None
+    assert score.rows[0].objective_decision is None

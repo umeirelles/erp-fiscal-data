@@ -986,7 +986,7 @@ def test_openai_data_resolver_uses_structured_response() -> None:
     assert '"samples": ["5102", "6102"]' in responses.arguments["input"]
 
 
-def test_data_resolver_preserves_name_confidence_when_rows_are_all_zero() -> None:
+def test_data_resolver_preserves_the_raw_response_when_rows_are_all_zero() -> None:
     model_decision = DataMappingDecision(
         client_column_id="column_001",
         data_confidence=0.2,
@@ -1009,7 +1009,7 @@ def test_data_resolver_preserves_name_confidence_when_rows_are_all_zero() -> Non
         sample_size=3,
     )
 
-    assert decision.final_confidence == 0.88
+    assert decision.model_dump() == model_decision.model_dump()
 
 
 @pytest.mark.parametrize(
@@ -1260,21 +1260,11 @@ def test_a_proof_says_so_when_it_cannot_single_out_a_column() -> None:
     assert _trio_proof_text(lone) == (
         "valor = base x alíquota se confirma para ICMS em 500 linhas, com aderência 0,99"
     )
-    assert rs.PROOF_NOT_DECISIVE_PT not in _trio_proof_text(lone)
-    assert rs.proof_is_decisive(_trio_proof_text(lone))
     assert _trio_proof_text(rival) == (
         "valor = base x alíquota se confirma para PIS em 5501 linhas, com aderência 0,9996"
         " - mas este cliente tem 2 blocos disjuntos de PIS que satisfazem a equação, "
         "portanto ela não distingue esta coluna"
     )
-    assert _trio_proof_text(rival).endswith(rs.PROOF_NOT_DECISIVE_PT)
-    assert not rs.proof_is_decisive(_trio_proof_text(rival))
-
-
-def test_the_proof_templates_carry_the_marker_the_readers_look_for() -> None:
-    # mapeval e _supporting_step_ids decidem pela presença deste trecho exato.
-    assert rs.PROOF_NOT_DECISIVE_PT in PROOF_NOT_DECISIVE_SUFFIX
-    assert rs.PROOF_NOT_DECISIVE_PT not in PROOF_TEXT
 
 
 def test_rate_aliases_for_one_block_are_not_counted_as_rival_blocks() -> None:
@@ -1419,23 +1409,17 @@ def test_an_offline_run_never_claims_the_semantic_step() -> None:
 
 def test_a_non_discriminating_proof_is_not_reported_as_arithmetic_support() -> None:
     # Uma prova que não distingue a coluna confirma o escopo, não o mapeamento.
-    proof = _trio_proof_text(
-        {"tax_scope": "pis", "rows_tested": 5501, "fit_score": 0.9996, "alternatives": 2}
-    )
     steps = _supporting_step_ids(
         header_step="lexical",
         name_confidence=0.9,
-        arithmetic_proof=proof,
+        arithmetic_decisive=False,
     )
     assert steps == ["lexical"]
 
 
 def test_a_decisive_proof_is_reported_as_arithmetic_support() -> None:
-    proof = _trio_proof_text(
-        {"tax_scope": "icms", "rows_tested": 5570, "fit_score": 0.998, "alternatives": 1}
-    )
     steps = _supporting_step_ids(
-        header_step="lexical", name_confidence=0.9, arithmetic_proof=proof
+        header_step="lexical", name_confidence=0.9, arithmetic_decisive=True
     )
     assert steps == ["lexical", "arithmetic"]
 
@@ -1749,12 +1733,9 @@ def test_the_written_cells_are_in_portuguese(tmp_path) -> None:
     assert list(mappings["nome_catalogo"].fillna("")) == [
         "cfop", "", "", "municipio_ibge", "", "cclasstrib", "", "",
     ]
-    # A prova não decisiva em português chega ao arquivo com o marcador que os
-    # leitores (mapeval) procuram.
+    # O texto da prova é preservado; leitores usam os campos de evidência.
     proofs = list(mappings["prova_aritmetica"].fillna(""))
-    assert rs.proof_is_decisive(proofs[1])
-    assert proofs[2].endswith(rs.PROOF_NOT_DECISIVE_PT)
-    assert not rs.proof_is_decisive(proofs[2])
+    assert proofs == [result.arithmetic_proof or "" for result in _varied_results()]
 
     unmatched = pd.read_excel(output, sheet_name="Colunas do Cliente sem Uso")
     assert list(unmatched.columns) == list(rs.COLUMNS["unmatched"].values())
