@@ -1,4 +1,8 @@
-"""Lê a estrutura de uma planilha e identifica suas colunas, inclusive cabeçalhos repetidos."""
+"""Etapa 1: ler as planilhas.
+
+Recebe um .xlsx (aba e linha do cabeçalho) e devolve uma ``SheetTable``: os dados
+sem conversão e uma ``ColumnRef`` por coluna, inclusive para cabeçalhos repetidos.
+"""
 
 from __future__ import annotations
 
@@ -24,7 +28,7 @@ def normalize_header(value: object) -> str:
 
 def _header_text(value: object, index: int) -> str:
     # Fica em inglês: o nome vai para o embedding e para o payload da IA. Nas
-    # células do relatório ele sai como "Coluna sem nome N" (report_schema).
+    # células do relatório ele sai como "Coluna sem nome N" (schema.py).
     if pd.isna(value) or not str(value).strip():
         return f"Unnamed column {index + 1}"
     return str(value).strip()
@@ -36,7 +40,7 @@ class ColumnRef:
 
     ``name`` e ``display_name`` ficam em inglês em memória (``Unnamed column
     N``, ``(occurrence N)``) porque o nome é entrada da IA; a forma em
-    português só é aplicada nas células gravadas, por ``report_schema``.
+    português só é aplicada nas células gravadas, por ``schema``.
     """
 
     id: str

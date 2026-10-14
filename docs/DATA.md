@@ -7,7 +7,7 @@ Os arquivos de cliente são confidenciais. Os exemplos e entregáveis atuais per
 | Caminho | Finalidade |
 |---|---|
 | [`data/model.xlsx`](../data/model.xlsx) | Modelo padrão da consultoria. |
-| [`target_fields.json`](../target_fields.json) | Identidade e semântica de cada campo do modelo. |
+| [`data/target_fields.json`](../data/target_fields.json) | Identidade e semântica de cada campo do modelo. |
 | [`data/clients/`](../data/clients/) | Quatro exportações originais dos clientes. |
 | [`data/keys/`](../data/keys/) | Gabaritos de Datasul e Oracle e especificação de registros de Procosa. |
 | [`data/reports/`](../data/reports/) | Quatro relatórios atuais; o de Procosa inclui os pareceres humanos. |
@@ -38,7 +38,7 @@ Nos gabaritos de Datasul e Oracle, a linha 1 tem anotações como `Coluna BV`; a
 
 ## Relatório de mapeamento
 
-O XLSX atual usa o schema em português, versão 3, e tem quatro abas. Consulte [`report_schema.py`](../report_schema.py) para a lista completa e a ordem dos campos. CSV conserva apenas `Mapeamentos` e perde metadados e listas auxiliares.
+O XLSX atual usa o schema em português, versão 3, e tem quatro abas. Consulte [`mapper/schema.py`](../mapper/schema.py) para a lista completa e a ordem dos campos. CSV conserva apenas `Mapeamentos` e perde metadados e listas auxiliares.
 
 ### Mapeamentos
 
@@ -88,7 +88,7 @@ As origens do banner refletem as correções; os scores e a situação automáti
 
 ```python
 import pandas as pd
-from apply_invoice_mapping import FIRST_DATA_EXCEL_ROW
+from mapper.apply import FIRST_DATA_EXCEL_ROW
 
 arquivo = "data/mapped/oracle_mapped.xlsx"
 with pd.ExcelFile(arquivo, engine="openpyxl") as excel:
@@ -114,6 +114,6 @@ O relatório em `data/reviews/mapping_sap_procosa_reviewed.xlsx` é a evidência
 
 Cada CSV em `reference_data/` contém códigos, descrições e datas de vigência quando disponíveis. O manifesto informa arquivo, origem, versão, largura, normalização, especificidade e SHA-256. O loader confere cada CSV antes de usá-lo. A vigência ainda não participa da comparação, e a correspondência com um catálogo não é uma validação do tratamento fiscal da nota.
 
-`update_reference_data.py` acessa as fontes configuradas e regrava os catálogos. Atualize-os separadamente de mudanças no mapper, conferindo formatos e proveniência; uma nova publicação pode exigir ajustes no parser.
+`python run.py update-catalogs` acessa as fontes configuradas e regrava os catálogos. Atualize-os separadamente de mudanças no mapper, conferindo formatos e proveniência; uma nova publicação pode exigir ajustes no parser.
 
 Relatórios antigos no schema em inglês são recusados. A conversão histórica pertence ao Git; ela não faz parte do fluxo atual. Não renomeie colunas ou remova hashes manualmente para forçar um relatório antigo a passar pelas verificações.

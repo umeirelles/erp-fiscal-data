@@ -34,7 +34,7 @@ Esta página mantém os pontos ainda abertos no código atual. Diagnósticos res
 
 - **O score bruto pode exagerar o apoio.** `ReferenceCatalogs.analyze` calcula cobertura distinta entre os valores que conseguiu formatar. Uma coluna com muito texto e poucos códigos pode ter score alto. A regra de catálogo distintivo exige também boa `format_fraction`, protegendo o aceite por essa evidência; seleção de candidatas, payload e alguns overrides ainda consultam o score bruto.
 - **Vigência não entra no matching.** `_load_catalog` carrega os códigos sem filtrar `valid_from` ou `valid_to`. O fato de um código constar no CSV não demonstra validade na data do documento.
-- **O updater depende do formato das publicações.** `update_reference_data.py` usa nomes fixos de abas e alguns rótulos fixos de versão. A extração de CST IBS/CBS não aplica o mesmo filtro de largura das demais tabelas. Uma publicação nova precisa de conferência antes de substituir os CSVs.
+- **O updater depende do formato das publicações.** `python run.py update-catalogs` usa nomes fixos de abas e alguns rótulos fixos de versão. A extração de CST IBS/CBS não aplica o mesmo filtro de largura das demais tabelas. Uma publicação nova precisa de conferência antes de substituir os CSVs.
 - **A validação do manifesto é limitada.** Os checksums dos CSVs são conferidos, mas `schema_version` e `generated_at` não determinam sua aceitação. Chaves desconhecidas passadas para `CatalogSpec` podem provocar `TypeError` sem a mensagem amigável da CLI.
 
 ## Operação e testes

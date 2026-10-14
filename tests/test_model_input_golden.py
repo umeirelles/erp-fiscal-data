@@ -43,25 +43,25 @@ if __name__ == "__main__":
     # Execução direta (regeneração): o pytest já põe a raiz no caminho.
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from invoice_mapper import (  # noqa: E402
-    ColumnRef,
-    DataMappingDecision,
-    MapperConfig,
-    OpenAIDataResolver,
-    OpenAIEmbeddingHeaderScorer,
-    SheetTable,
-    _header_text,
+from mapper.catalogs import CatalogSpec, LoadedCatalog, ReferenceCatalogs  # noqa: E402
+from mapper.decide import MapperConfig, map_columns  # noqa: E402
+from mapper.evidence import (  # noqa: E402
     line_calculation_evidence,
-    map_columns,
     tax_calculation_evidence,
 )
-from reference_catalog import CatalogSpec, LoadedCatalog, ReferenceCatalogs  # noqa: E402
+from mapper.headers import OpenAIEmbeddingHeaderScorer  # noqa: E402
+from mapper.resolver import DataMappingDecision, OpenAIDataResolver  # noqa: E402
+from mapper.spreadsheet import ColumnRef, SheetTable, _header_text  # noqa: E402
 
 GOLDEN_PATH = Path(__file__).resolve().parent / "fixtures" / "model_input_golden.json"
 
 #: Campos de MappingResult que são mensagens para o usuário. Ficam fora da
 #: comparação de decisões porque passam a ser escritos em português.
 TEXT_FIELDS = ("reason", "arithmetic_proof")
+
+#: Módulo em que cada classe estava quando a fixture foi gerada. A OpenAI recebe
+#: só o nome e o schema da classe (comparados abaixo), não o módulo Python.
+FIXTURE_MODULES = {"mapper.resolver": "invoice_mapper"}
 
 RESOLVER_CASES = (
     "header_conflicts_unnamed_and_occurrence",
@@ -199,7 +199,7 @@ def _tax_rule(base, rate, value, *, role: str) -> dict[str, object]:
 def _plain(value: object) -> object:
     """Converte a captura para valores serializáveis em JSON, usando o nome qualificado das classes."""
     if isinstance(value, type):
-        return f"{value.__module__}.{value.__qualname__}"
+        return f"{FIXTURE_MODULES.get(value.__module__, value.__module__)}.{value.__qualname__}"
     if isinstance(value, np.generic):
         return value.item()
     if isinstance(value, dict):

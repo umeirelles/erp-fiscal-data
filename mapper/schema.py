@@ -1,31 +1,28 @@
-"""Converte os nomes e valores internos para o formato em português dos arquivos.
+"""Vocabulário dos arquivos em português e campos controlados do modelo.
 
-O código usa valores como ``accepted``, ``semantic`` e ``Nome (occurrence 2)``.
-Este módulo os converte ao gravar relatórios e planilhas e faz a conversão
-inversa na leitura. As mensagens já chegam em português; aqui ficam os
-rótulos de ``TEXT_LABELS`` e a formatação dos números.
-
-Os inputs da IA não passam por essa conversão. Prompt, payload, embedding,
-schema de ``DataMappingDecision`` e nomes de coluna enviados aos modelos
-precisam permanecer idênticos aos registrados no golden test.
-
-A leitura aceita apenas a versão 3 do schema, em português. Relatórios da
-versão 2 recebem uma mensagem com instruções de conversão. Nomes antigos
-misturados ao formato atual também geram erro, pois uma leitura parcial
-poderia ignorar hashes ou pareceres do revisor.
-
-Este módulo não importa ``invoice_mapper`` nem ``apply_invoice_mapping``,
-evitando imports circulares.
+Converte os nomes e valores internos (em inglês) para o schema em português dos
+relatórios e planilhas, e de volta na leitura. Carrega ``data/target_fields.json``:
+papel, tributos, qualificadores, identificadores e catálogos de cada campo do modelo.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+import json
 import math
+from pathlib import Path
 import re
 import unicodedata
 from typing import Iterable, Mapping, Sequence
 
 import pandas as pd
+
+from mapper.spreadsheet import normalize_header
+
+# Os inputs da IA não passam por esta conversão: prompt, payload, embeddings e o
+# schema de DataMappingDecision ficam em inglês (veja o golden test). A leitura
+# aceita só a versão 3 do schema, em português; o formato antigo, em inglês, é
+# recusado com instruções de conversão, inclusive quando aparece misturado ao novo.
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +229,7 @@ METADATA_SENTINEL_KEYS: frozenset[str] = frozenset(
 # Etapas da análise e travas
 # ---------------------------------------------------------------------------
 
-#: Etapas de evidência (ids de mapping_steps.EVIDENCE_STEPS) -> id gravado.
+#: Etapas de evidência (ids de decide.EVIDENCE_STEPS) -> id gravado.
 STEP_IDS: dict[str, str] = {
     "resolver": "resolvedor_ia",
     "lexical": "lexico",
@@ -243,7 +240,7 @@ STEP_IDS: dict[str, str] = {
     "arithmetic": "aritmetica",
 }
 
-#: Travas (ids de mapping_steps.GUARDS) -> id gravado.
+#: Travas (ids de decide.GUARDS) -> id gravado.
 GUARD_IDS: dict[str, str] = {
     "vacuity": "coluna_vazia",
     "family_conflict": "conflito_tributario",
@@ -252,7 +249,7 @@ GUARD_IDS: dict[str, str] = {
 }
 
 #: Marcador usado pelo backfill quando havia evidência objetiva, mas os
-#: dados arquivados não permitiam identificar a etapa. mapping_steps não
+#: dados arquivados não permitiam identificar a etapa. decide.py não
 #: o classifica como etapa de evidência.
 LEGACY_STEP_IDS: dict[str, str] = {
     "unrecorded": "nao_registrado",
@@ -331,7 +328,7 @@ ENUMS: dict[str, dict[str, str]] = {
         "cpf_checkdigit": "dv_cpf",
         "date": "data",
     },
-    # Rótulos de mapeval.outcomes.Outcome: só impressos, nunca gravados.
+    # Rótulos de evaluate.Outcome: só impressos, nunca gravados.
     "outcome": {
         "correct": "correto",
         "missed": "perdido",
@@ -884,3 +881,60 @@ def internal_metadata(frame: pd.DataFrame) -> dict[str, str]:
             value = internal_sentinels.get(value, value)
         metadata[key] = value
     return metadata
+
+
+# ---------------------------------------------------------------------------
+# Campos do modelo (data/target_fields.json)
+#
+# A semântica de cada campo vem do registro, não dos valores de amostra:
+# papel, famílias de tributo, qualificadores, identificadores aceitos e
+# catálogos. Campos sem catálogo ou identificador declarado não recebem essas
+# evidências por coincidência de amostras. Cabeçalhos de modelos alternativos,
+# ausentes do registro, continuam usando a inferência pelo cabeçalho.
+# ---------------------------------------------------------------------------
+
+TARGET_FIELDS_PATH = Path(__file__).resolve().parents[1] / "data" / "target_fields.json"
+
+
+@dataclass(frozen=True)
+class TargetField:
+    number: int
+    header: str
+    role: str | None
+    tax_families: tuple[str, ...]
+    tax_qualifiers: tuple[str, ...]
+    identifier_kinds: tuple[str, ...]
+    catalogs: tuple[str, ...]
+
+    @property
+    def tax_scope(self) -> tuple[str, tuple[str, ...]] | None:
+        return (self.tax_families[0], self.tax_qualifiers) if len(self.tax_families) == 1 else None
+
+
+def _load_fields() -> dict[int, TargetField]:
+    raw = json.loads(TARGET_FIELDS_PATH.read_text())
+    fields = {}
+    for number, header, role, families, qualifiers, identifiers, catalogs in raw["fields"]:
+        if number in fields:
+            raise ValueError(f"Número de campo repetido no modelo: {number}")
+        fields[number] = TargetField(number, header, role, tuple(families), tuple(qualifiers),
+                                     tuple(identifiers), tuple(catalogs))
+    return fields
+
+
+TARGET_FIELDS = _load_fields()
+_FIELDS_BY_HEADER = {field.header: field for field in TARGET_FIELDS.values()}
+_FIELDS_BY_NORMALIZED_HEADER: dict[str, list[TargetField]] = {}
+for _field in TARGET_FIELDS.values():
+    _FIELDS_BY_NORMALIZED_HEADER.setdefault(normalize_header(_field.header), []).append(_field)
+
+
+def target_field(header: object, *, number: int | None = None) -> TargetField | None:
+    """Busca por identidade explícita ou por nome; não escolhe entre nomes ambíguos."""
+    if number is not None:
+        field = TARGET_FIELDS.get(number)
+        return field if field is not None and field.header == header else None
+    if isinstance(header, str) and header in _FIELDS_BY_HEADER:
+        return _FIELDS_BY_HEADER[header]
+    matches = _FIELDS_BY_NORMALIZED_HEADER.get(normalize_header(header), [])
+    return matches[0] if len(matches) == 1 else None

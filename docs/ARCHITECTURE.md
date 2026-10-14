@@ -1,24 +1,27 @@
 # Arquitetura
 
-O fluxo principal é **exportação do cliente → relatório de mapeamento → revisão humana → planilha no layout padrão**. O mapper propõe associações; o apply copia valores; o evaluator mede os resultados disponíveis. Nenhum deles precisa encontrar uma origem para todos os campos do modelo.
+O fluxo principal é **exportação do cliente → relatório de mapeamento → revisão humana → planilha no layout padrão**. O comando `map` propõe associações; o `apply` copia valores; o `evaluate` mede os resultados disponíveis. Nenhum deles precisa encontrar uma origem para todos os campos do modelo.
 
 ## Módulos
 
+O único ponto de entrada é [`run.py`](../run.py). Cada comando chama uma função de um módulo de [`mapper/`](../mapper/), listado abaixo na ordem do fluxo:
+
 | Arquivo | Responsabilidade |
 |---|---|
-| [`spreadsheet.py`](../spreadsheet.py) | Leitura do Excel, `SheetTable`, `ColumnRef`, cabeçalhos e números de coluna. |
-| [`target_schema.py`](../target_schema.py) e [`target_fields.json`](../target_fields.json) | Identidade e semântica dos 227 campos controlados. |
-| [`invoice_mapper.py`](../invoice_mapper.py) | Scorers, perfis, evidências, decisões e gravação do relatório. |
-| [`reference_catalog.py`](../reference_catalog.py) | Carregamento, checksum, normalização e análise dos catálogos. |
-| [`mapping_steps.py`](../mapping_steps.py) | IDs, prioridade de desempate e alcance das evidências. |
-| [`mapping_review.py`](../mapping_review.py) | Combinação da proposta automática com o parecer humano. |
-| [`apply_invoice_mapping.py`](../apply_invoice_mapping.py) | Validação do relatório e geração da planilha mapeada. |
-| [`report_schema.py`](../report_schema.py) | Conversão entre identificadores internos em inglês e o schema dos arquivos em português. |
-| [`cli_ptbr.py`](../cli_ptbr.py) | Ajuda e mensagens do parser em português. |
-| [`mapeval/`](../mapeval/) | Gabaritos, classificação das associações e CLI de avaliação. |
-| [`update_reference_data.py`](../update_reference_data.py) | Atualização dos catálogos a partir das fontes configuradas. Usa a rede. |
+| [`run.py`](../run.py) | Comandos `map`, `apply`, `evaluate` e `update-catalogs`. |
+| [`mapper/spreadsheet.py`](../mapper/spreadsheet.py) | Leitura do Excel, `SheetTable`, `ColumnRef`, cabeçalhos e números de coluna. |
+| [`mapper/schema.py`](../mapper/schema.py) e [`data/target_fields.json`](../data/target_fields.json) | Conversão entre identificadores internos em inglês e o schema dos arquivos em português; identidade e semântica dos 227 campos controlados (`target_field`). |
+| [`mapper/headers.py`](../mapper/headers.py) | Normalização, sinônimos, famílias de tributo, papéis, conflitos e os scorers léxico e de embeddings. |
+| [`mapper/evidence.py`](../mapper/evidence.py) | Perfis, dígitos verificadores, aritmética fiscal, trios do cliente e leitura das análises de catálogo. |
+| [`mapper/resolver.py`](../mapper/resolver.py) | Prompt, payload e chamada ao resolver de IA. |
+| [`mapper/decide.py`](../mapper/decide.py) | `map_columns`: passagens, auditorias, regras locais, confiança, aceite e etapas de evidência (`EVIDENCE_STEPS`, `GUARDS`). |
+| [`mapper/report.py`](../mapper/report.py) | Colunas sem uso, fila de revisão, gravação do relatório e comando `map`. |
+| [`mapper/apply.py`](../mapper/apply.py) | Combinação da proposta automática com o parecer humano, validação do relatório, planilha mapeada e comando `apply`. |
+| [`mapper/catalogs.py`](../mapper/catalogs.py) | Carregamento, checksum, normalização e análise dos catálogos; comando `update-catalogs`, que usa a rede. |
+| [`mapper/evaluate.py`](../mapper/evaluate.py) | Gabaritos, classificação das associações e comando `evaluate`. |
+| [`mapper/cli.py`](../mapper/cli.py) | Ajuda e mensagens do parser em português. |
 
-Os pontos de entrada são `invoice_mapper.main`, `apply_invoice_mapping.main` e `python -m mapeval`. Os caminhos relativos do modelo e das exportações partem do diretório atual; os defaults de `reference_data` e `target_fields.json` são resolvidos ao lado dos módulos correspondentes.
+As dependências seguem o fluxo: `spreadsheet` → `schema` → `catalogs` e `headers` → `evidence` → `resolver` → `decide` → `report`; `apply` e `evaluate` ficam no topo, e `cli` não depende de nenhum. Os caminhos relativos do modelo e das exportações partem do diretório atual; os defaults de `reference_data/` e `data/target_fields.json` são resolvidos a partir da raiz do repositório.
 
 ## Identidade e semântica
 
@@ -87,13 +90,13 @@ Os trios descobertos somente nos dados do cliente também alimentam `prova_aritm
 
 ### Atribuição do método
 
-`_evidence_attribution` reúne apoio e prova. A primeira passagem atribui o aceite ao cabeçalho; `_acceptance_step` identifica o ramo usado no cálculo da segunda passagem. A prioridade de `mapping_steps` só desempata evidências objetivas de mesmo score. A explicação da concordância entre cabeçalho e aritmética não calcula outra confiança; o score final vem de `_local_final_confidence`.
+`_evidence_attribution` reúne apoio e prova. A primeira passagem atribui o aceite ao cabeçalho; `_acceptance_step` identifica o ramo usado no cálculo da segunda passagem. A prioridade de `EVIDENCE_STEPS` só desempata evidências objetivas de mesmo score. A explicação da concordância entre cabeçalho e aritmética não calcula outra confiança; o score final vem de `_local_final_confidence`.
 
 `decidido_por` fica vazio nas linhas não aceitas. `apoiado_por` pode incluir o resolver e uma prova de auditoria sem que essas etapas sejam decisivas. `metodo` identifica o caminho do pipeline. O apoio aritmético usa os scores e a quantidade de blocos alternativos em memória; a redação de `prova_aritmetica` não é interpretada como regra. `vetado_por` registra alguns bloqueios, mas ainda não é um histórico completo de todas as recusas.
 
 ## Revisão compartilhada
 
-`mapping_review.normalize_review` valida o parecer e `resolve_mapping` retorna uma `EffectiveMapping`: origem e situação após a revisão. `correto` confirma a proposta; `incorreto` exige uma origem corrigida; `inexistente` retira a associação. Uma correção preenchida sem o parecer `incorreto` é recusada.
+`apply.normalize_review` valida o parecer e `resolve_mapping` retorna uma `EffectiveMapping`: origem e situação após a revisão. `correto` confirma a proposta; `incorreto` exige uma origem corrigida; `inexistente` retira a associação. Uma correção preenchida sem o parecer `incorreto` é recusada.
 
 Apply e avaliação consomem essa decisão. Ambos rejeitam duas associações confirmadas para a mesma origem. Propostas pendentes não reservam origens. A cobertura usa a mesma precedência do parecer; uma ausência confirmada não fica pendente.
 
@@ -107,8 +110,8 @@ O evaluator exige `numero_coluna_modelo` inteiro, positivo, sem repetição, cob
 
 ## Alterar o projeto
 
-Mantenha IDs internos em inglês e use `report_schema` para apresentar nomes e valores nos arquivos. Não converta frases de apresentação de volta em regras de decisão. Textos do cliente e do revisor são preservados.
+Mantenha IDs internos em inglês e use `schema` para apresentar nomes e valores nos arquivos. Não converta frases de apresentação de volta em regras de decisão. Textos do cliente e do revisor são preservados.
 
 Use testes com scores e resolvers controlados para reproduzir uma mudança. Não ajuste thresholds ou sinônimos para um cliente específico. O golden test cobre prompt, schema e payloads da IA; atualize a fixture somente após examinar a diferença esperada. Alterar o prompt requer também atualizar `PROMPT_VERSION` e validar as decisões online.
 
-Novas colunas ou mudanças de significado no relatório precisam de entradas em `report_schema`, revisão da versão do schema e verificação dos consumidores. Os defaults completos e a ajuda ficam nas CLIs (`--help`), evitando manter outra lista de parâmetros desatualizada.
+Novas colunas ou mudanças de significado no relatório precisam de entradas em `schema`, revisão da versão do schema e verificação dos consumidores. Os defaults completos e a ajuda ficam nas CLIs (`--help`), evitando manter outra lista de parâmetros desatualizada.

@@ -1,24 +1,33 @@
-"""Verifica as regras de avaliação e as métricas da baseline dos relatórios arquivados."""
+"""Testes de ``mapper/evaluate.py``: gabaritos, classificação e comando evaluate."""
 
 from __future__ import annotations
 
-import re
+from dataclasses import asdict
 import json
 from pathlib import Path
+import re
 
 import openpyxl
 import pytest
 
-import report_schema
-from mapeval import cli
-from mapeval.excel import (
+from mapper import evaluate, schema
+from mapper.evaluate import (
+    KEY_CORRECTIONS,
+    AnswerKey,
+    Outcome,
+    Row,
+    Score,
+    classify,
     column_letter_to_index,
+    decision_census,
     index_to_column_letter,
+    load_answer_key,
     parse_coluna_annotation,
+    read_mappings,
+    score_report,
 )
-from mapeval.outcomes import Outcome, classify
-from mapeval.score import Row, Score, decision_census, read_mappings, score_report
-from mapeval.truth import KEY_CORRECTIONS, AnswerKey, load_answer_key
+
+from support import report_files
 
 ROOT = Path(__file__).resolve().parent.parent
 KEYED = {
@@ -239,11 +248,11 @@ def _synthetic_report(path: Path, proof: str) -> Path:
     fields = list(_SYNTHETIC_ROWS[0])
     book = openpyxl.Workbook()
     sheet = book.active
-    sheet.title = report_schema.sheet_name("mappings")
-    sheet.append([report_schema.header_label("mappings", field) for field in fields])
+    sheet.title = schema.sheet_name("mappings")
+    sheet.append([schema.header_label("mappings", field) for field in fields])
     for number, row in enumerate(_SYNTHETIC_ROWS, start=1):
         values = dict(row, arithmetic_proof=proof if number == 1 else None)
-        values = {f: report_schema.external_value("mappings", f, v) for f, v in values.items()}
+        values = {f: schema.external_value("mappings", f, v) for f, v in values.items()}
         sheet.append([values[field] for field in fields])
     book.save(path)
     return path
@@ -275,7 +284,7 @@ def test_a_half_translated_report_is_refused(tmp_path: Path) -> None:
     # inglês numa aba em português.
     path = _synthetic_report(tmp_path / "pt.xlsx", "")
     book = openpyxl.load_workbook(path)
-    book.active.title = report_schema.LEGACY_SHEETS["mappings"]
+    book.active.title = schema.LEGACY_SHEETS["mappings"]
     book.save(path)
     with pytest.raises(ValueError, match="formato antigo"):
         read_mappings(path)
@@ -311,7 +320,7 @@ def test_datasul_counts_recorded_winners_even_when_the_audit_proof_is_ambiguous(
 
 @requires_workbooks
 def test_cli_prints_portuguese_figures(capsys: pytest.CaptureFixture[str]) -> None:
-    assert cli.main(["--root", str(ROOT), "--client", "oracle", "--show-losses"]) == 0
+    assert evaluate.main(["--root", str(ROOT), "--client", "oracle", "--show-losses"]) == 0
     text = capsys.readouterr().out
     assert "TOTAL COM GABARITO  encontrados" in text
     assert "aceites decididos por evidência objetiva" in text
@@ -321,32 +330,32 @@ def test_cli_prints_portuguese_figures(capsys: pytest.CaptureFixture[str]) -> No
 
 
 def test_percentages_use_a_decimal_comma_and_keep_their_width() -> None:
-    assert cli._pct(0.8) == " 80,0%"
-    assert cli._pct(1.0) == "100,0%"
-    assert cli._pct(0.0) == "  0,0%"
-    assert cli._pct(None) == "  n/d "
-    assert cli._decimal(0.8999) == "0,8999"
-    assert cli._decimal(None) == "n/d"
+    assert evaluate._pct(0.8) == " 80,0%"
+    assert evaluate._pct(1.0) == "100,0%"
+    assert evaluate._pct(0.0) == "  0,0%"
+    assert evaluate._pct(None) == "  n/d "
+    assert evaluate._decimal(0.8999) == "0,8999"
+    assert evaluate._decimal(None) == "n/d"
 
 
 def test_every_outcome_has_a_portuguese_label_that_fits_its_column() -> None:
-    assert set(cli.OUTCOME_LABELS) == set(Outcome)
-    assert cli.OUTCOME_LABELS[Outcome.WRONG_COLUMN] == "coluna_errada"
-    assert cli.OUTCOME_LABELS[Outcome.MISSED] == "perdido"
+    assert set(evaluate.OUTCOME_LABELS) == set(Outcome)
+    assert evaluate.OUTCOME_LABELS[Outcome.WRONG_COLUMN] == "coluna_errada"
+    assert evaluate.OUTCOME_LABELS[Outcome.MISSED] == "perdido"
     # --show-losses só lista perdidas e colunas erradas, numa coluna de 14
     # caracteres alinhada com "retido".
     assert all(
-        len(cli.OUTCOME_LABELS[outcome]) <= 14
+        len(evaluate.OUTCOME_LABELS[outcome]) <= 14
         for outcome in (Outcome.MISSED, Outcome.WRONG_COLUMN)
     )
 
 
 def test_help_is_in_portuguese(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as exit_info:
-        cli.main(["--help"])
+        evaluate.main(["--help"])
     assert exit_info.value.code == 0
     text = capsys.readouterr().out
-    assert text.startswith("uso: python -m mapeval")
+    assert text.startswith("uso: run.py evaluate")
     assert "opções:" in text
     assert "mostra esta mensagem de ajuda e sai" in text
     assert "--show-losses" in text and "--strict-key-only" in text
@@ -400,3 +409,42 @@ def test_a_human_correction_does_not_inherit_the_old_winning_method(tmp_path):
     score = score_report(path, _synthetic_client(tmp_path / "client.xlsx"), AnswerKey("synthetic", {}))
     assert score.rows[0].decided_by is None
     assert score.rows[0].objective_decision is None
+
+
+def test_evaluation_is_invariant_to_report_row_order(tmp_path):
+    rows = [dict(model_column_number=1, model_column="Target A", status="accepted"),
+            dict(model_column_number=2, model_column="Target B", client_column_number=2,
+                 client_column="Source B", status="accepted")]
+    client, report = report_files(tmp_path, rows)
+    key = AnswerKey("synthetic", {1: 1, 2: 2})
+    before = score_report(report, client, key)
+    report_files(tmp_path, rows[::-1])
+    after = score_report(report, client, key)
+    assert asdict(before) == asdict(after)
+    assert after.delivered_correct == 2
+
+
+@pytest.mark.parametrize("numbers", [[1, 1], [1, 0], [1, 1.5], [1, None], [1, "invalid"], [1, 3]])
+def test_evaluation_rejects_invalid_field_identity(tmp_path, numbers):
+    client, report = report_files(tmp_path, [
+        dict(model_column_number=n, model_column=f"Target {i}") for i, n in enumerate(numbers)
+    ])
+    with pytest.raises(ValueError, match="numero_coluna_modelo"):
+        score_report(report, client, AnswerKey("synthetic", {}))
+
+
+def test_reviewer_cannot_confirm_the_same_source_for_two_fields(tmp_path):
+    client, report = report_files(tmp_path, [
+        dict(model_column_number=1, model_column="Target A", reviewer_status="correct"),
+        dict(model_column_number=2, model_column="Target B", reviewer_status="correct"),
+    ])
+    with pytest.raises(ValueError, match="mais de um destino"):
+        score_report(report, client, AnswerKey("synthetic", {}))
+
+
+def test_answer_key_reuse_is_flagged_without_changing_the_key():
+    for name, source, targets in [("datasul", 8, [39, 147]), ("oracle", 23, [100, 190])]:
+        key = load_answer_key(f"data/keys/de_para_{name}.xlsx", name)
+        assert key.source_conflicts == {source: targets}
+        assert all(key.present[target] == source for target in targets)
+    assert AnswerKey("synthetic", {1: 1, 2: 2}).source_conflicts == {}
