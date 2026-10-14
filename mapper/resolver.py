@@ -1,4 +1,4 @@
-"""Etapa 4: resolvedor de IA.
+"""Etapa 4: resolver de IA.
 
 Recebe a coluna do modelo, as candidatas do cliente e suas evidências; monta o
 payload, consulta a OpenAI e devolve um ``DataMappingDecision``. O resolver só

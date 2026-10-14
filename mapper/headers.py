@@ -441,7 +441,7 @@ def describe_header_conflict_pt(left: object, right: object) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Pontuação dos cabeçalhos
+# Score dos cabeçalhos
 # ---------------------------------------------------------------------------
 
 
@@ -479,7 +479,7 @@ class OpenAIEmbeddingHeaderScorer:
     """Avaliador de cabeçalhos por embeddings da OpenAI (similaridade de cosseno).
 
     O prefixo enviado com cada cabeçalho fica em inglês, byte a byte: mudá-lo
-    mudaria os vetores e as pontuações de nome.
+    mudaria os vetores e os scores de nome.
     """
 
     def __init__(

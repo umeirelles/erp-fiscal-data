@@ -208,7 +208,7 @@ REASON_VACUITY = (
 
 
 # ---------------------------------------------------------------------------
-# Etapas de evidência e travas: os IDs de apoiado_por, decidido_por e vetado_por
+# Etapas de evidência e guards: os IDs de apoiado_por, decidido_por e vetado_por
 # ---------------------------------------------------------------------------
 
 
@@ -404,7 +404,7 @@ class _MappingRun:
     client_table: SheetTable
     config: MapperConfig
     reference_catalogs: ReferenceCatalogs | None
-    #: Pontuação de nome, modelo x cliente.
+    #: Score de nome, modelo x cliente.
     similarities: np.ndarray
     #: Etapa de cabeçalho: "lexical" com o avaliador léxico, "semantic" com qualquer outro.
     header_step: str

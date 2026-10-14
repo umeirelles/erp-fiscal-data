@@ -216,7 +216,7 @@ def load_answer_key(
 
 
 # ---------------------------------------------------------------------------
-# Pontuação de um relatório
+# Score de um relatório
 #
 #
 # A leitura passa por ``schema``, que devolve os cabeçalhos com os nomes

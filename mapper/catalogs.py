@@ -40,7 +40,7 @@ UPDATE_DESCRIPTION = (
 # Escolha dos catálogos, normalização dos códigos e análise de uma coluna
 # ---------------------------------------------------------------------------
 
-#: Abaixo deste número de valores preenchidos a pontuação é atenuada (raiz quadrada).
+#: Abaixo deste número de valores preenchidos o score é atenuado (raiz quadrada).
 _FULL_WEIGHT_SAMPLE = 5.0
 #: Limites de quantidade e tamanho dos exemplos de códigos fora do catálogo.
 _MAX_INVALID_EXAMPLES = 3

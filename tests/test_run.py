@@ -1,4 +1,4 @@
-"""Testes de ``run.py``: o ponto de entrada único e o encaminhamento dos comandos."""
+"""Testes de ``run.py``: o entry point único e o encaminhamento dos comandos."""
 
 from __future__ import annotations
 

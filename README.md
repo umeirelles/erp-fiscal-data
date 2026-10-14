@@ -4,7 +4,7 @@
 
 O programa associa cada coluna de uma exportação de ERP do cliente a um dos 227 campos do modelo da consultoria, [`data/model.xlsx`](data/model.xlsx). Aceita sozinho só o que tem evidência decisiva e deixa o resto para revisão humana. Depois copia os valores para o layout do modelo, sem alterar nem inventar dados.
 
-Tudo passa por um único ponto de entrada, [`run.py`](run.py), com quatro comandos:
+Tudo passa por um único entry point, [`run.py`](run.py), com quatro comandos:
 
 | Comando | O que faz |
 |---|---|
@@ -21,7 +21,7 @@ Tudo passa por um único ponto de entrada, [`run.py`](run.py), com quatro comand
 | [`schema.py`](mapper/schema.py) | Vocabulário dos arquivos em português e campos do modelo ([`data/target_fields.json`](data/target_fields.json)). |
 | [`headers.py`](mapper/headers.py) | 2. Normalizar e pontuar cabeçalhos: sinônimos, tributos, papéis, conflitos, scorers léxico e de embeddings. |
 | [`evidence.py`](mapper/evidence.py) | 3. Evidências nos valores: perfis, dígitos verificadores, aritmética fiscal e catálogos. |
-| [`resolver.py`](mapper/resolver.py) | 4. Resolvedor de IA: prompt e payload enviados à OpenAI. |
+| [`resolver.py`](mapper/resolver.py) | 4. Resolver de IA: prompt e payload enviados à OpenAI. |
 | [`decide.py`](mapper/decide.py) | 5. `map_columns`: passagens, auditorias, regras locais, confiança e threshold. |
 | [`report.py`](mapper/report.py) | 6. Gravar o relatório (comando `map`). |
 | [`apply.py`](mapper/apply.py) | 7. Aplicar o relatório revisado (comando `apply`). |

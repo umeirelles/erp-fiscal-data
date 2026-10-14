@@ -1,4 +1,4 @@
-"""Ponto de entrada único do mapeador de planilhas fiscais.
+"""Entry point único do mapeador de planilhas fiscais.
 
 Cada comando chama uma função de um módulo de ``mapper/``; as opções de cada um
 aparecem em ``python run.py COMANDO --help``.

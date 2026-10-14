@@ -226,7 +226,7 @@ METADATA_SENTINEL_KEYS: frozenset[str] = frozenset(
 
 
 # ---------------------------------------------------------------------------
-# Etapas da análise e travas
+# Etapas da análise e guards
 # ---------------------------------------------------------------------------
 
 #: Etapas de evidência (ids de decide.EVIDENCE_STEPS) -> id gravado.
@@ -240,7 +240,7 @@ STEP_IDS: dict[str, str] = {
     "arithmetic": "aritmetica",
 }
 
-#: Travas (ids de decide.GUARDS) -> id gravado.
+#: Guards (ids de decide.GUARDS) -> id gravado.
 GUARD_IDS: dict[str, str] = {
     "vacuity": "coluna_vazia",
     "family_conflict": "conflito_tributario",
@@ -295,7 +295,7 @@ ENUMS: dict[str, dict[str, str]] = {
         # humano de que o cliente não tem este campo.
         "no_mapping_exists": "inexistente",
     },
-    # Id da trava que recusou a linha.
+    # Id do guard que recusou a linha.
     "vetoed_by": GUARD_IDS,
     # Ids de reference_data/manifest.json; os arquivos de lá não mudam.
     "catalog_name": {
@@ -680,7 +680,7 @@ def header_label(table: str, field: str) -> str:
 def _legacy_report_error(found: str) -> ValueError:
     return ValueError(
         f"O relatório está no formato antigo, em inglês (versão {SCHEMA_VERSION_LEGACY} do "
-        f"esquema): {found}. Só o esquema em português (versão {SCHEMA_VERSION_PT}) é lido. "
+        f"schema): {found}. Só o schema em português (versão {SCHEMA_VERSION_PT}) é lido. "
         f"Para converter o relatório, use o migrate_reports.py do commit {MIGRATION_COMMIT}: "
         f"git worktree add /tmp/cbs-{MIGRATION_COMMIT} {MIGRATION_COMMIT} e, dentro dessa "
         "pasta, python migrate_reports.py RELATORIO EXPORTACAO, que reescreve o relatório "

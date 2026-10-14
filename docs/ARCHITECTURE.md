@@ -4,7 +4,7 @@ O fluxo principal é **exportação do cliente → relatório de mapeamento → 
 
 ## Módulos
 
-O único ponto de entrada é [`run.py`](../run.py). Cada comando chama uma função de um módulo de [`mapper/`](../mapper/), listado abaixo na ordem do fluxo:
+O único entry point é [`run.py`](../run.py). Cada comando chama uma função de um módulo de [`mapper/`](../mapper/), listado abaixo na ordem do fluxo:
 
 | Arquivo | Responsabilidade |
 |---|---|

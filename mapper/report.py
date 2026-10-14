@@ -589,7 +589,7 @@ def build_parser() -> PortugueseArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Ponto de entrada da CLI; devolve 0 em caso de sucesso.
+    """Entry point da CLI; devolve 0 em caso de sucesso.
 
     Erros de valor e de arquivo saem com uma mensagem em português e código 1,
     sem traceback.

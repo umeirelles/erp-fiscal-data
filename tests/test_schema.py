@@ -594,7 +594,7 @@ def test_an_old_english_report_is_refused_with_the_conversion_hint(tmp_path) -> 
     pd.DataFrame([["CFOP"], ["5102"]]).to_excel(model_path, header=False, index=False)
     pd.DataFrame([["CFOP source"], ["5102"]]).to_excel(client_path, header=False, index=False)
     hint = (
-        r"formato antigo, em inglês \(versão 2 do esquema\).*esquema em português \(versão 3\)"
+        r"formato antigo, em inglês \(versão 2 do schema\).*schema em português \(versão 3\)"
         r".*migrate_reports\.py do commit 5fe5092: git worktree add /tmp/cbs-5fe5092 5fe5092"
     )
 

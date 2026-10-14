@@ -259,7 +259,7 @@ def _synthetic_report(path: Path, proof: str) -> Path:
 
 
 def test_a_report_scores_without_the_client_workbooks(tmp_path: Path) -> None:
-    # Relatório em português; a pontuação volta ao vocabulário interno.
+    # Relatório em português; o score volta ao vocabulário interno.
     client = _synthetic_client(tmp_path / "cliente.xlsx")
     key = AnswerKey(client="sintetico", present={1: 1, 2: 3})
     portuguese = score_report(

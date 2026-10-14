@@ -444,7 +444,7 @@ def test_a_correction_outside_the_incorrect_branch_is_refused(files) -> None:
 
 
 def test_confirming_a_row_that_names_no_column_is_refused(files) -> None:
-    # Sem a trava, a linha entregaria uma coluna vazia marcada como confirmada pelo revisor.
+    # Sem o guard, a linha entregaria uma coluna vazia marcada como confirmada pelo revisor.
     write_inputs(files)
     mapping = mapping_rows()
     mapping.loc[2, "reviewer_status"] = "correct"

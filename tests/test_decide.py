@@ -561,7 +561,7 @@ def test_distinctive_rows_can_override_a_bogus_client_header() -> None:
 
 
 def test_the_report_names_the_step_that_carried_each_decision() -> None:
-    # As etapas saem das mesmas pontuações em que a decisão foi tomada.
+    # As etapas saem dos mesmos scores em que a decisão foi tomada.
     base = [1000.0 + index for index in range(60)]
     model = table(["Base ICMS", "Aliquota ICMS", "Valor ICMS", "Série"], [])
     client = table(
@@ -659,7 +659,7 @@ def test_a_catalog_decision_explains_itself_in_portuguese() -> None:
 
 def test_a_vacuous_proposal_names_the_column_in_portuguese() -> None:
     # A segunda ocorrência de 'Nº FCI' corresponde exatamente pelo cabeçalho e
-    # está vazia: a trava de coluna vazia recusa o aceite e a justificativa
+    # está vazia: o guard de coluna vazia recusa o aceite e a justificativa
     # cita a coluna com o sufixo em português; em memória ele segue em inglês.
     model = table(["Nº FCI"], [["A1"], ["B2"]])
     client = table(["Outra", "Nº FCI", "Nº FCI"], [["x", "F1", None], ["y", "F2", None]])

@@ -2,5 +2,5 @@
 
 spreadsheet → schema → headers → evidence → resolver → decide → report → apply;
 catalogs fornece as tabelas oficiais, evaluate mede os relatórios com os gabaritos
-e cli traduz o argparse. O ponto de entrada é ``run.py``, na raiz do repositório.
+e cli traduz o argparse. O entry point é ``run.py``, na raiz do repositório.
 """
