@@ -1,34 +1,44 @@
-"""Testa as conversões do schema e as mensagens da CLI em português.
+"""Testes de ``mapper/schema.py``: vocabulário dos arquivos e campos do modelo.
 
-Os testes de introspecção verificam se os campos e valores gravados pelo
-código têm correspondência nas tabelas do schema.
+Os testes de introspecção verificam se os campos e valores gravados pelo código
+têm correspondência nas tabelas do schema.
 """
 
 from __future__ import annotations
 
-import argparse
 import ast
 import dataclasses
+import json
 import math
-import re
 from pathlib import Path
+import re
 
 import openpyxl
 import pandas as pd
 import pytest
 
-import apply_invoice_mapping
-import invoice_mapper
-import mapping_steps
-import report_schema as rs
-from cli_ptbr import PortugueseArgumentParser
-from invoice_mapper import (
-    AdjudicationRow,
+from mapper import apply, report, schema
+from mapper.decide import (
+    EVIDENCE_STEPS,
+    GUARDS,
+    STEPS_BY_ID,
     MappingResult,
-    REVIEWER_COLUMNS,
-    UnmatchedColumn,
+    deciding_step,
+    format_steps,
+    rests_only_on_headers,
 )
-from mapeval.score import read_mappings
+from mapper.evaluate import read_mappings
+from mapper.report import (
+    REVIEWER_COLUMNS,
+    WHY_HELD_BELOW_THRESHOLD,
+    WHY_HELD_NAME_ONLY,
+    WHY_HELD_VACUOUS,
+    AdjudicationRow,
+    UnmatchedColumn,
+    summarize_adjudication_queue,
+)
+from mapper.schema import target_field
+from mapper.spreadsheet import ColumnRef, SheetTable
 
 ROOT = Path(__file__).resolve().parent.parent
 SNAKE_CASE = re.compile(r"[a-z0-9]+(?:_[a-z0-9]+)*")
@@ -46,7 +56,7 @@ REPORT_TABLES = ("mappings", "run_metadata", "unmatched", "queue")
 
 def test_sheet_names_are_legal_in_excel(tmp_path) -> None:
     book = openpyxl.Workbook()
-    for portuguese in rs.SHEETS.values():
+    for portuguese in schema.SHEETS.values():
         assert len(portuguese) <= 31, portuguese
         assert not set(portuguese) & set(":\\/?*[]"), portuguese
         assert not portuguese.startswith("'") and not portuguese.endswith("'")
@@ -55,45 +65,45 @@ def test_sheet_names_are_legal_in_excel(tmp_path) -> None:
     book.save(path)
 
     reloaded = openpyxl.load_workbook(path).sheetnames
-    assert set(rs.SHEETS.values()) <= set(reloaded)
-    assert len(set(rs.SHEETS.values())) == len(rs.SHEETS)
+    assert set(schema.SHEETS.values()) <= set(reloaded)
+    assert len(set(schema.SHEETS.values())) == len(schema.SHEETS)
 
 
 def test_headers_are_snake_case_ascii() -> None:
-    for table, columns in rs.COLUMNS.items():
+    for table, columns in schema.COLUMNS.items():
         for portuguese in columns.values():
             if table == "mapped_data":
                 assert portuguese == "__info_mapeamento__"
                 continue
             assert SNAKE_CASE.fullmatch(portuguese), (table, portuguese)
-    for portuguese in rs.METADATA_KEYS.values():
+    for portuguese in schema.METADATA_KEYS.values():
         assert SNAKE_CASE.fullmatch(portuguese), portuguese
 
 
 def test_no_portuguese_name_equals_a_legacy_one() -> None:
     # Os nomes internos são os do formato antigo, pelos quais ele é recusado.
     legacy = (
-        {field for columns in rs.COLUMNS.values() for field in columns}
-        | set(rs.METADATA_KEYS)
-        | set(rs.LEGACY_SHEETS.values())
+        {field for columns in schema.COLUMNS.values() for field in columns}
+        | set(schema.METADATA_KEYS)
+        | set(schema.LEGACY_SHEETS.values())
     )
     portuguese = (
-        {name for columns in rs.COLUMNS.values() for name in columns.values()}
-        | set(rs.METADATA_KEYS.values())
-        | set(rs.SHEETS.values())
+        {name for columns in schema.COLUMNS.values() for name in columns.values()}
+        | set(schema.METADATA_KEYS.values())
+        | set(schema.SHEETS.values())
     )
     assert not legacy & portuguese, sorted(legacy & portuguese)
-    assert set(rs.LEGACY_SHEETS) <= set(rs.SHEETS)
+    assert set(schema.LEGACY_SHEETS) <= set(schema.SHEETS)
 
 
 def test_headers_and_keys_are_distinct_within_each_table() -> None:
-    for table, columns in rs.COLUMNS.items():
+    for table, columns in schema.COLUMNS.items():
         assert len(set(columns.values())) == len(columns), table
-    assert len(set(rs.METADATA_KEYS.values())) == len(rs.METADATA_KEYS)
+    assert len(set(schema.METADATA_KEYS.values())) == len(schema.METADATA_KEYS)
 
 
 def test_enum_values_are_distinct_and_translation_is_idempotent() -> None:
-    for name, values in rs.ENUMS.items():
+    for name, values in schema.ENUMS.items():
         assert len(set(values.values())) == len(values), name
         for internal, portuguese in values.items():
             # Um valor gravado que também é chave do enum precisa ser a
@@ -105,17 +115,17 @@ def test_enum_values_are_distinct_and_translation_is_idempotent() -> None:
 
 
 def test_every_field_kind_names_a_column_and_an_enum() -> None:
-    for table, kinds in rs.FIELD_KIND.items():
-        assert set(kinds) <= set(rs.COLUMNS[table]), table
+    for table, kinds in schema.FIELD_KIND.items():
+        assert set(kinds) <= set(schema.COLUMNS[table]), table
         for kind in kinds.values():
             if kind.startswith("enum:"):
-                assert kind.split(":", 1)[1] in rs.ENUMS, kind
+                assert kind.split(":", 1)[1] in schema.ENUMS, kind
 
 
 def test_step_ids_are_snake_case_and_distinct() -> None:
-    portuguese = list(rs.ALL_STEP_IDS.values())
+    portuguese = list(schema.ALL_STEP_IDS.values())
     assert len(set(portuguese)) == len(portuguese)
-    assert not set(portuguese) & set(rs.ALL_STEP_IDS)
+    assert not set(portuguese) & set(schema.ALL_STEP_IDS)
     for step in portuguese:
         assert SNAKE_CASE.fullmatch(step), step
 
@@ -127,53 +137,55 @@ def test_step_ids_are_snake_case_and_distinct() -> None:
 
 def test_every_mapping_result_field_has_a_header() -> None:
     fields = [field.name for field in dataclasses.fields(MappingResult)] + list(REVIEWER_COLUMNS)
-    assert fields == list(rs.COLUMNS["mappings"])
+    assert fields == list(schema.COLUMNS["mappings"])
 
 
 def test_every_unmatched_column_field_has_a_header() -> None:
     fields = [field.name for field in dataclasses.fields(UnmatchedColumn)]
-    assert fields == list(rs.COLUMNS["unmatched"])
+    assert fields == list(schema.COLUMNS["unmatched"])
 
 
 def test_every_adjudication_row_field_has_a_header() -> None:
     fields = [field.name for field in dataclasses.fields(AdjudicationRow)]
-    assert fields == list(rs.COLUMNS["queue"])
+    assert fields == list(schema.COLUMNS["queue"])
 
 
 def test_every_banner_row_has_a_label() -> None:
-    fields = [field for _, field in apply_invoice_mapping.MAPPING_METADATA]
-    assert fields == list(rs.COLUMNS["banner"])
-    assert set(fields) <= set(rs.COLUMNS["mappings"])
+    fields = [field for _, field in apply.MAPPING_METADATA]
+    assert fields == list(schema.COLUMNS["banner"])
+    assert set(fields) <= set(schema.COLUMNS["mappings"])
 
 
 def test_every_portuguese_verdict_reads_back_as_an_internal_one() -> None:
-    verdicts = rs.ENUMS["reviewer_status"]
-    assert {rs.normalize_reviewer_status(pt) for pt in verdicts.values()} == set(verdicts)
+    verdicts = schema.ENUMS["reviewer_status"]
+    assert {schema.normalize_reviewer_status(pt) for pt in verdicts.values()} == set(verdicts)
     assert set(verdicts) == {"", "correct", "incorrect", "no_mapping_exists"}
 
 
 def test_every_analysis_step_and_guard_has_a_translation() -> None:
-    assert {step.id for step in mapping_steps.EVIDENCE_STEPS} == set(rs.STEP_IDS)
-    assert {step.id for step in mapping_steps.GUARDS} == set(rs.GUARD_IDS)
-    assert set(mapping_steps.STEPS_BY_ID) <= set(rs.ALL_STEP_IDS)
+    assert {step.id for step in EVIDENCE_STEPS} == set(schema.STEP_IDS)
+    assert {step.id for step in GUARDS} == set(schema.GUARD_IDS)
+    assert set(STEPS_BY_ID) <= set(schema.ALL_STEP_IDS)
 
 
 def test_every_status_and_method_literal_has_a_translation() -> None:
-    source = (ROOT / "invoice_mapper.py").read_text(encoding="utf-8")
+    source = "\n".join(
+        path.read_text(encoding="utf-8") for path in sorted((ROOT / "mapper").glob("*.py"))
+    )
     statuses = set(re.findall(r'status="(\w+)"', source))
     methods = set(re.findall(r'method="(\w+)"', source))
     assert statuses and methods
-    assert statuses <= set(rs.ENUMS["status"])
-    assert methods <= set(rs.ENUMS["method"])
+    assert statuses <= set(schema.ENUMS["status"])
+    assert methods <= set(schema.ENUMS["method"])
 
 
 def test_every_queue_reason_has_a_translation() -> None:
     # Uma linha por ramo de why_held: abaixo do threshold, só nome (confiança
     # presa logo abaixo do threshold) e coluna proposta vazia.
-    client = invoice_mapper.SheetTable(
+    client = SheetTable(
         columns=[
-            invoice_mapper.ColumnRef("column_001", 0, "Cheia", 1),
-            invoice_mapper.ColumnRef("column_002", 1, "Vazia", 1),
+            ColumnRef("column_001", 0, "Cheia", 1),
+            ColumnRef("column_002", 1, "Vazia", 1),
         ],
         data=pd.DataFrame([[1, None], [2, None]]),
     )
@@ -187,7 +199,7 @@ def test_every_queue_reason_has_a_translation() -> None:
             status="review", reason="",
         )
 
-    rows = invoice_mapper.summarize_adjudication_queue(
+    rows = summarize_adjudication_queue(
         client_table=client,
         results=[proposal(1, 1, 0.5), proposal(2, 1, 0.8999), proposal(3, 2, 0.95)],
         final_threshold=0.9,
@@ -195,9 +207,9 @@ def test_every_queue_reason_has_a_translation() -> None:
     )
     held = {row.why_held for row in rows}
     assert held == {
-        invoice_mapper.WHY_HELD_BELOW_THRESHOLD,
-        invoice_mapper.WHY_HELD_NAME_ONLY,
-        invoice_mapper.WHY_HELD_VACUOUS,
+        WHY_HELD_BELOW_THRESHOLD,
+        WHY_HELD_NAME_ONLY,
+        WHY_HELD_VACUOUS,
     }
 
 
@@ -213,8 +225,8 @@ def test_every_run_metadata_key_and_sentinel_has_a_translation(tmp_path, monkeyp
     def capture(results, output_path, metadata=None, unmatched=None, queue=None):
         written.update(metadata or {})
 
-    monkeypatch.setattr(invoice_mapper, "write_results", capture)
-    invoice_mapper.main(
+    monkeypatch.setattr(report, "write_results", capture)
+    report.main(
         [
             str(client_path),
             "--model", str(model_path),
@@ -225,9 +237,9 @@ def test_every_run_metadata_key_and_sentinel_has_a_translation(tmp_path, monkeyp
     )
 
     assert written
-    assert set(written) <= set(rs.METADATA_KEYS)
-    for key in rs.METADATA_SENTINEL_KEYS:
-        assert written[key] in rs.METADATA_SENTINELS, (key, written[key])
+    assert set(written) <= set(schema.METADATA_KEYS)
+    for key in schema.METADATA_SENTINEL_KEYS:
+        assert written[key] in schema.METADATA_SENTINELS, (key, written[key])
 
 
 # ---------------------------------------------------------------------------
@@ -319,7 +331,7 @@ def _internal_queue() -> pd.DataFrame:
 
 def _one_way(table: str, field: str) -> bool:
     """O parecer do revisor só é traduzido na gravação; na leitura passa como foi digitado."""
-    return rs.FIELD_KIND.get(table, {}).get(field, "") == "enum:reviewer_status"
+    return schema.FIELD_KIND.get(table, {}).get(field, "") == "enum:reviewer_status"
 
 
 @pytest.mark.parametrize(
@@ -333,10 +345,10 @@ def _one_way(table: str, field: str) -> bool:
 def test_internal_to_portuguese_and_back_is_lossless(table, frame) -> None:
     original = frame.copy()
 
-    external = rs.to_external_frame(frame, table)
+    external = schema.to_external_frame(frame, table)
 
-    assert list(external.columns) == [rs.COLUMNS[table][name] for name in frame.columns]
-    back = rs.to_internal_frame(external, table)
+    assert list(external.columns) == [schema.COLUMNS[table][name] for name in frame.columns]
+    back = schema.to_internal_frame(external, table)
     assert list(back.columns) == list(frame.columns)
     for column in frame.columns:
         if _one_way(table, column):
@@ -344,12 +356,12 @@ def test_internal_to_portuguese_and_back_is_lossless(table, frame) -> None:
         assert back[column].equals(frame[column]), column
     if table == "mappings":
         # O parecer volta como foi gravado; quem lê o normaliza.
-        assert [rs.normalize_reviewer_status(v) for v in back["reviewer_status"]] == (
+        assert [schema.normalize_reviewer_status(v) for v in back["reviewer_status"]] == (
             frame["reviewer_status"].tolist()
         )
     # Nenhuma das conversões altera o DataFrame recebido.
     assert frame.equals(original)
-    assert rs.to_internal_frame(external, table).equals(back)
+    assert schema.to_internal_frame(external, table).equals(back)
 
 
 def _blank_as_none(values: list[object]) -> list[object]:
@@ -360,34 +372,34 @@ def _blank_as_none(values: list[object]) -> list[object]:
 def test_a_report_written_in_portuguese_reads_back_through_excel(tmp_path) -> None:
     path = tmp_path / "relatorio.xlsx"
     tables = {"mappings": _internal_mappings(), "unmatched": _internal_unmatched(), "queue": _internal_queue()}
-    metadata = {"mapping_schema_version": rs.SCHEMA_VERSION_PT, "reference_manifest_sha256": "disabled"}
+    metadata = {"mapping_schema_version": schema.SCHEMA_VERSION_PT, "reference_manifest_sha256": "disabled"}
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
-        rs.to_external_frame(tables["mappings"], "mappings").to_excel(
-            writer, sheet_name=rs.sheet_name("mappings"), index=False
+        schema.to_external_frame(tables["mappings"], "mappings").to_excel(
+            writer, sheet_name=schema.sheet_name("mappings"), index=False
         )
-        rs.to_external_metadata(metadata).to_excel(
-            writer, sheet_name=rs.sheet_name("run_metadata"), index=False
+        schema.to_external_metadata(metadata).to_excel(
+            writer, sheet_name=schema.sheet_name("run_metadata"), index=False
         )
         for table in ("unmatched", "queue"):
-            rs.to_external_frame(tables[table], table).to_excel(
-                writer, sheet_name=rs.sheet_name(table), index=False
+            schema.to_external_frame(tables[table], table).to_excel(
+                writer, sheet_name=schema.sheet_name(table), index=False
             )
 
     book = pd.read_excel(path, sheet_name=None, dtype=object)
     names = list(book)
     assert names == ["Mapeamentos", "Metadados da Execução", "Colunas do Cliente sem Uso", "Fila de Revisão"]
     for table, frame in tables.items():
-        back = rs.to_internal_frame(book[rs.find_sheet(names, table)], table)
+        back = schema.to_internal_frame(book[schema.find_sheet(names, table)], table)
         for column in frame.columns:
             if _one_way(table, column):
                 continue
             assert _blank_as_none(back[column].tolist()) == _blank_as_none(frame[column].tolist()), column
-    read_metadata = rs.internal_metadata(book[rs.find_sheet(names, "run_metadata")])
+    read_metadata = schema.internal_metadata(book[schema.find_sheet(names, "run_metadata")])
     assert read_metadata == {"mapping_schema_version": "3", "reference_manifest_sha256": "disabled"}
 
 
 def test_the_external_mappings_frame_is_in_portuguese() -> None:
-    external = rs.to_external_frame(_internal_mappings(), "mappings").to_dict("records")
+    external = schema.to_external_frame(_internal_mappings(), "mappings").to_dict("records")
 
     assert [row["situacao"] for row in external] == ["aceito", "revisao", "sem_correspondencia", "revisao"]
     assert [row["metodo"] for row in external] == ["catalogo", "dados", "somente_nome", "erro_dados"]
@@ -411,7 +423,7 @@ def test_the_external_mappings_frame_is_in_portuguese() -> None:
 
 
 def test_the_external_side_tables_are_in_portuguese() -> None:
-    unmatched = rs.to_external_frame(_internal_unmatched(), "unmatched").to_dict("records")
+    unmatched = schema.to_external_frame(_internal_unmatched(), "unmatched").to_dict("records")
     assert unmatched[0]["coluna_cliente"] == "Direito (ocorrência 3)"
     assert unmatched[0]["disposicao"] == "proposta_nao_aceita"
     assert unmatched[0]["prioridade_revisao"] == "prioritaria"
@@ -421,7 +433,7 @@ def test_the_external_side_tables_are_in_portuguese() -> None:
     assert unmatched[1]["prioridade_revisao"] == "baixa"
     assert unmatched[1]["sinais"] == ""
 
-    queue = rs.to_external_frame(_internal_queue(), "queue").to_dict("records")
+    queue = schema.to_external_frame(_internal_queue(), "queue").to_dict("records")
     assert queue[0]["coluna_cliente_proposta"] == "Valor ICMS (ocorrência 2)"
     assert queue[0]["motivo_retencao"] == "abaixo do limiar de aceite"
     assert queue[0]["amostra_valores_cliente"] == "1 | 2"
@@ -442,7 +454,7 @@ def test_a_hand_written_portuguese_report_reads_as_internal() -> None:
         ]
     )
 
-    row = rs.to_internal_frame(frame, "mappings").to_dict("records")[0]
+    row = schema.to_internal_frame(frame, "mappings").to_dict("records")[0]
 
     assert row["model_column_number"] == 1
     assert row["client_column"] == "CFOP (occurrence 2)"
@@ -453,7 +465,7 @@ def test_a_hand_written_portuguese_report_reads_as_internal() -> None:
     assert row["decided_by"] == "lexical"
     # O parecer passa como foi digitado; quem lê o valida e normaliza.
     assert row["reviewer_status"] == "Incorreto"
-    assert rs.normalize_reviewer_status(row["reviewer_status"]) == "incorrect"
+    assert schema.normalize_reviewer_status(row["reviewer_status"]) == "incorrect"
     assert row["correct_client_column"] == "Unnamed column 5"
     assert row["colunaExtra"] == "fica como está"
 
@@ -471,9 +483,9 @@ def test_conversions_keep_every_cell_exactly_as_it_was() -> None:
         }
     )
 
-    internal = rs.to_internal_frame(stored, "mappings")
-    external = rs.to_external_frame(internal, "mappings")
-    back = rs.to_internal_frame(external, "mappings")
+    internal = schema.to_internal_frame(stored, "mappings")
+    external = schema.to_external_frame(internal, "mappings")
+    back = schema.to_internal_frame(external, "mappings")
 
     for frame in (internal, back):
         assert frame["correct_client_column"].dtype == object
@@ -490,26 +502,26 @@ def test_conversions_work_with_repeated_column_names() -> None:
     frame = pd.DataFrame([["accepted", "review"]], columns=["status", "status"])
     frame.insert(0, "model_column_number", [1])
 
-    external = rs.to_external_frame(frame, "mappings")
+    external = schema.to_external_frame(frame, "mappings")
 
     assert list(external.columns) == ["numero_coluna_modelo", "situacao", "situacao"]
     assert external.iloc[0].tolist() == [1, "aceito", "revisao"]
-    back = rs.to_internal_frame(external, "mappings")
+    back = schema.to_internal_frame(external, "mappings")
     assert back.iloc[0].tolist() == [1, "accepted", "review"]
 
 
 def test_enum_values_are_converted_only_when_exact() -> None:
     # Só converte valores que correspondem exatamente ao vocabulário do schema.
     # Preserva os demais para validação posterior, inclusive o parecer do revisor.
-    assert rs.internal_value("mappings", "status", "aceito") == "accepted"
-    assert rs.internal_value("mappings", "status", "Aceito") == "Aceito"
-    assert rs.internal_value("mappings", "status", "accepted") == "accepted"
-    assert rs.internal_value("mappings", "decided_by", "lexico") == "lexical"
-    assert rs.internal_value("mappings", "model_column", "Situação") == "Situação"
-    assert rs.internal_value("banner", "status", "aceito") == "accepted"
-    assert rs.internal_value("mappings", "reviewer_status", " Correto ") == " Correto "
-    assert rs.external_value("banner", "decided_by", "catalog") == "catalogo"
-    assert rs.external_value("banner", "final_confidence", 0.93) == 0.93
+    assert schema.internal_value("mappings", "status", "aceito") == "accepted"
+    assert schema.internal_value("mappings", "status", "Aceito") == "Aceito"
+    assert schema.internal_value("mappings", "status", "accepted") == "accepted"
+    assert schema.internal_value("mappings", "decided_by", "lexico") == "lexical"
+    assert schema.internal_value("mappings", "model_column", "Situação") == "Situação"
+    assert schema.internal_value("banner", "status", "aceito") == "accepted"
+    assert schema.internal_value("mappings", "reviewer_status", " Correto ") == " Correto "
+    assert schema.external_value("banner", "decided_by", "catalog") == "catalogo"
+    assert schema.external_value("banner", "final_confidence", 0.93) == 0.93
 
 
 @requires_reports
@@ -518,38 +530,38 @@ def test_archived_reports_have_a_translation_for_every_value(report) -> None:
     book = pd.read_excel(report, sheet_name=None, dtype=object)
     names = list(book)
     for table in REPORT_TABLES:
-        sheet = rs.find_sheet(names, table)
+        sheet = schema.find_sheet(names, table)
         if sheet is None:
             continue
-        internal = rs.to_internal_frame(book[sheet], table)
+        internal = schema.to_internal_frame(book[sheet], table)
 
-        for field, kind in rs.FIELD_KIND.get(table, {}).items():
+        for field, kind in schema.FIELD_KIND.get(table, {}).items():
             if field not in internal.columns:
                 continue
             values = [v for v in internal[field].tolist() if isinstance(v, str) and v]
             if kind.startswith("enum:"):
-                enum = rs.ENUMS[kind.split(":", 1)[1]]
+                enum = schema.ENUMS[kind.split(":", 1)[1]]
                 assert set(values) <= set(enum) | set(enum.values()), (field, set(values) - set(enum))
             elif kind == "steps":
                 tokens = {
-                    token.removesuffix(rs.AGREES_SUFFIX_EN)
+                    token.removesuffix(schema.AGREES_SUFFIX_EN)
                     for value in values
-                    for token in value.split(rs.STEPS_SEPARATOR)
+                    for token in value.split(schema.STEPS_SEPARATOR)
                 }
-                assert tokens <= set(rs.ALL_STEP_IDS), tokens - set(rs.ALL_STEP_IDS)
+                assert tokens <= set(schema.ALL_STEP_IDS), tokens - set(schema.ALL_STEP_IDS)
             elif kind == "signals":
-                tokens = {token for value in values for token in value.split(rs.SIGNALS_SEPARATOR)}
-                assert tokens <= set(rs.ENUMS["signals"]), tokens
+                tokens = {token for value in values for token in value.split(schema.SIGNALS_SEPARATOR)}
+                assert tokens <= set(schema.ENUMS["signals"]), tokens
 
-        back = rs.to_internal_frame(rs.to_external_frame(internal, table), table)
+        back = schema.to_internal_frame(schema.to_external_frame(internal, table), table)
         for column in internal.columns:
             assert back[column].equals(internal[column]), (sheet, column)
 
-    metadata_sheet = rs.find_sheet(names, "run_metadata")
-    metadata = rs.internal_metadata(book[metadata_sheet])
-    assert set(metadata) <= set(rs.METADATA_KEYS)
-    exported = rs.to_external_metadata(metadata)
-    assert rs.internal_metadata(exported) == metadata
+    metadata_sheet = schema.find_sheet(names, "run_metadata")
+    metadata = schema.internal_metadata(book[metadata_sheet])
+    assert set(metadata) <= set(schema.METADATA_KEYS)
+    exported = schema.to_external_metadata(metadata)
+    assert schema.internal_metadata(exported) == metadata
 
 
 # ---------------------------------------------------------------------------
@@ -587,7 +599,7 @@ def test_an_old_english_report_is_refused_with_the_conversion_hint(tmp_path) -> 
     )
 
     with pytest.raises(SystemExit) as stop:
-        apply_invoice_mapping.main(
+        apply.main(
             [str(client_path), str(report), "--model", str(model_path),
              "--output", str(tmp_path / "saida.xlsx")]
         )
@@ -601,12 +613,12 @@ def test_an_old_english_report_is_refused_with_the_conversion_hint(tmp_path) -> 
 
 
 def test_the_header_must_be_in_portuguese() -> None:
-    rs.check_header(["numero_coluna_modelo", "situacao", None])
-    rs.check_header(["chave", "valor"], "run_metadata")
+    schema.check_header(["numero_coluna_modelo", "situacao", None])
+    schema.check_header(["chave", "valor"], "run_metadata")
     with pytest.raises(
         ValueError, match=r"formato antigo.*tem a coluna 'model_column_number'.*commit 5fe5092"
     ):
-        rs.check_header(("model_column_number", "status", None))
+        schema.check_header(("model_column_number", "status", None))
 
 
 @pytest.mark.parametrize(
@@ -623,42 +635,42 @@ def test_the_header_must_be_in_portuguese() -> None:
 )
 def test_a_header_with_old_names_is_refused(header, message) -> None:
     with pytest.raises(ValueError, match=re.escape(message)):
-        rs.check_header(header)
+        schema.check_header(header)
 
 
 def test_a_header_without_the_required_column_is_refused() -> None:
     for header in (["coluna_modelo", "situacao"], []):
         with pytest.raises(ValueError, match="não tem a coluna 'numero_coluna_modelo'"):
-            rs.check_header(header)
+            schema.check_header(header)
 
 
 def test_reading_a_half_translated_report_is_refused() -> None:
     # Lido pela metade, o relatório ignoraria os pareceres do revisor sem aviso.
     frame = pd.DataFrame(columns=["numero_coluna_modelo", "situacao", "reviewer_status"])
     with pytest.raises(ValueError, match="Renomeie 'reviewer_status' para 'parecer_revisor'"):
-        rs.to_internal_frame(frame, "mappings")
+        schema.to_internal_frame(frame, "mappings")
     with pytest.raises(ValueError, match="Renomeie 'key' para 'chave', 'value' para 'valor'"):
-        rs.to_internal_frame(pd.DataFrame(columns=["key", "value"]), "run_metadata")
+        schema.to_internal_frame(pd.DataFrame(columns=["key", "value"]), "run_metadata")
     with pytest.raises(ValueError, match="Renomeie 'status' para 'situacao'"):
-        rs.internal_header_index(("numero_coluna_modelo", "status"), "mappings")
+        schema.internal_header_index(("numero_coluna_modelo", "status"), "mappings")
 
 
 def test_find_sheet_refuses_a_sheet_with_the_old_name() -> None:
-    assert rs.find_sheet(["Mapeamentos", "Metadados da Execução"], "run_metadata") == (
+    assert schema.find_sheet(["Mapeamentos", "Metadados da Execução"], "run_metadata") == (
         "Metadados da Execução"
     )
-    assert rs.find_sheet(["Mapeamentos"], "run_metadata") is None
+    assert schema.find_sheet(["Mapeamentos"], "run_metadata") is None
     # Ignorada, ela faria a verificação de hash ser pulada em silêncio.
     for names in (["Mapeamentos", "Run Metadata"], ["Run Metadata", "Metadados da Execução"]):
         with pytest.raises(
             ValueError, match="Renomeie 'Run Metadata' para 'Metadados da Execução'"
         ):
-            rs.find_sheet(names, "run_metadata")
+            schema.find_sheet(names, "run_metadata")
     # Sem a aba de mapeamentos em português, o relatório está no formato antigo.
     with pytest.raises(ValueError, match="tem a aba 'Mappings'.*commit 5fe5092"):
-        rs.find_sheet(["Mappings", "Run Metadata"], "mappings")
+        schema.find_sheet(["Mappings", "Run Metadata"], "mappings")
     with pytest.raises(ValueError, match="Renomeie 'Mappings' para 'Mapeamentos'"):
-        rs.find_sheet(["Mappings", "Mapeamentos"], "mappings")
+        schema.find_sheet(["Mappings", "Mapeamentos"], "mappings")
 
 
 @pytest.mark.parametrize(
@@ -675,41 +687,41 @@ def test_find_sheet_refuses_a_sheet_with_the_old_name() -> None:
 )
 def test_find_sheet_ignores_case_and_accents_and_returns_the_name_as_written(written) -> None:
     # Senão a verificação de hash seria pulada em silêncio.
-    assert rs.find_sheet(["Mapeamentos", written], "run_metadata") == written
+    assert schema.find_sheet(["Mapeamentos", written], "run_metadata") == written
 
 
 def test_find_sheet_refuses_an_old_sheet_name_in_another_case() -> None:
     # O Excel não distingue caixa nos nomes de aba: "run metadata" é a aba antiga.
     with pytest.raises(ValueError, match="formato antigo"):
-        rs.find_sheet(["Mapeamentos", "run metadata"], "run_metadata")
+        schema.find_sheet(["Mapeamentos", "run metadata"], "run_metadata")
 
 
 def test_find_sheet_refuses_two_sheets_that_differ_only_by_accents() -> None:
     with pytest.raises(ValueError, match="mais de uma aba"):
-        rs.find_sheet(
+        schema.find_sheet(
             ["Mapeamentos", "Metadados da Execução", "Metadados da Execucao"],
             "run_metadata",
         )
 
 
 def test_find_sheet_finds_the_mappings_sheet() -> None:
-    assert rs.find_sheet(["Mapeamentos", "Metadados da Execução"], "mappings") == "Mapeamentos"
-    assert rs.find_sheet(["Planilha1"], "mappings") is None
+    assert schema.find_sheet(["Mapeamentos", "Metadados da Execução"], "mappings") == "Mapeamentos"
+    assert schema.find_sheet(["Planilha1"], "mappings") is None
     # As abas da planilha mapeada não têm nome antigo a recusar.
-    assert rs.find_sheet(["Dados Mapeados", "Cobertura"], "coverage") == "Cobertura"
+    assert schema.find_sheet(["Dados Mapeados", "Cobertura"], "coverage") == "Cobertura"
 
 
 def test_sheet_and_header_names() -> None:
-    assert rs.sheet_name("mappings") == "Mapeamentos"
-    assert rs.sheet_name("queue") == "Fila de Revisão"
-    assert rs.header_label("mappings", "reviewer_status") == "parecer_revisor"
-    assert rs.header_label("banner", "llm_final_confidence") == "confianca_final_ia"
-    assert rs.header_label("mapped_data", "__mapping_info__") == "__info_mapeamento__"
-    assert rs.header_label("mappings", "campo_novo") == "campo_novo"
+    assert schema.sheet_name("mappings") == "Mapeamentos"
+    assert schema.sheet_name("queue") == "Fila de Revisão"
+    assert schema.header_label("mappings", "reviewer_status") == "parecer_revisor"
+    assert schema.header_label("banner", "llm_final_confidence") == "confianca_final_ia"
+    assert schema.header_label("mapped_data", "__mapping_info__") == "__info_mapeamento__"
+    assert schema.header_label("mappings", "campo_novo") == "campo_novo"
 
 
 def test_internal_header_index_reads_openpyxl_rows() -> None:
-    index = rs.internal_header_index(
+    index = schema.internal_header_index(
         ("numero_coluna_modelo", "situacao", None, "prova_aritmetica"), "mappings"
     )
     assert index == {"model_column_number": 0, "status": 1, "arithmetic_proof": 3}
@@ -730,7 +742,7 @@ def test_metadata_is_written_in_portuguese_and_read_back_as_internal() -> None:
         "client_sha256": "abc123",
     }
 
-    frame = rs.to_external_metadata(metadata)
+    frame = schema.to_external_metadata(metadata)
 
     assert list(frame.columns) == ["chave", "valor"]
     assert frame.to_dict("records") == [
@@ -741,7 +753,7 @@ def test_metadata_is_written_in_portuguese_and_read_back_as_internal() -> None:
         {"chave": "sha256_manifesto_referencia", "valor": "desativado"},
         {"chave": "sha256_cliente", "valor": "abc123"},
     ]
-    assert rs.internal_metadata(frame) == {
+    assert schema.internal_metadata(frame) == {
         "mapping_schema_version": "3",
         "embedding_model": "offline",
         "llm_model": "gpt-4o-mini",
@@ -757,7 +769,7 @@ def test_metadata_is_cleaned_like_the_apply_always_cleaned_it() -> None:
          "valor": [" abc ", "def", "ignorado", "desativado"]}
     )
 
-    assert rs.internal_metadata(frame) == {
+    assert schema.internal_metadata(frame) == {
         "client_sha256": "abc",
         "model_sha256": "def",
         "embedding_model": "disabled",
@@ -766,18 +778,18 @@ def test_metadata_is_cleaned_like_the_apply_always_cleaned_it() -> None:
 
 def test_metadata_with_old_names_or_repeated_keys_is_refused() -> None:
     with pytest.raises(ValueError, match="Renomeie 'key' para 'chave'"):
-        rs.internal_metadata(pd.DataFrame({"key": ["a"], "value": ["b"]}))
+        schema.internal_metadata(pd.DataFrame({"key": ["a"], "value": ["b"]}))
     # Igual à chave interna, ela valeria no lugar da em português sem aviso.
     with pytest.raises(ValueError, match="Renomeie 'client_sha256' para 'sha256_cliente'"):
-        rs.internal_metadata(
+        schema.internal_metadata(
             pd.DataFrame({"chave": ["sha256_cliente", " client_sha256 "], "valor": ["a", "b"]})
         )
     with pytest.raises(ValueError, match="precisa ter as colunas"):
-        rs.internal_metadata(pd.DataFrame({"chave": ["a"]}))
+        schema.internal_metadata(pd.DataFrame({"chave": ["a"]}))
     # Como o apply sempre fez: repetição na coluna original, inclusive de chaves em branco.
     for keys in (["sha256_cliente", "sha256_cliente"], [None, None]):
         with pytest.raises(ValueError, match="chaves repetidas"):
-            rs.internal_metadata(pd.DataFrame({"chave": keys, "valor": ["a", "b"]}))
+            schema.internal_metadata(pd.DataFrame({"chave": keys, "valor": ["a", "b"]}))
 
 
 # ---------------------------------------------------------------------------
@@ -817,7 +829,7 @@ def test_metadata_with_old_names_or_repeated_keys_is_refused() -> None:
     ],
 )
 def test_reviewer_status_is_read_only_in_portuguese(typed, internal) -> None:
-    assert rs.normalize_reviewer_status(typed) == internal
+    assert schema.normalize_reviewer_status(typed) == internal
 
 
 @pytest.mark.parametrize(
@@ -835,9 +847,9 @@ def test_reviewer_status_is_read_only_in_portuguese(typed, internal) -> None:
     ],
 )
 def test_display_names_translate_in_both_directions(internal, external) -> None:
-    assert rs.display_name_to_external(internal) == external
-    assert rs.display_name_to_external(external) == external
-    assert rs.display_name_to_internal(external) == internal
+    assert schema.display_name_to_external(internal) == external
+    assert schema.display_name_to_external(external) == external
+    assert schema.display_name_to_internal(external) == internal
 
 
 @pytest.mark.parametrize(
@@ -851,7 +863,7 @@ def test_display_names_translate_in_both_directions(internal, external) -> None:
     ],
 )
 def test_display_names_accept_what_a_reviewer_types(typed, internal) -> None:
-    assert rs.display_name_to_internal(typed) == internal
+    assert schema.display_name_to_internal(typed) == internal
 
 
 @pytest.mark.parametrize(
@@ -870,22 +882,22 @@ def test_display_names_accept_what_a_reviewer_types(typed, internal) -> None:
     ],
 )
 def test_step_cells_translate_in_both_directions(internal, external) -> None:
-    assert rs.steps_to_external(internal) == external
-    assert rs.steps_to_external(external) == external
-    assert rs.steps_to_internal(external) == internal
+    assert schema.steps_to_external(internal) == external
+    assert schema.steps_to_external(external) == external
+    assert schema.steps_to_internal(external) == internal
     for field in ("supported_by", "decided_by"):
-        assert rs.internal_value("mappings", field, external) == internal
+        assert schema.internal_value("mappings", field, external) == internal
 
 
 def test_steps_read_back_are_understood_by_mapping_steps() -> None:
     external = "resolvedor_ia + lexico + semantico + perfil + identificador + catalogo + aritmetica"
     expected = "resolver + lexical + semantic + profile + identifier + catalog + arithmetic"
-    internal = rs.steps_to_internal(external)
+    internal = schema.steps_to_internal(external)
     assert internal == expected
-    assert rs.steps_to_external(internal) == external
-    assert mapping_steps.deciding_step(internal) == "arithmetic"
-    assert mapping_steps.format_steps(internal) == expected
-    assert not mapping_steps.rests_only_on_headers(internal)
+    assert schema.steps_to_external(internal) == external
+    assert deciding_step(internal) == "arithmetic"
+    assert format_steps(internal) == expected
+    assert not rests_only_on_headers(internal)
 
 
 # ---------------------------------------------------------------------------
@@ -904,12 +916,12 @@ def test_steps_read_back_are_understood_by_mapping_steps() -> None:
     ],
 )
 def test_percentages_use_a_decimal_comma(value, places, text) -> None:
-    assert rs.format_percent_br(value, places) == text
+    assert schema.format_percent_br(value, places) == text
 
 
 def test_percentages_keep_the_digits_of_the_english_format() -> None:
     for value in (0.0004, 0.0005, 0.1235, 0.66666, 0.8819, 0.9995, 0.99999):
-        assert rs.format_percent_br(value) == f"{value:.1%}".replace(".", ",")
+        assert schema.format_percent_br(value) == f"{value:.1%}".replace(".", ",")
 
 
 @pytest.mark.parametrize(
@@ -925,7 +937,7 @@ def test_percentages_keep_the_digits_of_the_english_format() -> None:
     ],
 )
 def test_decimals_use_a_decimal_comma(value, places, text) -> None:
-    assert rs.format_decimal_br(value, places) == text
+    assert schema.format_decimal_br(value, places) == text
 
 
 # ---------------------------------------------------------------------------
@@ -933,123 +945,36 @@ def test_decimals_use_a_decimal_comma(value, places, text) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("module", ["report_schema.py", "cli_ptbr.py"])
+@pytest.mark.parametrize("module", ["mapper/schema.py", "mapper/cli.py"])
 def test_the_boundary_modules_import_nothing_from_the_mapper(module) -> None:
     tree = ast.parse((ROOT / module).read_text(encoding="utf-8"))
     imported = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            imported.update(alias.name.split(".")[0] for alias in node.names)
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module == "mapper":
+            imported.update(f"mapper.{alias.name}" for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module:
-            imported.add(node.module.split(".")[0])
-    assert not imported & {"invoice_mapper", "apply_invoice_mapping", "mapeval", "mapping_steps"}
+            imported.add(node.module)
+    # As etapas do mapeamento e os comandos ficam acima destes módulos.
+    assert not imported & {
+        "mapper.headers", "mapper.evidence", "mapper.resolver", "mapper.decide",
+        "mapper.report", "mapper.apply", "mapper.evaluate",
+    }
 
 
-# ---------------------------------------------------------------------------
-# CLI em português
-# ---------------------------------------------------------------------------
-
-ENGLISH_CHROME = (
-    "usage:",
-    "positional arguments",
-    "options:",
-    "show this help",
-    "show program's version",
-    "error:",
-    "the following arguments",
-    "unrecognized arguments",
-    "expected one argument",
-    "invalid choice",
-    "invalid int value",
-    "invalid float value",
-    "tipo int",
-    "tipo float",
-    "ignored explicit",
-    "argument --",
-)
+def test_explicit_registry_covers_every_canonical_column():
+    raw = json.loads(Path("data/target_fields.json").read_text())
+    model = SheetTable.from_excel("data/model.xlsx")
+    assert [(row[0], row[1]) for row in raw["fields"]] == [
+        (c.index + 1, c.name) for c in model.columns
+    ]
+    assert all(target_field(c.name) is not None for c in model.columns)
 
 
-def _sheet(value: str) -> int:
-    """Converte um argumento de aba, como as funções passadas em ``type=`` nas CLIs."""
-    return int(value)
-
-
-def _parser() -> PortugueseArgumentParser:
-    parser = PortugueseArgumentParser(prog="ferramenta", description="Mapeia as colunas.")
-    parser.add_argument("client", help="planilha exportada pelo cliente")
-    parser.add_argument("--output", help="relatório de saída")
-    parser.add_argument("--candidates", type=int, default=10, help="quantidade de candidatos")
-    parser.add_argument("--final-threshold", type=float, default=0.9)
-    parser.add_argument("--sheet", type=_sheet)
-    parser.add_argument("--mode", choices=["offline", "online"])
-    parser.add_argument("--offline", action="store_true")
-    parser.add_argument("--version", action="version", version="ferramenta 1.0")
-    extra = parser.add_argument_group("outras opções")
-    extra.add_argument("--build", action="version", version="build 7")
-    return parser
-
-
-def test_the_help_is_in_portuguese(capsys) -> None:
-    with pytest.raises(SystemExit) as stop:
-        _parser().parse_args(["--help"])
-
-    assert stop.value.code == 0
-    out = capsys.readouterr().out
-    assert out.startswith("uso: ferramenta [-h]")
-    assert "\nargumentos posicionais:\n" in out
-    assert "\nopções:\n" in out
-    assert "-h, --help" in out
-    assert "mostra esta mensagem de ajuda e sai" in out
-    assert "planilha exportada pelo cliente" in out
-    # A ajuda padrão de version, no grupo principal e num grupo próprio.
-    assert out.count("mostra a versão do programa e sai") == 2
-    for english in ENGLISH_CHROME:
-        assert english not in out, english
-
-
-@pytest.mark.parametrize(
-    ("argv", "message"),
-    [
-        ([], "os seguintes argumentos são obrigatórios: client"),
-        (["c.xlsx", "--mode", "nuvem"], "argumento --mode: valor não permitido: 'nuvem'"),
-        (["c.xlsx", "--bogus"], "argumentos não reconhecidos: --bogus"),
-        (["c.xlsx", "--output"], "argumento --output: esperava um argumento"),
-        (
-            ["c.xlsx", "--candidates", "dez"],
-            "argumento --candidates: valor inválido 'dez': esperava um número inteiro",
-        ),
-        (
-            ["c.xlsx", "--final-threshold", "0,9"],
-            "argumento --final-threshold: valor inválido '0,9': esperava um número, "
-            "com ponto como separador decimal (por exemplo, 0.9)",
-        ),
-        (["c.xlsx", "--sheet", "aba"], "valor inválido 'aba': esperava um valor do tipo _sheet"),
-        (["c.xlsx", "--offline=sim"], "argumento --offline: esta opção não aceita valor: 'sim'"),
-    ],
-)
-def test_common_errors_are_in_portuguese(capsys, argv, message) -> None:
-    with pytest.raises(SystemExit) as stop:
-        _parser().parse_args(argv)
-
-    assert stop.value.code == 2
-    err = capsys.readouterr().err
-    assert err.startswith("uso: ferramenta")
-    assert "ferramenta: erro: " in err
-    assert message in err
-    for english in ENGLISH_CHROME:
-        assert english not in err, english
-
-
-def test_other_parsers_stay_in_english(capsys) -> None:
-    _parser().format_help()
-    with pytest.raises(SystemExit):
-        _parser().parse_args([])
-    capsys.readouterr()
-
-    plain = argparse.ArgumentParser(prog="plain")
-    plain.add_argument("value")
-    plain.print_usage()
-    assert capsys.readouterr().out.startswith("usage: plain")
-    with pytest.raises(SystemExit):
-        plain.parse_args([])
-    assert "error: the following arguments are required" in capsys.readouterr().err
+def test_target_descriptions_have_distinct_explicit_identities():
+    assert target_field("CFOP_descrição").number == 35
+    assert target_field("item/material_descrição").number == 195
+    assert target_field("Descrição") is None
+    assert target_field("CFOP_descrição", number=195) is None
+    assert target_field("CFOP_descrição", number=35).role == "text"

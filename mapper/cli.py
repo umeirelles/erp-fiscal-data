@@ -1,13 +1,7 @@
-"""Fornece um ``ArgumentParser`` com ajuda e mensagens de erro em português.
+"""Ajuda e mensagens de erro em português para os comandos de ``run.py``.
 
-O argparse consulta ``argparse._`` e ``argparse.ngettext`` para gerar seus
-textos. ``PortugueseArgumentParser`` substitui essas funções durante cada
-chamada e restaura as originais ao sair, inclusive após ``SystemExit``.
-Assim, a tradução não permanece ativa para outros parsers do processo.
-
-As flags permanecem em inglês. Ao criar um argumento, defina ``help`` e
-``metavar`` em português; sem ``metavar``, o argparse usa a flag em
-maiúsculas, como ``OUTPUT``.
+``PortugueseArgumentParser`` traduz os textos do argparse só durante cada chamada,
+sem afetar outros parsers; ``_error_message`` formata erros de leitura e gravação.
 """
 
 from __future__ import annotations
@@ -16,6 +10,10 @@ import argparse
 import contextlib
 import functools
 from typing import Iterator
+
+# As flags ficam em inglês. Ao criar um argumento, defina ``help`` e ``metavar``
+# em português; sem ``metavar``, o argparse usa a flag em maiúsculas.
+
 
 #: Descrições dos tipos esperados nas mensagens de valor inválido.
 TYPE_LABELS: dict[str, str] = {
@@ -171,3 +169,20 @@ class PortugueseArgumentParser(argparse.ArgumentParser):
                 action.help = MESSAGES[action.help]
         with _portuguese_messages():
             return super().format_help()
+
+
+# ---------------------------------------------------------------------------
+# Erros de leitura e gravação de arquivos, comuns aos comandos
+# ---------------------------------------------------------------------------
+
+
+def _error_message(exc: ValueError | OSError) -> str:
+    """Formata a mensagem de erro de leitura ou gravação exibida pela CLI."""
+    if isinstance(exc, FileNotFoundError):
+        return f"Arquivo não encontrado: {exc.filename}"
+    if isinstance(exc, PermissionError):
+        return f"Sem permissão para acessar o arquivo: {exc.filename}"
+    if isinstance(exc, OSError):
+        target = f" {exc.filename}" if exc.filename else ""
+        return f"Não foi possível ler ou gravar o arquivo{target}: {exc.strerror or exc}"
+    return f"Não foi possível gerar o relatório de mapeamento: {exc}"

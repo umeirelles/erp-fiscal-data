@@ -1,6 +1,35 @@
 # Mapeador de planilhas fiscais
 
-A aplicação associa as colunas de uma exportação do cliente aos campos do modelo da consultoria, [`data/model.xlsx`](data/model.xlsx). Depois, copia os valores para esse layout, sem calcular ou preencher dados que o cliente não forneceu.
+## Comece aqui
+
+O programa associa cada coluna de uma exportação de ERP do cliente a um dos 227 campos do modelo da consultoria, [`data/model.xlsx`](data/model.xlsx). Aceita sozinho só o que tem evidência decisiva e deixa o resto para revisão humana. Depois copia os valores para o layout do modelo, sem alterar nem inventar dados.
+
+Tudo passa por um único ponto de entrada, [`run.py`](run.py), com quatro comandos:
+
+| Comando | O que faz |
+|---|---|
+| `python run.py map EXPORTACAO` | Gera o relatório de mapeamento (`--offline` dispensa a OpenAI). |
+| `python run.py apply EXPORTACAO RELATORIO --output ARQ` | Aplica o relatório revisado e grava a planilha no layout do modelo. |
+| `python run.py evaluate` | Compara os relatórios gravados com os gabaritos de-para. |
+| `python run.py update-catalogs` | Baixa as tabelas fiscais oficiais e regrava `reference_data/` (usa a rede). |
+
+`python run.py COMANDO --help` mostra as opções de cada um. O código fica em [`mapper/`](mapper/), um módulo por etapa, na ordem do fluxo:
+
+| Módulo | Etapa |
+|---|---|
+| [`spreadsheet.py`](mapper/spreadsheet.py) | 1. Ler as planilhas: `SheetTable`, `ColumnRef`, cabeçalhos repetidos. |
+| [`schema.py`](mapper/schema.py) | Vocabulário dos arquivos em português e campos do modelo ([`data/target_fields.json`](data/target_fields.json)). |
+| [`headers.py`](mapper/headers.py) | 2. Normalizar e pontuar cabeçalhos: sinônimos, tributos, papéis, conflitos, scorers léxico e de embeddings. |
+| [`evidence.py`](mapper/evidence.py) | 3. Evidências nos valores: perfis, dígitos verificadores, aritmética fiscal e catálogos. |
+| [`resolver.py`](mapper/resolver.py) | 4. Resolvedor de IA: prompt e payload enviados à OpenAI. |
+| [`decide.py`](mapper/decide.py) | 5. `map_columns`: passagens, auditorias, regras locais, confiança e threshold. |
+| [`report.py`](mapper/report.py) | 6. Gravar o relatório (comando `map`). |
+| [`apply.py`](mapper/apply.py) | 7. Aplicar o relatório revisado (comando `apply`). |
+| [`catalogs.py`](mapper/catalogs.py) | Tabelas fiscais oficiais e o comando `update-catalogs`. |
+| [`evaluate.py`](mapper/evaluate.py) | Avaliação com os gabaritos (comando `evaluate`). |
+| [`cli.py`](mapper/cli.py) | Ajuda e mensagens de erro em português. |
+
+Para continuar, leia [Mapear, revisar e aplicar](#mapear-revisar-e-aplicar) abaixo e, depois, [Arquitetura](docs/ARCHITECTURE.md), [Dados e formatos](docs/DATA.md), [Avaliação](docs/EVALUATION.md) e [Limitações conhecidas](docs/KNOWN_ISSUES.md). Os testes ficam em [`tests/`](tests/), um arquivo por módulo.
 
 O modelo tem 227 campos e normalmente é maior que a exportação recebida. Cada associação automática informa **qual método decidiu** e **a confiança em porcentagem**. Toda coluna do cliente sem destino confirmado fica listada para revisão humana, inclusive as colunas vazias.
 
@@ -24,13 +53,13 @@ Gere uma execução nova em `scratch/`, pasta ignorada pelo Git:
 
 ```bash
 mkdir -p scratch
-python invoice_mapper.py data/clients/oracle.xlsx --output scratch/mapping_oracle.xlsx
+python run.py map data/clients/oracle.xlsx --output scratch/mapping_oracle.xlsx
 ```
 
 Para experimentar somente a comparação léxica de cabeçalhos, sem API:
 
 ```bash
-python invoice_mapper.py data/clients/oracle.xlsx --offline --output scratch/mapping_oracle_offline.xlsx
+python run.py map data/clients/oracle.xlsx --offline --output scratch/mapping_oracle_offline.xlsx
 ```
 
 O modo offline não executa a análise completa da segunda passagem. Seus resultados não substituem a validação online.
@@ -58,12 +87,12 @@ Use `observacao_revisor` para registrar o motivo. Cada origem pode alimentar ape
 Aplique o relatório revisado:
 
 ```bash
-python apply_invoice_mapping.py data/clients/oracle.xlsx scratch/mapping_oracle.xlsx --output scratch/oracle_mapped.xlsx
+python run.py apply data/clients/oracle.xlsx scratch/mapping_oracle.xlsx --output scratch/oracle_mapped.xlsx
 ```
 
 A saída tem `Dados Mapeados`, `Cobertura` e uma **nova lista de colunas sem uso**, calculada após os pareceres. Campos sem origem confirmada ficam vazios. `--include-review` gera uma saída de conferência que também copia propostas pendentes; ela não deve ser tratada como entrega confirmada.
 
-O mapper sobrescreve o arquivo indicado e começa com os pareceres em branco. Preserve a revisão existente antes de substituir um relatório. O apply lê o relatório sem modificá-lo.
+O comando `map` sobrescreve o arquivo indicado e começa com os pareceres em branco. Preserve a revisão existente antes de substituir um relatório. O comando `apply` lê o relatório sem modificá-lo.
 
 ## Entender o resultado
 
@@ -74,7 +103,7 @@ O mapper sobrescreve o arquivo indicado e começa com os pareceres em branco. Pr
 
 O threshold padrão de aceite é 90%. O código combina cabeçalhos, amostras, identificadores, catálogos e relações aritméticas. A confiança declarada pela IA fica preservada, sem ajustes, nos campos de auditoria. Quando a IA indica uma candidata com confiança zero, o mapper ainda avalia essa candidata pelas regras locais; zero não é um veto por si só. Disputas sem vantagem suficiente seguem para revisão. Novas confirmações podem ajudar a resolver a aritmética de outros campos, em rodadas locais sem chamadas adicionais à API.
 
-O modelo e [`target_fields.json`](target_fields.json) definem os campos controlados. A coluna 35 é `CFOP_descrição`; a 195 é `item/material_descrição`. Não há aliases para os nomes antigos. Uma revisão humana não cria um novo score automático para a origem corrigida.
+O modelo e [`data/target_fields.json`](data/target_fields.json) definem os campos controlados. A coluna 35 é `CFOP_descrição`; a 195 é `item/material_descrição`. Não há aliases para os nomes antigos. Uma revisão humana não cria um novo score automático para a origem corrigida.
 
 ## Arquivos atuais
 
@@ -97,11 +126,11 @@ A simplificação posterior foi validada nos quatro clientes com as mesmas respo
 
 ```bash
 python -m pytest -q
-python -m mapeval
-python -m mapeval --client oracle --show-losses
+python run.py evaluate
+python run.py evaluate --client oracle --show-losses
 ```
 
-A suíte de testes roda offline. O `mapeval` avalia relatórios existentes, considera a revisão humana e sinaliza os dois conflitos de reutilização de origem nos gabaritos. Exit code 0 não significa que todas as associações estão corretas; veja [Avaliação](docs/EVALUATION.md).
+A suíte de testes roda offline. O comando `evaluate` avalia relatórios existentes, considera a revisão humana e sinaliza os dois conflitos de reutilização de origem nos gabaritos. Exit code 0 não significa que todas as associações estão corretas; veja [Avaliação](docs/EVALUATION.md).
 
 ## Manutenção
 

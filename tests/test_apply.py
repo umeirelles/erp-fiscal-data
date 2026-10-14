@@ -1,24 +1,19 @@
-"""Testes de apply_invoice_mapping: do relatório de mapeamento à planilha entregue.
-
-Os relatórios de teste são montados com nomes e valores internos
-(``mapping_rows``) e gravados no schema em português, como o mapeador os
-grava. O entregável sai em português.
-"""
+"""Testes de ``mapper/apply.py``: parecer do revisor, planilha mapeada e Cobertura."""
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from datetime import time
 from pathlib import Path
+import re
 
-import pandas as pd
-import pytest
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
+import pandas as pd
+import pytest
 
-import report_schema
-from apply_invoice_mapping import (
+from mapper import schema
+from mapper.apply import (
     CONFIDENCE_ROWS,
     FIRST_DATA_EXCEL_ROW,
     MAPPING_METADATA,
@@ -29,6 +24,9 @@ from apply_invoice_mapping import (
     build_parser,
     main,
 )
+from mapper.evaluate import AnswerKey, score_report
+
+from support import report_files
 
 MAPPED_SHEET = "Dados Mapeados"
 COVERAGE_SHEET = "Cobertura"
@@ -145,13 +143,13 @@ def one_row_mapping(model_column: str, client_column: str) -> pd.DataFrame:
 
 def external_report(frame: pd.DataFrame) -> pd.DataFrame:
     """Converte os valores internos de um relatório de teste para o schema de saída."""
-    return report_schema.to_external_frame(frame, "mappings")
+    return schema.to_external_frame(frame, "mappings")
 
 
 def save_report(path, report: pd.DataFrame) -> None:
     """Grava um relatório já em português."""
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
-        report.to_excel(writer, sheet_name=report_schema.sheet_name("mappings"), index=False)
+        report.to_excel(writer, sheet_name=schema.sheet_name("mappings"), index=False)
 
 
 def write_mapping(frame: pd.DataFrame, path) -> None:
@@ -176,7 +174,7 @@ def read_mapped(path) -> pd.DataFrame:
 
 def label(field: str) -> str:
     """Retorna o cabeçalho usado nas mensagens de erro da aba Mapeamentos."""
-    return report_schema.header_label("mappings", field)
+    return schema.header_label("mappings", field)
 
 
 def banner_row(field: str) -> int:
@@ -229,7 +227,7 @@ def test_build_mapped_workbook_defaults_to_confirmed_mappings(files) -> None:
 def test_banner_labels_are_the_portuguese_headers_and_confidences_are_keyed_by_field() -> None:
     # A porcentagem é escolhida pelo campo, então trocar o rótulo não a quebra.
     labels = {field: text for text, field in MAPPING_METADATA}
-    assert labels == report_schema.COLUMNS["banner"]
+    assert labels == schema.COLUMNS["banner"]
     assert CONFIDENCE_ROWS <= {field for _, field in MAPPING_METADATA}
     assert FIRST_DATA_EXCEL_ROW == 23
 
@@ -550,7 +548,7 @@ def test_coverage_sheet_separates_absence_from_a_pending_decision(files) -> None
     assert COVERAGE_SHEET in book.sheetnames
     rows = list(book[COVERAGE_SHEET].values)
     header = list(rows[0])
-    assert header == list(report_schema.COLUMNS["coverage"].values())
+    assert header == list(schema.COLUMNS["coverage"].values())
     data = [dict(zip(header, r)) for r in rows[1:]]
     states = [r["situacao_cobertura"] for r in data]
     # Entregues primeiro, depois as pendentes, depois as ausentes.
@@ -589,3 +587,48 @@ def test_command_line_is_in_portuguese(capsys) -> None:
         main([])
     assert raised.value.code == 2
     assert "os seguintes argumentos são obrigatórios" in capsys.readouterr().err
+
+
+def test_apply_coverage_and_evaluation_use_the_same_review_decision(tmp_path):
+    rows = [
+        dict(model_column_number=1, model_column="Target A", status="accepted", reviewer_status="no_mapping_exists"),
+        dict(model_column_number=2, model_column="Target B", client_column_number=2,
+             client_column="Source B", reviewer_status="correct"),
+        dict(model_column_number=3, model_column="Target C", reviewer_status="incorrect",
+             correct_client_column="Source C"),
+    ]
+    client, report = report_files(tmp_path, rows)
+    model, output = tmp_path / "model.xlsx", tmp_path / "output.xlsx"
+    pd.DataFrame([["Target A", "Target B", "Target C"]]).to_excel(model, index=False, header=False)
+    build_mapped_workbook(client, report, output, model)
+    coverage = pd.read_excel(output, sheet_name="Cobertura").set_index("numero_coluna_modelo")
+    assert coverage.loc[1, "situacao_cobertura"] == "não consta na exportação do cliente"
+    assert coverage.loc[2, "situacao_cobertura"] == "entregue"
+    assert coverage.loc[3, "numero_coluna_cliente"] == 3
+    score = score_report(report, client, AnswerKey("synthetic", {1: 1, 2: 2, 3: 3}))
+    assert [r.status for r in score.rows] == ["no_match", "accepted", "accepted"]
+    assert [r.client_column for r in score.rows] == [None, 2, 3]
+    assert score.delivered_correct == 2
+    assert not score.withheld_correct
+
+
+@pytest.mark.parametrize("include_review", [False, True])
+def test_unused_sources_follow_review_and_keep_pending_and_empty_columns(tmp_path, include_review):
+    client, report = report_files(tmp_path, [
+        dict(model_column_number=1, model_column="Target A", status="accepted",
+             reviewer_status="incorrect", correct_client_column="Source B"),
+        dict(model_column_number=2, model_column="Target B", client_column_number=3,
+             client_column="Source C", status="review"),
+    ])
+    pd.DataFrame([["Source A", "Source B", "Source C", "Empty"], [11, 22, 33, None]]).to_excel(
+        client, header=False, index=False)
+    model, output = tmp_path / "model.xlsx", tmp_path / "output.xlsx"
+    pd.DataFrame([["Target A", "Target B"]]).to_excel(model, header=False, index=False)
+    original_report = report.read_bytes()
+    build_mapped_workbook(client, report, output, model, accepted_only=not include_review)
+    unused = schema.to_internal_frame(
+        pd.read_excel(output, sheet_name="Colunas do Cliente sem Uso"), "unmatched")
+    assert dict(zip(unused.client_column_number, unused.disposition)) == {
+        1: "never_referenced", 3: "proposed_not_accepted", 4: "never_referenced"}
+    assert list(unused.rows_with_value) == [1, 1, 0]
+    assert report.read_bytes() == original_report

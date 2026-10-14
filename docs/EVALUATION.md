@@ -1,6 +1,6 @@
 # Avaliação
 
-O `mapeval` compara relatórios já gerados com os gabaritos disponíveis. Ele não executa o mapper nem chama a API. A avaliação usa a associação efetiva após a revisão humana e identifica cada campo por `numero_coluna_modelo`; reordenar as linhas do relatório não muda a pontuação.
+O comando `evaluate` compara relatórios já gerados com os gabaritos disponíveis. Ele não executa o mapper nem chama a API. A avaliação usa a associação efetiva após a revisão humana e identifica cada campo por `numero_coluna_modelo`; reordenar as linhas do relatório não muda a pontuação.
 
 ## Executar
 
@@ -8,12 +8,12 @@ Na raiz do repositório, com as dependências instaladas:
 
 ```bash
 python -m pytest -q
-python -m mapeval
-python -m mapeval --client oracle --show-losses
-python -m mapeval --strict-key-only
+python run.py evaluate
+python run.py evaluate --client oracle --show-losses
+python run.py evaluate --strict-key-only
 ```
 
-`--client` pode ser repetido. Os nomes configurados em `mapeval.cli.CLIENTS` são `datasul`, `oracle`, `sap_procosa` e `sap_terumo`. `--root` permite avaliar outro diretório com a mesma estrutura de arquivos.
+`--client` pode ser repetido. Os nomes configurados em `mapper.evaluate.CLIENTS` são `datasul`, `oracle`, `sap_procosa` e `sap_terumo`. `--root` permite avaliar outro diretório com a mesma estrutura de arquivos.
 
 ## Gabaritos e contrato
 
@@ -114,8 +114,7 @@ Use `scratch/` para saídas temporárias. Não crie regras por nome de cliente. 
 Para comparar pares em Python:
 
 ```python
-from mapeval.score import score_report
-from mapeval.truth import load_answer_key
+from mapper.evaluate import load_answer_key, score_report
 
 key = load_answer_key("data/keys/de_para_oracle.xlsx", "oracle")
 a = score_report("data/reports/mapping_oracle_full.xlsx", "data/clients/oracle.xlsx", key)
